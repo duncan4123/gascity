@@ -889,6 +889,26 @@ func TestNewSessionProviderRoutesLegacyObservedACPProviderSessionsWithoutTranspo
 	}
 }
 
+func TestNewSessionProviderByName_UsesFirstClassT3Bridge(t *testing.T) {
+	sp, err := newSessionProviderByName("t3bridge", config.SessionConfig{}, "city", t.TempDir())
+	if err != nil {
+		t.Fatalf("newSessionProviderByName(t3bridge): %v", err)
+	}
+	if _, ok := sp.(*sessiont3bridge.Provider); !ok {
+		t.Fatalf("provider type = %T, want *t3bridge.Provider", sp)
+	}
+}
+
+func TestNewSessionProviderByName_LegacyExecT3BridgeStillMapsNative(t *testing.T) {
+	sp, err := newSessionProviderByName("exec:/tmp/gc-session-t3", config.SessionConfig{}, "city", t.TempDir())
+	if err != nil {
+		t.Fatalf("newSessionProviderByName(exec gc-session-t3): %v", err)
+	}
+	if _, ok := sp.(*sessiont3bridge.Provider); !ok {
+		t.Fatalf("provider type = %T, want *t3bridge.Provider", sp)
+	}
+}
+
 func TestLoadProviderSessionSnapshotLoadsStoreWithoutACPAgents(t *testing.T) {
 	oldOpen := openSessionProviderStore
 	t.Cleanup(func() { openSessionProviderStore = oldOpen })
