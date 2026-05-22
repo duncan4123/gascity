@@ -10,8 +10,7 @@ import (
 )
 
 func newSessionPinCmd(stdout, stderr io.Writer) *cobra.Command {
-	var jsonOutput bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "pin <session-id-or-alias>",
 		Short: "Keep a session awake",
 		Long: `Keep a session awake by setting its durable pin override.
@@ -21,20 +20,17 @@ a configured named session that has not been materialized yet, pin creates its
 canonical bead so the reconciler can start it when unblocked.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			if cmdSessionPin(args, stdout, stderr, jsonOutput) != 0 {
+			if cmdSessionPin(args, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 		ValidArgsFunction: completeSessionIDs,
 	}
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "emit JSONL")
-	return cmd
 }
 
 func newSessionUnpinCmd(stdout, stderr io.Writer) *cobra.Command {
-	var jsonOutput bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "unpin <session-id-or-alias>",
 		Short: "Remove a session awake pin",
 		Long: `Remove only the durable pin override from a session.
@@ -43,27 +39,24 @@ Unpinning does not force an immediate stop. The reconciler will apply the
 normal wake/sleep rules on its next pass.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			if cmdSessionUnpin(args, stdout, stderr, jsonOutput) != 0 {
+			if cmdSessionUnpin(args, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 		ValidArgsFunction: completeSessionIDs,
 	}
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "emit JSONL")
-	return cmd
 }
 
-func cmdSessionPin(args []string, stdout, stderr io.Writer, jsonOutput ...bool) int {
-	return cmdSessionSetPin(args, true, stdout, stderr, jsonOutput...)
+func cmdSessionPin(args []string, stdout, stderr io.Writer) int {
+	return cmdSessionSetPin(args, true, stdout, stderr)
 }
 
-func cmdSessionUnpin(args []string, stdout, stderr io.Writer, jsonOutput ...bool) int {
-	return cmdSessionSetPin(args, false, stdout, stderr, jsonOutput...)
+func cmdSessionUnpin(args []string, stdout, stderr io.Writer) int {
+	return cmdSessionSetPin(args, false, stdout, stderr)
 }
 
-func cmdSessionSetPin(args []string, pinned bool, stdout, stderr io.Writer, jsonOutput ...bool) int {
-	asJSON := sessionJSONRequested(jsonOutput)
+func cmdSessionSetPin(args []string, pinned bool, stdout, stderr io.Writer) int {
 	action := "unpin"
 	if pinned {
 		action = "pin"
@@ -129,18 +122,6 @@ func cmdSessionSetPin(args []string, pinned bool, stdout, stderr io.Writer, json
 	}
 	pokeSessionPinController(cityErr, cityPath)
 
-	if asJSON {
-		if err := writeSessionActionJSON(stdout, sessionActionResult{
-			Action:            action,
-			SessionID:         id,
-			Pinned:            &pinned,
-			MaterializedNamed: materializedForPin,
-		}); err != nil {
-			fmt.Fprintf(stderr, "gc session %s: %v\n", action, err) //nolint:errcheck
-			return 1
-		}
-		return 0
-	}
 	if pinned {
 		fmt.Fprintf(stdout, "Session %s pinned awake.\n", id) //nolint:errcheck
 	} else {

@@ -12,34 +12,10 @@ import (
 
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
-	convoycore "github.com/gastownhall/gascity/internal/convoy"
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/fsys"
 	"github.com/spf13/cobra"
 )
-
-type convoyActionResult struct {
-	SchemaVersion string   `json:"schema_version"`
-	OK            bool     `json:"ok"`
-	Command       string   `json:"command"`
-	Action        string   `json:"action"`
-	ConvoyID      string   `json:"convoy_id,omitempty"`
-	Title         string   `json:"title,omitempty"`
-	IssueIDs      []string `json:"issue_ids,omitempty"`
-	Target        string   `json:"target,omitempty"`
-	Closed        *int     `json:"closed,omitempty"`
-	Stranded      *int     `json:"stranded,omitempty"`
-	TotalChildren *int     `json:"total_children,omitempty"`
-	OpenChildren  *int     `json:"open_children,omitempty"`
-	DryRun        bool     `json:"dry_run,omitempty"`
-	AlreadyClosed bool     `json:"already_closed,omitempty"`
-	Forced        bool     `json:"forced,omitempty"`
-	Notify        string   `json:"notify,omitempty"`
-}
-
-func intRef(value int) *int {
-	return &value
-}
 
 func newConvoyCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
@@ -47,12 +23,9 @@ func newConvoyCmd(stdout, stderr io.Writer) *cobra.Command {
 		Short: "Manage convoys — graphs of related work",
 		Long: `Manage convoys — graphs of related work beads.
 
-A convoy is a named graph of beads with dependencies. Convoys
-group related issues via tracks dependencies.
-
-Convoys are distinct from workflows (graph.v2 formula-compiled
-DAGs managed by the dispatch subsystem) — gc convoy commands do
-not operate on workflow roots.`,
+A convoy is a named graph of beads with dependencies. Simple convoys
+group related issues via parent-child relationships. Complex convoys
+use formula-compiled DAGs with control beads for orchestration.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -86,14 +59,14 @@ type convoyCreateOptions struct {
 
 func newConvoyCreateCmd(stdout, stderr io.Writer) *cobra.Command {
 	var owner, notify, merge, target string
-	var owned, jsonOut bool
+	var owned bool
 	cmd := &cobra.Command{
 		Use:   "create <name> [issue-ids...]",
 		Short: "Create a convoy and optionally track issues",
 		Long: `Create a convoy and optionally link existing issues to it.
 
-Creates a convoy bead and tracks any provided issue IDs. Issues can
-also be added later with "gc convoy add".`,
+Creates a convoy bead and sets the parent of any provided issue IDs to
+the new convoy. Issues can also be added later with "gc convoy add".`,
 		Example: `  gc convoy create sprint-42
   gc convoy create sprint-42 issue-1 issue-2 issue-3
   gc convoy create deploy --owner mayor --notify mayor --merge mr
@@ -109,13 +82,7 @@ also be added later with "gc convoy add".`,
 				},
 				Owned: owned,
 			}
-			code := 0
-			if jsonOut {
-				code = cmdConvoyCreateWithOptionsJSON(args, opts, true, stdout, stderr)
-			} else {
-				code = cmdConvoyCreateWithOptions(args, opts, stdout, stderr)
-			}
-			if code != 0 {
+			if cmdConvoyCreateWithOptions(args, opts, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
@@ -126,15 +93,10 @@ also be added later with "gc convoy add".`,
 	cmd.Flags().StringVar(&merge, "merge", "", "merge strategy: direct, mr, local")
 	cmd.Flags().StringVar(&target, "target", "", "target branch inherited by child work beads")
 	cmd.Flags().BoolVar(&owned, "owned", false, "mark convoy as owned (manual lifecycle, no auto-close)")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSONL result")
 	return cmd
 }
 
 func cmdConvoyCreateWithOptions(args []string, opts convoyCreateOptions, stdout, stderr io.Writer) int {
-	return cmdConvoyCreateWithOptionsJSON(args, opts, false, stdout, stderr)
-}
-
-func cmdConvoyCreateWithOptionsJSON(args []string, opts convoyCreateOptions, jsonOut bool, stdout, stderr io.Writer) int {
 	cityPath, err := resolveCity()
 	if err != nil {
 		fmt.Fprintf(stderr, "gc convoy create: %v\n", err) //nolint:errcheck // best-effort stderr
@@ -170,13 +132,13 @@ func cmdConvoyCreateWithOptionsJSON(args []string, opts convoyCreateOptions, jso
 	}
 
 	rec := openCityRecorderAt(cityPath, stderr)
-	return doConvoyCreateWithOptionsJSON(store, cfg, cityPath, rec, args, opts, jsonOut, stdout, stderr)
+	return doConvoyCreateWithOptions(store, cfg, cityPath, rec, args, opts, stdout, stderr)
 }
 
 // doConvoyCreate creates a convoy bead and optionally adds issues to it.
 // When cfg/cityPath are nil/empty, all beads are assumed to be in the same store.
 func doConvoyCreate(store beads.Store, rec events.Recorder, args []string, stdout, stderr io.Writer) int {
-	return doConvoyCreateWithOptions(store, rec, args, convoyCreateOptions{}, stdout, stderr)
+	return doConvoyCreateWithOptions(store, nil, "", rec, args, convoyCreateOptions{}, stdout, stderr)
 }
 
 func convoyCreateStoreRoot(cfg *config.City, cityPath, beadID string) string {
@@ -202,11 +164,7 @@ func validateConvoyCreateStoreScope(cfg *config.City, cityPath string, issueIDs 
 	return nil
 }
 
-func doConvoyCreateWithOptions(store beads.Store, rec events.Recorder, args []string, opts convoyCreateOptions, stdout, stderr io.Writer) int {
-	return doConvoyCreateWithOptionsJSON(store, nil, "", rec, args, opts, false, stdout, stderr)
-}
-
-func doConvoyCreateWithOptionsJSON(store beads.Store, cfg *config.City, cityPath string, rec events.Recorder, args []string, opts convoyCreateOptions, jsonOut bool, stdout, stderr io.Writer) int {
+func doConvoyCreateWithOptions(store beads.Store, cfg *config.City, cityPath string, rec events.Recorder, args []string, opts convoyCreateOptions, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
 		fmt.Fprintln(stderr, "gc convoy create: missing convoy name") //nolint:errcheck // best-effort stderr
 		return 1
@@ -254,8 +212,9 @@ func doConvoyCreateWithOptionsJSON(store beads.Store, cfg *config.City, cityPath
 			fmt.Fprintf(stderr, "gc convoy create: issue %s: %v\n", id, err) //nolint:errcheck // best-effort stderr
 			return 1
 		}
-		if err := convoycore.TrackItem(childStore, convoy.ID, id); err != nil {
-			fmt.Fprintf(stderr, "gc convoy create: tracking %s: %v\n", id, err) //nolint:errcheck // best-effort stderr
+		parentID := convoy.ID
+		if err := childStore.Update(id, beads.UpdateOpts{ParentID: &parentID}); err != nil {
+			fmt.Fprintf(stderr, "gc convoy create: setting parent on %s: %v\n", id, err) //nolint:errcheck // best-effort stderr
 			return 1
 		}
 	}
@@ -267,20 +226,16 @@ func doConvoyCreateWithOptionsJSON(store beads.Store, cfg *config.City, cityPath
 		Message: name,
 	})
 
-	switch {
-	case jsonOut:
-		return writeCLIJSONLineOrExit(stdout, stderr, "gc convoy create", convoyActionResult{SchemaVersion: "1", OK: true, Command: "convoy.create", Action: "create", ConvoyID: convoy.ID, Title: name, IssueIDs: issueIDs})
-	case len(issueIDs) > 0:
+	if len(issueIDs) > 0 {
 		fmt.Fprintf(stdout, "Created convoy %s %q tracking %d issue(s)\n", convoy.ID, name, len(issueIDs)) //nolint:errcheck // best-effort stdout
-	default:
+	} else {
 		fmt.Fprintf(stdout, "Created convoy %s %q\n", convoy.ID, name) //nolint:errcheck // best-effort stdout
 	}
 	return 0
 }
 
 func newConvoyListCmd(stdout, stderr io.Writer) *cobra.Command {
-	var jsonOut bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "list",
 		Short: "List open convoys with progress",
 		Long: `List all open convoys with completion progress.
@@ -289,23 +244,21 @@ Shows each convoy's ID, title, and the number of closed vs total
 child issues.`,
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			if cmdConvoyList(jsonOut, stdout, stderr) != 0 {
+			if cmdConvoyList(stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSONL result")
-	return cmd
 }
 
 // cmdConvoyList is the CLI entry point for listing convoys.
-func cmdConvoyList(jsonOut bool, stdout, stderr io.Writer) int {
+func cmdConvoyList(stdout, stderr io.Writer) int {
 	stores, code := openAllConvoyStores(stderr, "gc convoy list")
 	if stores == nil {
 		return code
 	}
-	return doConvoyListAcrossStores(stores, jsonOut, stdout, stderr)
+	return doConvoyListAcrossStores(stores, stdout, stderr)
 }
 
 func convoyStoreCandidates(cfg *config.City, cityPath, beadID string) []string {
@@ -444,64 +397,6 @@ type convoyWithStore struct {
 	bead  beads.Bead
 }
 
-type convoyProgressJSON struct {
-	Closed         int `json:"closed"`
-	Total          int `json:"total"`
-	DanglingTracks int `json:"dangling_tracks,omitempty"`
-}
-
-type convoyFieldsJSON struct {
-	Owner  string `json:"owner,omitempty"`
-	Notify string `json:"notify,omitempty"`
-	Merge  string `json:"merge,omitempty"`
-	Target string `json:"target,omitempty"`
-}
-
-type convoySummaryJSON struct {
-	ID       string             `json:"id"`
-	Title    string             `json:"title"`
-	Status   string             `json:"status"`
-	Progress convoyProgressJSON `json:"progress"`
-	Owned    bool               `json:"owned"`
-	Fields   convoyFieldsJSON   `json:"fields,omitempty"`
-	ChildIDs []string           `json:"child_ids,omitempty"`
-}
-
-type convoyListSummaryJSON struct {
-	Total int `json:"total"`
-}
-
-type convoyListResultJSON struct {
-	SchemaVersion string                `json:"schema_version"`
-	Convoys       []convoySummaryJSON   `json:"convoys"`
-	Summary       convoyListSummaryJSON `json:"summary"`
-}
-
-type convoyChildJSON struct {
-	ID            string `json:"id"`
-	Title         string `json:"title"`
-	Status        string `json:"status"`
-	Type          string `json:"type"`
-	Assignee      string `json:"assignee,omitempty"`
-	DanglingTrack bool   `json:"dangling_track,omitempty"`
-}
-
-type convoyDetailJSON struct {
-	ID     string           `json:"id"`
-	Title  string           `json:"title"`
-	Status string           `json:"status"`
-	Owned  bool             `json:"owned"`
-	Fields convoyFieldsJSON `json:"fields,omitempty"`
-	Labels []string         `json:"labels,omitempty"`
-}
-
-type convoyStatusResultJSON struct {
-	SchemaVersion string             `json:"schema_version"`
-	Convoy        convoyDetailJSON   `json:"convoy"`
-	Progress      convoyProgressJSON `json:"progress"`
-	Children      []convoyChildJSON  `json:"children"`
-}
-
 func collectOpenConvoys(stores []convoyStoreView) ([]convoyWithStore, error) {
 	convoys := make([]convoyWithStore, 0)
 	for _, candidate := range stores {
@@ -520,31 +415,6 @@ func collectOpenConvoys(stores []convoyStoreView) ([]convoyWithStore, error) {
 		return convoys[i].bead.ID < convoys[j].bead.ID
 	})
 	return convoys, nil
-}
-
-func convoyProgressFromChildren(children []beads.Bead) convoyProgressJSON {
-	progress := convoyProgressJSON{Total: len(children)}
-	for _, ch := range children {
-		if convoycore.IsTerminalStatus(ch.Status) {
-			progress.Closed++
-		}
-		if convoycore.IsUnresolvedTrackedItem(ch) {
-			progress.DanglingTracks++
-		}
-	}
-	return progress
-}
-
-func formatConvoyProgress(progress convoyProgressJSON) string {
-	text := fmt.Sprintf("%d/%d closed", progress.Closed, progress.Total)
-	if progress.DanglingTracks > 0 {
-		suffix := "tracks"
-		if progress.DanglingTracks == 1 {
-			suffix = "track"
-		}
-		text += fmt.Sprintf(" (%d dangling %s)", progress.DanglingTracks, suffix)
-	}
-	return text
 }
 
 func openConvoyStoreByID(convoyID string, stderr io.Writer, cmdName string) (beads.Store, int) {
@@ -572,22 +442,21 @@ func openConvoyStoreByID(convoyID string, stderr io.Writer, cmdName string) (bea
 
 // doConvoyList lists open convoys with progress counts.
 func doConvoyList(store beads.Store, stdout, stderr io.Writer) int {
-	return doConvoyListAcrossStores([]convoyStoreView{{store: store}}, false, stdout, stderr)
+	return doConvoyListAcrossStores([]convoyStoreView{{store: store}}, stdout, stderr)
 }
 
-func listConvoyChildren(store beads.Store, convoyID string, includeClosed bool) ([]beads.Bead, error) {
-	return convoycore.Members(store, convoyID, includeClosed)
+func listConvoyChildren(store beads.Store, parentID string, includeClosed bool) ([]beads.Bead, error) {
+	if includeClosed {
+		return store.Children(parentID, beads.IncludeClosed)
+	}
+	return store.Children(parentID)
 }
 
-func doConvoyListAcrossStores(stores []convoyStoreView, jsonOut bool, stdout, stderr io.Writer) int {
+func doConvoyListAcrossStores(stores []convoyStoreView, stdout, stderr io.Writer) int {
 	convoys, err := collectOpenConvoys(stores)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc convoy list: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
-	}
-
-	if jsonOut {
-		return writeConvoyListJSON(convoys, stdout, stderr)
 	}
 
 	if len(convoys) == 0 {
@@ -603,64 +472,20 @@ func doConvoyListAcrossStores(stores []convoyStoreView, jsonOut bool, stdout, st
 			fmt.Fprintf(stderr, "gc convoy list: children of %s: %v\n", c.bead.ID, err) //nolint:errcheck // best-effort stderr
 			return 1
 		}
-		progress := convoyProgressFromChildren(children)
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", c.bead.ID, c.bead.Title, formatConvoyProgress(progress)) //nolint:errcheck // best-effort stdout
+		closed := 0
+		for _, ch := range children {
+			if ch.Status == "closed" {
+				closed++
+			}
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%d/%d closed\n", c.bead.ID, c.bead.Title, closed, len(children)) //nolint:errcheck // best-effort stdout
 	}
 	tw.Flush() //nolint:errcheck // best-effort stdout
 	return 0
 }
 
-func writeConvoyListJSON(convoys []convoyWithStore, stdout, stderr io.Writer) int {
-	items := make([]convoySummaryJSON, 0, len(convoys))
-	for _, c := range convoys {
-		children, err := listConvoyChildren(c.store, c.bead.ID, true)
-		if err != nil {
-			fmt.Fprintf(stderr, "gc convoy list: children of %s: %v\n", c.bead.ID, err) //nolint:errcheck // best-effort stderr
-			return 1
-		}
-		item := convoySummaryFromBead(c.bead, children)
-		items = append(items, item)
-	}
-	if err := writeCLIJSONLine(stdout, convoyListResultJSON{
-		SchemaVersion: "1",
-		Convoys:       items,
-		Summary:       convoyListSummaryJSON{Total: len(items)},
-	}); err != nil {
-		fmt.Fprintf(stderr, "gc convoy list: writing JSON: %v\n", err) //nolint:errcheck // best-effort stderr
-		return 1
-	}
-	return 0
-}
-
-func convoySummaryFromBead(convoy beads.Bead, children []beads.Bead) convoySummaryJSON {
-	childIDs := make([]string, 0, len(children))
-	for _, ch := range children {
-		childIDs = append(childIDs, ch.ID)
-	}
-	return convoySummaryJSON{
-		ID:       convoy.ID,
-		Title:    convoy.Title,
-		Status:   convoy.Status,
-		Progress: convoyProgressFromChildren(children),
-		Owned:    hasLabel(convoy.Labels, "owned"),
-		Fields:   convoyFieldsFromBead(convoy),
-		ChildIDs: childIDs,
-	}
-}
-
-func convoyFieldsFromBead(convoy beads.Bead) convoyFieldsJSON {
-	fields := getConvoyFields(convoy)
-	return convoyFieldsJSON{
-		Owner:  fields.Owner,
-		Notify: fields.Notify,
-		Merge:  fields.Merge,
-		Target: fields.Target,
-	}
-}
-
 func newConvoyStatusCmd(stdout, stderr io.Writer) *cobra.Command {
-	var jsonOut bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "status <id>",
 		Short: "Show detailed convoy status",
 		Long: `Show detailed status of a convoy and all its child issues.
@@ -669,20 +494,18 @@ Displays the convoy's ID, title, status, completion progress, and a
 table of all child issues with their status and assignee.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
-			if cmdConvoyStatus(args, jsonOut, stdout, stderr) != 0 {
+			if cmdConvoyStatus(args, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSONL result")
-	return cmd
 }
 
 // cmdConvoyStatus is the CLI entry point for convoy status.
-func cmdConvoyStatus(args []string, jsonOut bool, stdout, stderr io.Writer) int {
+func cmdConvoyStatus(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
-		return doConvoyStatusWithJSON(nil, args, jsonOut, stdout, stderr)
+		return doConvoyStatus(nil, args, stdout, stderr)
 	}
 	convoyID := ""
 	if len(args) > 0 {
@@ -692,15 +515,11 @@ func cmdConvoyStatus(args []string, jsonOut bool, stdout, stderr io.Writer) int 
 	if store == nil {
 		return code
 	}
-	return doConvoyStatusWithJSON(store, args, jsonOut, stdout, stderr)
+	return doConvoyStatus(store, args, stdout, stderr)
 }
 
 // doConvoyStatus shows detailed status of a convoy and its children.
 func doConvoyStatus(store beads.Store, args []string, stdout, stderr io.Writer) int {
-	return doConvoyStatusWithJSON(store, args, false, stdout, stderr)
-}
-
-func doConvoyStatusWithJSON(store beads.Store, args []string, jsonOut bool, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
 		fmt.Fprintln(stderr, "gc convoy status: missing convoy ID") //nolint:errcheck // best-effort stderr
 		return 1
@@ -723,17 +542,18 @@ func doConvoyStatusWithJSON(store beads.Store, args []string, jsonOut bool, stdo
 		return 1
 	}
 
-	progress := convoyProgressFromChildren(children)
-
-	if jsonOut {
-		return writeConvoyStatusJSON(convoy, children, progress, stdout, stderr)
+	closed := 0
+	for _, ch := range children {
+		if ch.Status == "closed" {
+			closed++
+		}
 	}
 
 	w := func(s string) { fmt.Fprintln(stdout, s) } //nolint:errcheck // best-effort stdout
 	w(fmt.Sprintf("Convoy:   %s", convoy.ID))
 	w(fmt.Sprintf("Title:    %s", convoy.Title))
 	w(fmt.Sprintf("Status:   %s", convoy.Status))
-	w(fmt.Sprintf("Progress: %s", formatConvoyProgress(progress)))
+	w(fmt.Sprintf("Progress: %d/%d closed", closed, len(children)))
 	fields := getConvoyFields(convoy)
 	if hasLabel(convoy.Labels, "owned") {
 		w("Lifecycle: owned")
@@ -767,40 +587,8 @@ func doConvoyStatusWithJSON(store beads.Store, args []string, jsonOut bool, stdo
 	return 0
 }
 
-func writeConvoyStatusJSON(convoy beads.Bead, children []beads.Bead, progress convoyProgressJSON, stdout, stderr io.Writer) int {
-	childItems := make([]convoyChildJSON, 0, len(children))
-	for _, ch := range children {
-		childItems = append(childItems, convoyChildJSON{
-			ID:            ch.ID,
-			Title:         ch.Title,
-			Status:        ch.Status,
-			Type:          ch.Type,
-			Assignee:      ch.Assignee,
-			DanglingTrack: convoycore.IsUnresolvedTrackedItem(ch),
-		})
-	}
-	if err := writeCLIJSONLine(stdout, convoyStatusResultJSON{
-		SchemaVersion: "1",
-		Convoy: convoyDetailJSON{
-			ID:     convoy.ID,
-			Title:  convoy.Title,
-			Status: convoy.Status,
-			Owned:  hasLabel(convoy.Labels, "owned"),
-			Fields: convoyFieldsFromBead(convoy),
-			Labels: convoy.Labels,
-		},
-		Progress: progress,
-		Children: childItems,
-	}); err != nil {
-		fmt.Fprintf(stderr, "gc convoy status: writing JSON: %v\n", err) //nolint:errcheck // best-effort stderr
-		return 1
-	}
-	return 0
-}
-
 func newConvoyTargetCmd(stdout, stderr io.Writer) *cobra.Command {
-	var jsonOut bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "target <convoy-id> <branch>",
 		Short: "Set the target branch on a convoy",
 		Long: `Set the target branch metadata on a convoy.
@@ -809,29 +597,17 @@ Child work beads can inherit this target branch when slung with
 feature-branch formulas such as mol-polecat-work.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
-			code := 0
-			if jsonOut {
-				code = cmdConvoyTargetJSON(args, true, stdout, stderr)
-			} else {
-				code = cmdConvoyTarget(args, stdout, stderr)
-			}
-			if code != 0 {
+			if cmdConvoyTarget(args, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSONL result")
-	return cmd
 }
 
 func cmdConvoyTarget(args []string, stdout, stderr io.Writer) int {
-	return cmdConvoyTargetJSON(args, false, stdout, stderr)
-}
-
-func cmdConvoyTargetJSON(args []string, jsonOut bool, stdout, stderr io.Writer) int {
 	if len(args) < 2 {
-		return doConvoyTargetJSON(nil, args, jsonOut, stdout, stderr)
+		return doConvoyTarget(nil, args, stdout, stderr)
 	}
 	convoyID := ""
 	if len(args) > 0 {
@@ -841,14 +617,10 @@ func cmdConvoyTargetJSON(args []string, jsonOut bool, stdout, stderr io.Writer) 
 	if store == nil {
 		return code
 	}
-	return doConvoyTargetJSON(store, args, jsonOut, stdout, stderr)
+	return doConvoyTarget(store, args, stdout, stderr)
 }
 
 func doConvoyTarget(store beads.Store, args []string, stdout, stderr io.Writer) int {
-	return doConvoyTargetJSON(store, args, false, stdout, stderr)
-}
-
-func doConvoyTargetJSON(store beads.Store, args []string, jsonOut bool, stdout, stderr io.Writer) int {
 	if len(args) < 2 {
 		fmt.Fprintln(stderr, "gc convoy target: missing convoy ID or branch") //nolint:errcheck // best-effort stderr
 		return 1
@@ -874,48 +646,32 @@ func doConvoyTargetJSON(store beads.Store, args []string, jsonOut bool, stdout, 
 		return 1
 	}
 
-	if jsonOut {
-		return writeCLIJSONLineOrExit(stdout, stderr, "gc convoy target", convoyActionResult{SchemaVersion: "1", OK: true, Command: "convoy.target", Action: "target", ConvoyID: id, Target: target})
-	}
 	fmt.Fprintf(stdout, "Set target of convoy %s to %s\n", id, target) //nolint:errcheck // best-effort stdout
 	return 0
 }
 
 func newConvoyAddCmd(stdout, stderr io.Writer) *cobra.Command {
-	var jsonOut bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "add <convoy-id> <issue-id>",
 		Short: "Add an issue to a convoy",
 		Long: `Link an existing issue bead to a convoy.
 
-Adds a tracks dependency from the convoy to the issue, making it appear
-in the convoy's progress tracking without changing the issue parent.`,
+Sets the issue's parent to the convoy ID, making it appear in the
+convoy's progress tracking.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
-			code := 0
-			if jsonOut {
-				code = cmdConvoyAddJSON(args, true, stdout, stderr)
-			} else {
-				code = cmdConvoyAdd(args, stdout, stderr)
-			}
-			if code != 0 {
+			if cmdConvoyAdd(args, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSONL result")
-	return cmd
 }
 
 // cmdConvoyAdd is the CLI entry point for adding an issue to a convoy.
 func cmdConvoyAdd(args []string, stdout, stderr io.Writer) int {
-	return cmdConvoyAddJSON(args, false, stdout, stderr)
-}
-
-func cmdConvoyAddJSON(args []string, jsonOut bool, stdout, stderr io.Writer) int {
 	if len(args) < 2 {
-		return doConvoyAddJSON(nil, args, jsonOut, stdout, stderr)
+		return doConvoyAdd(nil, args, stdout, stderr)
 	}
 	convoyID := ""
 	if len(args) > 0 {
@@ -925,15 +681,11 @@ func cmdConvoyAddJSON(args []string, jsonOut bool, stdout, stderr io.Writer) int
 	if store == nil {
 		return code
 	}
-	return doConvoyAddJSON(store, args, jsonOut, stdout, stderr)
+	return doConvoyAdd(store, args, stdout, stderr)
 }
 
-// doConvoyAdd adds an issue to a convoy by recording a tracks dependency.
+// doConvoyAdd adds an issue to a convoy by setting the issue's ParentID.
 func doConvoyAdd(store beads.Store, args []string, stdout, stderr io.Writer) int {
-	return doConvoyAddJSON(store, args, false, stdout, stderr)
-}
-
-func doConvoyAddJSON(store beads.Store, args []string, jsonOut bool, stdout, stderr io.Writer) int {
 	if len(args) < 2 {
 		fmt.Fprintln(stderr, "gc convoy add: usage: gc convoy add <convoy-id> <issue-id>") //nolint:errcheck // best-effort stderr
 		return 1
@@ -956,21 +708,17 @@ func doConvoyAddJSON(store beads.Store, args []string, jsonOut bool, stdout, std
 		return 1
 	}
 
-	if err := convoycore.TrackItem(store, convoyID, issueID); err != nil {
+	if err := store.Update(issueID, beads.UpdateOpts{ParentID: &convoyID}); err != nil {
 		fmt.Fprintf(stderr, "gc convoy add: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
 
-	if jsonOut {
-		return writeCLIJSONLineOrExit(stdout, stderr, "gc convoy add", convoyActionResult{SchemaVersion: "1", OK: true, Command: "convoy.add", Action: "add", ConvoyID: convoyID, IssueIDs: []string{issueID}})
-	}
 	fmt.Fprintf(stdout, "Added %s to convoy %s\n", issueID, convoyID) //nolint:errcheck // best-effort stdout
 	return 0
 }
 
 func newConvoyCloseCmd(stdout, stderr io.Writer) *cobra.Command {
-	var jsonOut bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "close <id>",
 		Short: "Close a convoy",
 		Long: `Close a convoy bead manually.
@@ -979,30 +727,18 @@ Marks the convoy as closed regardless of child issue status. Use
 "gc convoy check" to auto-close convoys where all issues are resolved.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
-			code := 0
-			if jsonOut {
-				code = cmdConvoyCloseJSON(args, true, stdout, stderr)
-			} else {
-				code = cmdConvoyClose(args, stdout, stderr)
-			}
-			if code != 0 {
+			if cmdConvoyClose(args, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSONL result")
-	return cmd
 }
 
 // cmdConvoyClose is the CLI entry point for closing a convoy.
 func cmdConvoyClose(args []string, stdout, stderr io.Writer) int {
-	return cmdConvoyCloseJSON(args, false, stdout, stderr)
-}
-
-func cmdConvoyCloseJSON(args []string, jsonOut bool, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
-		return doConvoyCloseJSON(nil, events.Discard, args, jsonOut, stdout, stderr)
+		return doConvoyClose(nil, events.Discard, args, stdout, stderr)
 	}
 	convoyID := ""
 	if len(args) > 0 {
@@ -1013,15 +749,11 @@ func cmdConvoyCloseJSON(args []string, jsonOut bool, stdout, stderr io.Writer) i
 		return code
 	}
 	rec := openCityRecorder(stderr)
-	return doConvoyCloseJSON(store, rec, args, jsonOut, stdout, stderr)
+	return doConvoyClose(store, rec, args, stdout, stderr)
 }
 
 // doConvoyClose closes a convoy bead.
 func doConvoyClose(store beads.Store, rec events.Recorder, args []string, stdout, stderr io.Writer) int {
-	return doConvoyCloseJSON(store, rec, args, false, stdout, stderr)
-}
-
-func doConvoyCloseJSON(store beads.Store, rec events.Recorder, args []string, jsonOut bool, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
 		fmt.Fprintln(stderr, "gc convoy close: missing convoy ID") //nolint:errcheck // best-effort stderr
 		return 1
@@ -1038,7 +770,7 @@ func doConvoyCloseJSON(store beads.Store, rec events.Recorder, args []string, js
 		return 1
 	}
 
-	if err := closeConvoyWithReason(store, id, convoyManualCloseReason); err != nil {
+	if err := store.Close(id); err != nil {
 		fmt.Fprintf(stderr, "gc convoy close: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
@@ -1049,16 +781,12 @@ func doConvoyCloseJSON(store beads.Store, rec events.Recorder, args []string, js
 		Subject: id,
 	})
 
-	if jsonOut {
-		return writeCLIJSONLineOrExit(stdout, stderr, "gc convoy close", convoyActionResult{SchemaVersion: "1", OK: true, Command: "convoy.close", Action: "close", ConvoyID: id})
-	}
 	fmt.Fprintf(stdout, "Closed convoy %s\n", id) //nolint:errcheck // best-effort stdout
 	return 0
 }
 
 func newConvoyCheckCmd(stdout, stderr io.Writer) *cobra.Command {
-	var jsonOut bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "check",
 		Short: "Auto-close convoys where all issues are closed",
 		Long: `Scan open convoys and auto-close any where all child issues are resolved.
@@ -1067,34 +795,22 @@ Evaluates each open convoy's children. If all children have status
 "closed", the convoy is automatically closed and an event is recorded.`,
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			code := 0
-			if jsonOut {
-				code = cmdConvoyCheckJSON(true, stdout, stderr)
-			} else {
-				code = cmdConvoyCheck(stdout, stderr)
-			}
-			if code != 0 {
+			if cmdConvoyCheck(stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSONL result")
-	return cmd
 }
 
 // cmdConvoyCheck is the CLI entry point for auto-closing completed convoys.
 func cmdConvoyCheck(stdout, stderr io.Writer) int {
-	return cmdConvoyCheckJSON(false, stdout, stderr)
-}
-
-func cmdConvoyCheckJSON(jsonOut bool, stdout, stderr io.Writer) int {
 	stores, code := openAllConvoyStores(stderr, "gc convoy check")
 	if stores == nil {
 		return code
 	}
 	rec := openCityRecorder(stderr)
-	return doConvoyCheckAcrossStoresJSON(stores, rec, jsonOut, stdout, stderr)
+	return doConvoyCheckAcrossStores(stores, rec, stdout, stderr)
 }
 
 // hasLabel reports whether the labels slice contains the target label.
@@ -1107,42 +823,6 @@ func hasLabel(labels []string, target string) bool { //nolint:unparam // general
 	return false
 }
 
-// convoyAutocloseReason is the close_reason metadata value stamped on
-// convoys auto-closed because all of their children are closed. The
-// 38-character form satisfies bd's validation.on-close=error length
-// requirement while remaining a meaningful audit-trail entry.
-const convoyAutocloseReason = "convoy autoclose: all children closed"
-
-const convoyManualCloseReason = "convoy close: requested by operator"
-
-const convoyLandCloseReason = "convoy land: completed owned convoy"
-
-type explicitReasonCloser interface {
-	CloseWithReason(id, reason string) error
-}
-
-// closeConvoyWithReason stamps a close_reason metadata key on the
-// convoy bead before closing it. BdStore can receive the same reason
-// directly as `bd close --reason ...`, which lets cities
-// running with validation.on-close=error accept system-driven
-// auto-closes (whose default reason "Closed" would otherwise be
-// rejected as terse). For stores whose Close path does not consult
-// the metadata, the field still serves as a permanent audit trail of
-// why the convoy was closed.
-func closeConvoyWithReason(store beads.Store, id, reason string) error {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		return store.Close(id)
-	}
-	if err := store.SetMetadata(id, "close_reason", reason); err != nil {
-		return fmt.Errorf("stamping convoy %s close reason: %w", id, err)
-	}
-	if closer, ok := store.(explicitReasonCloser); ok {
-		return closer.CloseWithReason(id, reason)
-	}
-	return store.Close(id)
-}
-
 // doConvoyCheck auto-closes convoys where all children are closed.
 // Convoys with the "owned" label are skipped — their lifecycle is
 // managed manually.
@@ -1151,10 +831,6 @@ func doConvoyCheck(store beads.Store, rec events.Recorder, stdout, stderr io.Wri
 }
 
 func doConvoyCheckAcrossStores(stores []convoyStoreView, rec events.Recorder, stdout, stderr io.Writer) int {
-	return doConvoyCheckAcrossStoresJSON(stores, rec, false, stdout, stderr)
-}
-
-func doConvoyCheckAcrossStoresJSON(stores []convoyStoreView, rec events.Recorder, jsonOut bool, stdout, stderr io.Writer) int {
 	convoys, err := collectOpenConvoys(stores)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc convoy check: %v\n", err) //nolint:errcheck // best-effort stderr
@@ -1176,13 +852,13 @@ func doConvoyCheckAcrossStoresJSON(stores []convoyStoreView, rec events.Recorder
 		}
 		allClosed := true
 		for _, ch := range children {
-			if !convoycore.IsTerminalStatus(ch.Status) {
+			if ch.Status != "closed" {
 				allClosed = false
 				break
 			}
 		}
 		if allClosed {
-			if err := closeConvoyWithReason(item.store, item.bead.ID, convoyAutocloseReason); err != nil {
+			if err := item.store.Close(item.bead.ID); err != nil {
 				fmt.Fprintf(stderr, "gc convoy check: closing %s: %v\n", item.bead.ID, err) //nolint:errcheck // best-effort stderr
 				return 1
 			}
@@ -1191,27 +867,17 @@ func doConvoyCheckAcrossStoresJSON(stores []convoyStoreView, rec events.Recorder
 				Actor:   eventActor(),
 				Subject: item.bead.ID,
 			})
-			if !jsonOut {
-				fmt.Fprintf(stdout, "Auto-closed convoy %s %q\n", item.bead.ID, item.bead.Title) //nolint:errcheck // best-effort stdout
-			}
+			fmt.Fprintf(stdout, "Auto-closed convoy %s %q\n", item.bead.ID, item.bead.Title) //nolint:errcheck // best-effort stdout
 			closed++
 		}
 	}
 
-	if jsonOut {
-		if err := writeCLIJSONLine(stdout, convoyActionResult{SchemaVersion: "1", OK: true, Command: "convoy.check", Action: "check", Closed: intRef(closed)}); err != nil {
-			fmt.Fprintf(stderr, "gc convoy check: writing JSON result: %v\n", err) //nolint:errcheck // best-effort stderr
-			return 1
-		}
-	} else {
-		fmt.Fprintf(stdout, "%d convoy(s) auto-closed\n", closed) //nolint:errcheck // best-effort stdout
-	}
+	fmt.Fprintf(stdout, "%d convoy(s) auto-closed\n", closed) //nolint:errcheck // best-effort stdout
 	return 0
 }
 
 func newConvoyStrandedCmd(stdout, stderr io.Writer) *cobra.Command {
-	var jsonOut bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "stranded",
 		Short: "Find convoys with ready work but no workers",
 		Long: `Find open issues in convoys that have no assignee.
@@ -1220,33 +886,21 @@ Lists issues that are ready for work but not claimed by any agent.
 Useful for identifying bottlenecks in convoy processing.`,
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			code := 0
-			if jsonOut {
-				code = cmdConvoyStrandedJSON(true, stdout, stderr)
-			} else {
-				code = cmdConvoyStranded(stdout, stderr)
-			}
-			if code != 0 {
+			if cmdConvoyStranded(stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSONL result")
-	return cmd
 }
 
 // cmdConvoyStranded is the CLI entry point for finding stranded convoys.
 func cmdConvoyStranded(stdout, stderr io.Writer) int {
-	return cmdConvoyStrandedJSON(false, stdout, stderr)
-}
-
-func cmdConvoyStrandedJSON(jsonOut bool, stdout, stderr io.Writer) int {
 	stores, code := openAllConvoyStores(stderr, "gc convoy stranded")
 	if stores == nil {
 		return code
 	}
-	return doConvoyStrandedAcrossStoresJSON(stores, jsonOut, stdout, stderr)
+	return doConvoyStrandedAcrossStores(stores, stdout, stderr)
 }
 
 // doConvoyStranded finds open convoys with open children that have no assignee.
@@ -1255,10 +909,6 @@ func doConvoyStranded(store beads.Store, stdout, stderr io.Writer) int {
 }
 
 func doConvoyStrandedAcrossStores(stores []convoyStoreView, stdout, stderr io.Writer) int {
-	return doConvoyStrandedAcrossStoresJSON(stores, false, stdout, stderr)
-}
-
-func doConvoyStrandedAcrossStoresJSON(stores []convoyStoreView, jsonOut bool, stdout, stderr io.Writer) int {
 	convoys, err := collectOpenConvoys(stores)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc convoy stranded: %v\n", err) //nolint:errcheck // best-effort stderr
@@ -1278,24 +928,15 @@ func doConvoyStrandedAcrossStoresJSON(stores []convoyStoreView, jsonOut bool, st
 			return 1
 		}
 		for _, ch := range children {
-			if convoycore.IsUnresolvedTrackedItem(ch) {
-				continue
-			}
-			if !convoycore.IsTerminalStatus(ch.Status) && ch.Assignee == "" {
+			if ch.Status != "closed" && ch.Assignee == "" {
 				items = append(items, strandedItem{convoyID: item.bead.ID, issue: ch})
 			}
 		}
 	}
 
 	if len(items) == 0 {
-		if jsonOut {
-			return writeCLIJSONLineOrExit(stdout, stderr, "gc convoy stranded", convoyActionResult{SchemaVersion: "1", OK: true, Command: "convoy.stranded", Action: "stranded", Stranded: intRef(0)})
-		}
 		fmt.Fprintln(stdout, "No stranded work") //nolint:errcheck // best-effort stdout
 		return 0
-	}
-	if jsonOut {
-		return writeCLIJSONLineOrExit(stdout, stderr, "gc convoy stranded", convoyActionResult{SchemaVersion: "1", OK: true, Command: "convoy.stranded", Action: "stranded", Stranded: intRef(len(items))})
 	}
 
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
@@ -1310,7 +951,7 @@ func doConvoyStrandedAcrossStoresJSON(stores []convoyStoreView, jsonOut bool, st
 // --- gc convoy land ---
 
 func newConvoyLandCmd(stdout, stderr io.Writer) *cobra.Command {
-	var force, dryRun, jsonOut bool
+	var force, dryRun bool
 	cmd := &cobra.Command{
 		Use:   "land <convoy-id>",
 		Short: "Land an owned convoy (terminate + cleanup)",
@@ -1328,13 +969,7 @@ via "gc sling --owned". It verifies all children are closed (or uses
 				Force:  force,
 				DryRun: dryRun,
 			}
-			code := 0
-			if jsonOut {
-				code = cmdConvoyLandJSON(args, opts, true, stdout, stderr)
-			} else {
-				code = cmdConvoyLand(args, opts, stdout, stderr)
-			}
-			if code != 0 {
+			if cmdConvoyLand(args, opts, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
@@ -1342,7 +977,6 @@ via "gc sling --owned". It verifies all children are closed (or uses
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "land even with open children")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview what would happen")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSONL result")
 	return cmd
 }
 
@@ -1354,12 +988,8 @@ type landOpts struct {
 
 // cmdConvoyLand is the CLI entry point for landing a convoy.
 func cmdConvoyLand(args []string, opts landOpts, stdout, stderr io.Writer) int {
-	return cmdConvoyLandJSON(args, opts, false, stdout, stderr)
-}
-
-func cmdConvoyLandJSON(args []string, opts landOpts, jsonOut bool, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
-		return doConvoyLandJSON(nil, events.Discard, args, opts, jsonOut, stdout, stderr)
+		return doConvoyLand(nil, events.Discard, args, opts, stdout, stderr)
 	}
 	convoyID := ""
 	if len(args) > 0 {
@@ -1370,16 +1000,12 @@ func cmdConvoyLandJSON(args []string, opts landOpts, jsonOut bool, stdout, stder
 		return code
 	}
 	rec := openCityRecorder(stderr)
-	return doConvoyLandJSON(store, rec, args, opts, jsonOut, stdout, stderr)
+	return doConvoyLand(store, rec, args, opts, stdout, stderr)
 }
 
 // doConvoyLand verifies an owned convoy's children are closed, optionally
 // cleans up worktrees, closes the convoy bead, and records an event.
 func doConvoyLand(store beads.Store, rec events.Recorder, args []string, opts landOpts, stdout, stderr io.Writer) int {
-	return doConvoyLandJSON(store, rec, args, opts, false, stdout, stderr)
-}
-
-func doConvoyLandJSON(store beads.Store, rec events.Recorder, args []string, opts landOpts, jsonOut bool, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
 		fmt.Fprintln(stderr, "gc convoy land: missing convoy ID") //nolint:errcheck // best-effort stderr
 		return 1
@@ -1401,10 +1027,7 @@ func doConvoyLandJSON(store beads.Store, rec events.Recorder, args []string, opt
 	}
 
 	// Already closed → idempotent success.
-	if convoycore.IsTerminalStatus(convoy.Status) {
-		if jsonOut {
-			return writeCLIJSONLineOrExit(stdout, stderr, "gc convoy land", convoyActionResult{SchemaVersion: "1", OK: true, Command: "convoy.land", Action: "land", ConvoyID: convoyID, Title: convoy.Title, AlreadyClosed: true, DryRun: opts.DryRun, Forced: opts.Force})
-		}
+	if convoy.Status == "closed" {
 		fmt.Fprintf(stdout, "Convoy %s already closed\n", convoyID) //nolint:errcheck // best-effort stdout
 		return 0
 	}
@@ -1418,7 +1041,7 @@ func doConvoyLandJSON(store beads.Store, rec events.Recorder, args []string, opt
 
 	var openChildren []beads.Bead
 	for _, ch := range children {
-		if !convoycore.IsTerminalStatus(ch.Status) {
+		if ch.Status != "closed" {
 			openChildren = append(openChildren, ch)
 		}
 	}
@@ -1434,16 +1057,13 @@ func doConvoyLandJSON(store beads.Store, rec events.Recorder, args []string, opt
 
 	// Dry-run: preview what would happen.
 	if opts.DryRun {
-		if jsonOut {
-			return writeCLIJSONLineOrExit(stdout, stderr, "gc convoy land", convoyActionResult{SchemaVersion: "1", OK: true, Command: "convoy.land", Action: "land", ConvoyID: convoyID, Title: convoy.Title, TotalChildren: intRef(len(children)), OpenChildren: intRef(len(openChildren)), DryRun: true, Forced: opts.Force})
-		}
 		fmt.Fprintf(stdout, "Would land convoy %s %q\n", convoyID, convoy.Title)                 //nolint:errcheck // best-effort stdout
 		fmt.Fprintf(stdout, "  Children: %d total, %d open\n", len(children), len(openChildren)) //nolint:errcheck // best-effort stdout
 		return 0
 	}
 
 	// Close the convoy.
-	if err := closeConvoyWithReason(store, convoyID, convoyLandCloseReason); err != nil {
+	if err := store.Close(convoyID); err != nil {
 		fmt.Fprintf(stderr, "gc convoy land: closing convoy: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
@@ -1456,12 +1076,9 @@ func doConvoyLandJSON(store beads.Store, rec events.Recorder, args []string, opt
 
 	// Notification.
 	fields := getConvoyFields(convoy)
-	switch {
-	case jsonOut:
-		return writeCLIJSONLineOrExit(stdout, stderr, "gc convoy land", convoyActionResult{SchemaVersion: "1", OK: true, Command: "convoy.land", Action: "land", ConvoyID: convoyID, Title: convoy.Title, TotalChildren: intRef(len(children)), OpenChildren: intRef(len(openChildren)), Forced: opts.Force, Notify: fields.Notify})
-	case fields.Notify != "":
+	if fields.Notify != "" {
 		fmt.Fprintf(stdout, "Landed convoy %s %q (notify: %s)\n", convoyID, convoy.Title, fields.Notify) //nolint:errcheck // best-effort stdout
-	default:
+	} else {
 		fmt.Fprintf(stdout, "Landed convoy %s %q\n", convoyID, convoy.Title) //nolint:errcheck // best-effort stdout
 	}
 	return 0
@@ -1472,7 +1089,7 @@ func doConvoyLandJSON(store beads.Store, rec events.Recorder, args []string, opt
 func newConvoyAutocloseCmd(stdout, stderr io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:    "autoclose <bead-id>",
-		Short:  "Auto-close completed convoys for a closed bead",
+		Short:  "Auto-close parent convoy if all siblings are closed",
 		Hidden: true,
 		Args:   cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
@@ -1491,7 +1108,7 @@ func doConvoyAutoclose(beadID string, stdout, stderr io.Writer) {
 		return
 	}
 	storeRoot := convoyAutocloseStoreRoot(cwd)
-	cityPath := autocloseCityPathForStoreRoot(storeRoot)
+	cityPath := cityForStoreDir(storeRoot)
 	store, err := openStoreAtForCity(storeRoot, cityPath)
 	if err != nil {
 		return
@@ -1516,73 +1133,43 @@ func convoyAutocloseStoreRoot(cwd string) string {
 	return cwd
 }
 
-// autocloseCityPathForStoreRoot resolves the runtime city for bd hook cleanup.
-// The hook-projected store root identifies the bead that just closed, so prefer
-// filesystem discovery from that root over an inherited GC_CITY from the
-// supervising process.
-func autocloseCityPathForStoreRoot(storeRoot string) string {
-	if cityPath, err := findCity(storeRoot); err == nil {
-		return cityPath
-	}
-	return cityForStoreDir(storeRoot)
-}
-
-// doConvoyAutocloseWith checks whether the closed bead's legacy parent or
-// tracks dependents are convoys with all children closed, and if so closes
-// them. All errors are silently swallowed — this is best-effort
-// infrastructure called from a bd hook script.
+// doConvoyAutocloseWith checks whether the closed bead's parent is a
+// convoy with all children closed, and if so closes it. All errors are
+// silently swallowed — this is best-effort infrastructure called from
+// a bd hook script.
 func doConvoyAutocloseWith(store beads.Store, rec events.Recorder, beadID string, stdout, _ io.Writer) {
 	bead, err := store.Get(beadID)
-	if err != nil {
+	if err != nil || bead.ParentID == "" {
 		return
 	}
 
-	seen := make(map[string]bool)
-	if bead.ParentID != "" {
-		parent, err := store.Get(bead.ParentID)
-		if err == nil {
-			seen[parent.ID] = true
-			autocloseConvoyIfComplete(store, rec, parent, stdout)
-		}
-	}
-
-	trackingConvoys, err := convoycore.TrackingConvoysForItem(store, beadID)
-	if err != nil {
+	parent, err := store.Get(bead.ParentID)
+	if err != nil || parent.Type != "convoy" || parent.Status == "closed" {
 		return
 	}
-	for _, convoy := range trackingConvoys {
-		if seen[convoy.ID] {
-			continue
-		}
-		seen[convoy.ID] = true
-		autocloseConvoyIfComplete(store, rec, convoy, stdout)
-	}
-}
-
-func autocloseConvoyIfComplete(store beads.Store, rec events.Recorder, convoy beads.Bead, stdout io.Writer) {
-	if convoy.Type != "convoy" || convoycore.IsTerminalStatus(convoy.Status) || hasLabel(convoy.Labels, "owned") {
+	if hasLabel(parent.Labels, "owned") {
 		return
 	}
 
-	children, err := listConvoyChildren(store, convoy.ID, true)
+	children, err := listConvoyChildren(store, parent.ID, true)
 	if err != nil || len(children) == 0 {
 		return
 	}
 	for _, ch := range children {
-		if !convoycore.IsTerminalStatus(ch.Status) {
+		if ch.Status != "closed" {
 			return
 		}
 	}
 
-	if err := closeConvoyWithReason(store, convoy.ID, convoyAutocloseReason); err != nil {
+	if err := store.Close(parent.ID); err != nil {
 		return
 	}
 
 	rec.Record(events.Event{
 		Type:    events.ConvoyClosed,
 		Actor:   eventActor(),
-		Subject: convoy.ID,
+		Subject: parent.ID,
 	})
 
-	fmt.Fprintf(stdout, "Auto-closed convoy %s %q\n", convoy.ID, convoy.Title) //nolint:errcheck // best-effort stdout
+	fmt.Fprintf(stdout, "Auto-closed convoy %s %q\n", parent.ID, parent.Title) //nolint:errcheck // best-effort stdout
 }

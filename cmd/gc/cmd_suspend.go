@@ -15,8 +15,7 @@ import (
 
 // newSuspendCmd creates the "gc suspend [path]" command.
 func newSuspendCmd(stdout, stderr io.Writer) *cobra.Command {
-	var jsonOut bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "suspend [path]",
 		Short: "Suspend the city (all agents effectively suspended)",
 		Long: `Suspends the city by setting workspace.suspended = true in city.toml.
@@ -28,41 +27,36 @@ The reconciler won't spawn agents, gc hook/prime return empty.
 Use "gc resume" to restore.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			if cmdSuspend(args, jsonOut, stdout, stderr) != 0 {
+			if cmdSuspend(args, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSONL summary")
-	return cmd
 }
 
 // newResumeCmd creates the "gc resume [path]" command.
 func newResumeCmd(stdout, stderr io.Writer) *cobra.Command {
-	var jsonOut bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "resume [path]",
 		Short: "Resume a suspended city",
-		Long: `Resume a suspended city by clearing workspace.suspended in city.toml.
+		Long: `Resume a suspended city by setting workspace.suspended = false in city.toml.
 
 Restores normal operation: the reconciler will spawn agents again and
 gc hook/prime will return work. Use "gc agent resume" to resume
 individual agents, or "gc rig resume" for rigs.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			if cmdResume(args, jsonOut, stdout, stderr) != 0 {
+			if cmdResume(args, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSONL summary")
-	return cmd
 }
 
 // cmdSuspend is the CLI entry point for suspending the city.
-func cmdSuspend(args []string, jsonOut bool, stdout, stderr io.Writer) int {
+func cmdSuspend(args []string, stdout, stderr io.Writer) int {
 	cityPath, err := resolveSuspendDir(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc suspend: %v\n", err) //nolint:errcheck // best-effort stderr
@@ -71,7 +65,8 @@ func cmdSuspend(args []string, jsonOut bool, stdout, stderr io.Writer) int {
 	if c := apiClient(cityPath); c != nil {
 		err := c.SuspendCity()
 		if err == nil {
-			return writeCitySuspensionSuccess(stdout, stderr, cityPath, true, jsonOut)
+			fmt.Fprintf(stdout, "City suspended (%s)\n", cityPath) //nolint:errcheck // best-effort stdout
+			return 0
 		}
 		if !api.ShouldFallback(err) {
 			fmt.Fprintf(stderr, "gc suspend: %v\n", err) //nolint:errcheck // best-effort stderr
@@ -79,11 +74,11 @@ func cmdSuspend(args []string, jsonOut bool, stdout, stderr io.Writer) int {
 		}
 		// Connection error — fall through to direct mutation.
 	}
-	return doSuspendCity(fsys.OSFS{}, cityPath, true, jsonOut, stdout, stderr)
+	return doSuspendCity(fsys.OSFS{}, cityPath, true, stdout, stderr)
 }
 
 // cmdResume is the CLI entry point for resuming the city.
-func cmdResume(args []string, jsonOut bool, stdout, stderr io.Writer) int {
+func cmdResume(args []string, stdout, stderr io.Writer) int {
 	cityPath, err := resolveSuspendDir(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc resume: %v\n", err) //nolint:errcheck // best-effort stderr
@@ -92,7 +87,8 @@ func cmdResume(args []string, jsonOut bool, stdout, stderr io.Writer) int {
 	if c := apiClient(cityPath); c != nil {
 		err := c.ResumeCity()
 		if err == nil {
-			return writeCitySuspensionSuccess(stdout, stderr, cityPath, false, jsonOut)
+			fmt.Fprintf(stdout, "City resumed (%s)\n", cityPath) //nolint:errcheck // best-effort stdout
+			return 0
 		}
 		if !api.ShouldFallback(err) {
 			fmt.Fprintf(stderr, "gc resume: %v\n", err) //nolint:errcheck // best-effort stderr
@@ -100,7 +96,7 @@ func cmdResume(args []string, jsonOut bool, stdout, stderr io.Writer) int {
 		}
 		// Connection error — fall through to direct mutation.
 	}
-	return doSuspendCity(fsys.OSFS{}, cityPath, false, jsonOut, stdout, stderr)
+	return doSuspendCity(fsys.OSFS{}, cityPath, false, stdout, stderr)
 }
 
 // resolveSuspendDir resolves the city directory from args or the current city.
@@ -111,7 +107,7 @@ func resolveSuspendDir(args []string) (string, error) {
 // doSuspendCity sets or clears workspace.suspended in city.toml.
 // The flag inherits downward: when true, all agents are effectively
 // suspended via isAgentEffectivelySuspended and computeSuspendedNames.
-func doSuspendCity(fs fsys.FS, cityPath string, suspend bool, jsonOut bool, stdout, stderr io.Writer) int {
+func doSuspendCity(fs fsys.FS, cityPath string, suspend bool, stdout, stderr io.Writer) int {
 	tomlPath := filepath.Join(cityPath, "city.toml")
 	cmd := "gc suspend"
 	if !suspend {
@@ -136,35 +132,14 @@ func doSuspendCity(fs fsys.FS, cityPath string, suspend bool, jsonOut bool, stdo
 			Type:  events.CitySuspended,
 			Actor: eventActor(),
 		})
+		fmt.Fprintf(stdout, "City suspended (%s)\n", cityPath) //nolint:errcheck // best-effort stdout
 	} else {
 		rec.Record(events.Event{
 			Type:  events.CityResumed,
 			Actor: eventActor(),
 		})
+		fmt.Fprintf(stdout, "City resumed (%s)\n", cityPath) //nolint:errcheck // best-effort stdout
 	}
-	return writeCitySuspensionSuccess(stdout, stderr, cityPath, suspend, jsonOut)
-}
-
-func writeCitySuspensionSuccess(stdout, stderr io.Writer, cityPath string, suspend bool, jsonOut bool) int {
-	if jsonOut {
-		action := "resume"
-		message := "City resumed."
-		if suspend {
-			action = "suspend"
-			message = "City suspended."
-		}
-		return writeLifecycleActionJSONOrExit(stdout, stderr, "gc "+action, lifecycleActionJSON{
-			Command:  action,
-			Action:   action,
-			Message:  message,
-			CityPath: cityPath,
-		})
-	}
-	if suspend {
-		fmt.Fprintf(stdout, "City suspended (%s)\n", cityPath) //nolint:errcheck // best-effort stdout
-		return 0
-	}
-	fmt.Fprintf(stdout, "City resumed (%s)\n", cityPath) //nolint:errcheck // best-effort stdout
 	return 0
 }
 

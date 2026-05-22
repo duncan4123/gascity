@@ -55,7 +55,8 @@ func ConvoyCreate(deps ConvoyDeps, store beads.Store, input ConvoyCreateInput) (
 
 	linked := 0
 	for _, itemID := range input.Items {
-		if err := TrackItem(store, convoy.ID, itemID); err != nil {
+		pid := convoy.ID
+		if err := store.Update(itemID, beads.UpdateOpts{ParentID: &pid}); err != nil {
 			return ConvoyCreateResult{Convoy: convoy, LinkedCount: linked},
 				fmt.Errorf("linking item %s: %w", itemID, err)
 		}
@@ -82,15 +83,19 @@ func ConvoyProgress(_ ConvoyDeps, store beads.Store, id string) (ConvoyProgressR
 		return ConvoyProgressResult{}, fmt.Errorf("bead %s is not a convoy (type: %s)", id, b.Type)
 	}
 
-	children, err := Members(store, id, true)
+	children, err := store.List(beads.ListQuery{
+		ParentID:      id,
+		IncludeClosed: true,
+		Sort:          beads.SortCreatedAsc,
+	})
 	if err != nil {
-		return ConvoyProgressResult{}, fmt.Errorf("listing tracked items of %s: %w", id, err)
+		return ConvoyProgressResult{}, fmt.Errorf("listing children of %s: %w", id, err)
 	}
 
 	total := len(children)
 	closed := 0
 	for _, c := range children {
-		if IsTerminalStatus(c.Status) {
+		if c.Status == "closed" {
 			closed++
 		}
 	}
@@ -114,7 +119,8 @@ func ConvoyAddItems(_ ConvoyDeps, store beads.Store, convoyID string, items []st
 	}
 
 	for _, itemID := range items {
-		if err := TrackItem(store, convoyID, itemID); err != nil {
+		pid := convoyID
+		if err := store.Update(itemID, beads.UpdateOpts{ParentID: &pid}); err != nil {
 			return fmt.Errorf("linking item %s to convoy %s: %w", itemID, convoyID, err)
 		}
 	}

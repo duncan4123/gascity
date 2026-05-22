@@ -37,25 +37,6 @@ type providerDrainOps struct {
 	sp runtime.Provider
 }
 
-type runtimeDrainCheckJSON struct {
-	SchemaVersion string `json:"schema_version"`
-	OK            bool   `json:"ok"`
-	Command       string `json:"command"`
-	Session       string `json:"session"`
-	Target        string `json:"target,omitempty"`
-	Draining      bool   `json:"draining"`
-}
-
-type runtimeActionJSON struct {
-	SchemaVersion string `json:"schema_version"`
-	OK            bool   `json:"ok"`
-	Command       string `json:"command"`
-	Action        string `json:"action"`
-	Session       string `json:"session"`
-	Target        string `json:"target,omitempty"`
-	Status        string `json:"status"`
-}
-
 func (o *providerDrainOps) setDrain(sessionName string) error {
 	return o.sp.SetMeta(sessionName, "GC_DRAIN", strconv.FormatInt(time.Now().Unix(), 10))
 }
@@ -159,8 +140,7 @@ func newDrainOps(sp runtime.Provider) drainOps {
 // ---------------------------------------------------------------------------
 
 func newRuntimeDrainCmd(stdout, stderr io.Writer) *cobra.Command {
-	var jsonOutput bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "drain <name>",
 		Short: "Signal a session to drain (wind down gracefully)",
 		Long: `Signal a session to drain — wind down its current work gracefully.
@@ -171,17 +151,15 @@ its current task before exiting. Pass a session alias or ID. Use
 "gc runtime undrain" to cancel.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
-			if cmdRuntimeDrain(args, jsonOutput, stdout, stderr) != 0 {
+			if cmdRuntimeDrain(args, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
-	return cmd
 }
 
-func cmdRuntimeDrain(args []string, jsonOutput bool, stdout, stderr io.Writer) int {
+func cmdRuntimeDrain(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
 		fmt.Fprintln(stderr, "gc runtime drain: missing session alias or ID") //nolint:errcheck // best-effort stderr
 		return 1
@@ -194,12 +172,12 @@ func cmdRuntimeDrain(args []string, jsonOutput bool, stdout, stderr io.Writer) i
 	sp := newSessionProvider()
 	dops := newDrainOps(sp)
 	rec := openCityRecorder(stderr)
-	return doRuntimeDrain(dops, sp, rec, target.display, target.sessionName, jsonOutput, stdout, stderr)
+	return doRuntimeDrain(dops, sp, rec, target.display, target.sessionName, stdout, stderr)
 }
 
 // doRuntimeDrain sets the drain signal on a session.
 func doRuntimeDrain(dops drainOps, sp runtime.Provider, rec events.Recorder,
-	targetName, sn string, jsonOutput bool, stdout, stderr io.Writer,
+	targetName, sn string, stdout, stderr io.Writer,
 ) int {
 	running, err := workerSessionTargetRunningWithConfig("", nil, sp, nil, sn)
 	if err != nil {
@@ -219,21 +197,6 @@ func doRuntimeDrain(dops drainOps, sp runtime.Provider, rec events.Recorder,
 		Actor:   eventActor(),
 		Subject: targetName,
 	})
-	if jsonOutput {
-		if err := writeCLIJSONLine(stdout, runtimeActionJSON{
-			SchemaVersion: "1",
-			OK:            true,
-			Command:       "runtime drain",
-			Action:        "drain",
-			Session:       sn,
-			Target:        targetName,
-			Status:        "draining",
-		}); err != nil {
-			fmt.Fprintf(stderr, "gc runtime drain: writing JSON: %v\n", err) //nolint:errcheck // best-effort stderr
-			return 1
-		}
-		return 0
-	}
 	fmt.Fprintf(stdout, "Draining session '%s'\n", targetName) //nolint:errcheck // best-effort stdout
 	return 0
 }
@@ -243,8 +206,7 @@ func doRuntimeDrain(dops drainOps, sp runtime.Provider, rec events.Recorder,
 // ---------------------------------------------------------------------------
 
 func newRuntimeUndrainCmd(stdout, stderr io.Writer) *cobra.Command {
-	var jsonOutput bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "undrain <name>",
 		Short: "Cancel drain on a session",
 		Long: `Cancel a pending drain signal on a session.
@@ -253,17 +215,15 @@ Clears the GC_DRAIN and GC_DRAIN_ACK metadata flags, allowing the
 session to continue normal operation. Pass a session alias or ID.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
-			if cmdRuntimeUndrain(args, jsonOutput, stdout, stderr) != 0 {
+			if cmdRuntimeUndrain(args, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
-	return cmd
 }
 
-func cmdRuntimeUndrain(args []string, jsonOutput bool, stdout, stderr io.Writer) int {
+func cmdRuntimeUndrain(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
 		fmt.Fprintln(stderr, "gc runtime undrain: missing session alias or ID") //nolint:errcheck // best-effort stderr
 		return 1
@@ -276,12 +236,12 @@ func cmdRuntimeUndrain(args []string, jsonOutput bool, stdout, stderr io.Writer)
 	sp := newSessionProvider()
 	dops := newDrainOps(sp)
 	rec := openCityRecorder(stderr)
-	return doRuntimeUndrain(dops, sp, rec, target.display, target.sessionName, jsonOutput, stdout, stderr)
+	return doRuntimeUndrain(dops, sp, rec, target.display, target.sessionName, stdout, stderr)
 }
 
 // doRuntimeUndrain clears the drain signal on a session.
 func doRuntimeUndrain(dops drainOps, sp runtime.Provider, rec events.Recorder,
-	targetName, sn string, jsonOutput bool, stdout, stderr io.Writer,
+	targetName, sn string, stdout, stderr io.Writer,
 ) int {
 	running, err := workerSessionTargetRunningWithConfig("", nil, sp, nil, sn)
 	if err != nil {
@@ -301,21 +261,6 @@ func doRuntimeUndrain(dops drainOps, sp runtime.Provider, rec events.Recorder,
 		Actor:   eventActor(),
 		Subject: targetName,
 	})
-	if jsonOutput {
-		if err := writeCLIJSONLine(stdout, runtimeActionJSON{
-			SchemaVersion: "1",
-			OK:            true,
-			Command:       "runtime undrain",
-			Action:        "undrain",
-			Session:       sn,
-			Target:        targetName,
-			Status:        "undrained",
-		}); err != nil {
-			fmt.Fprintf(stderr, "gc runtime undrain: writing JSON: %v\n", err) //nolint:errcheck // best-effort stderr
-			return 1
-		}
-		return 0
-	}
 	fmt.Fprintf(stdout, "Undrained session '%s'\n", targetName) //nolint:errcheck // best-effort stdout
 	return 0
 }
@@ -325,8 +270,8 @@ func doRuntimeUndrain(dops drainOps, sp runtime.Provider, rec events.Recorder,
 // ---------------------------------------------------------------------------
 
 func newRuntimeDrainCheckCmd(stdout, stderr io.Writer) *cobra.Command {
-	var jsonOutput bool
-	cmd := &cobra.Command{
+	_ = stdout // drain-check is silent on stdout
+	return &cobra.Command{
 		Use:   "drain-check [name]",
 		Short: "Check if a session is draining (exit 0 = draining)",
 		Long: `Check if a session is currently draining.
@@ -336,17 +281,15 @@ conditionals: "if gc runtime drain-check; then finish-up; fi". Without
 arguments, uses the current session context.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			if cmdRuntimeDrainCheck(args, jsonOutput, stdout, stderr) != 0 {
+			if cmdRuntimeDrainCheck(args, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
-	return cmd
 }
 
-func cmdRuntimeDrainCheck(args []string, jsonOutput bool, stdout, stderr io.Writer) int {
+func cmdRuntimeDrainCheck(args []string, stderr io.Writer) int {
 	if len(args) > 0 {
 		target, err := resolveSessionRuntimeTarget(args[0], stderr)
 		if err != nil {
@@ -355,7 +298,7 @@ func cmdRuntimeDrainCheck(args []string, jsonOutput bool, stdout, stderr io.Writ
 		}
 		sp := newSessionProvider()
 		dops := newDrainOps(sp)
-		return doRuntimeDrainCheck(dops, target.display, target.sessionName, jsonOutput, stdout, stderr)
+		return doRuntimeDrainCheck(dops, target.sessionName)
 	}
 
 	current, err := currentSessionRuntimeTarget()
@@ -364,44 +307,15 @@ func cmdRuntimeDrainCheck(args []string, jsonOutput bool, stdout, stderr io.Writ
 	}
 	sp := newSessionProvider()
 	dops := newDrainOps(sp)
-	return doRuntimeDrainCheck(dops, current.display, current.sessionName, jsonOutput, stdout, stderr)
+	return doRuntimeDrainCheck(dops, current.sessionName)
 }
 
 // doRuntimeDrainCheck returns 0 if the session is draining, 1 otherwise.
 // Silent on stdout — designed for `if gc runtime drain-check; then ...`.
-func doRuntimeDrainCheck(dops drainOps, targetName, sn string, jsonOutput bool, stdout, stderr io.Writer) int {
+func doRuntimeDrainCheck(dops drainOps, sn string) int {
 	draining, err := dops.isDraining(sn)
-	if err != nil {
+	if err != nil || !draining {
 		return 1
-	}
-	if !draining {
-		if jsonOutput {
-			if err := writeCLIJSONLine(stdout, runtimeDrainCheckJSON{
-				SchemaVersion: "1",
-				OK:            true,
-				Command:       "runtime drain-check",
-				Session:       sn,
-				Target:        targetName,
-				Draining:      false,
-			}); err != nil {
-				fmt.Fprintf(stderr, "gc runtime drain-check: writing JSON: %v\n", err) //nolint:errcheck // best-effort stderr
-				return 1
-			}
-		}
-		return 1
-	}
-	if jsonOutput {
-		if err := writeCLIJSONLine(stdout, runtimeDrainCheckJSON{
-			SchemaVersion: "1",
-			OK:            true,
-			Command:       "runtime drain-check",
-			Session:       sn,
-			Target:        targetName,
-			Draining:      true,
-		}); err != nil {
-			fmt.Fprintf(stderr, "gc runtime drain-check: writing JSON: %v\n", err) //nolint:errcheck // best-effort stderr
-			return 1
-		}
 	}
 	return 0
 }
@@ -411,8 +325,7 @@ func doRuntimeDrainCheck(dops drainOps, targetName, sn string, jsonOutput bool, 
 // ---------------------------------------------------------------------------
 
 func newRuntimeDrainAckCmd(stdout, stderr io.Writer) *cobra.Command {
-	var jsonOutput bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "drain-ack [name]",
 		Short: "Acknowledge drain — signal the controller to stop this session",
 		Long: `Acknowledge a drain signal — tell the controller to stop this session.
@@ -422,17 +335,15 @@ the session on its next reconcile tick. Call this after the session has
 finished its current work in response to a drain signal.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			if cmdRuntimeDrainAck(args, jsonOutput, stdout, stderr) != 0 {
+			if cmdRuntimeDrainAck(args, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
-	return cmd
 }
 
-func cmdRuntimeDrainAck(args []string, jsonOutput bool, stdout, stderr io.Writer) int {
+func cmdRuntimeDrainAck(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
 		target, err := resolveSessionRuntimeTarget(args[0], stderr)
 		if err != nil {
@@ -441,7 +352,7 @@ func cmdRuntimeDrainAck(args []string, jsonOutput bool, stdout, stderr io.Writer
 		}
 		sp := newSessionProvider()
 		dops := newDrainOps(sp)
-		return doRuntimeDrainAck(dops, target.display, target.sessionName, jsonOutput, stdout, stderr)
+		return doRuntimeDrainAck(dops, target.sessionName, stdout, stderr)
 	}
 
 	current, err := currentSessionRuntimeTarget()
@@ -451,7 +362,7 @@ func cmdRuntimeDrainAck(args []string, jsonOutput bool, stdout, stderr io.Writer
 	}
 	sp := newSessionProvider()
 	dops := newDrainOps(sp)
-	return doRuntimeDrainAck(dops, current.display, current.sessionName, jsonOutput, stdout, stderr)
+	return doRuntimeDrainAck(dops, current.sessionName, stdout, stderr)
 }
 
 // ---------------------------------------------------------------------------
@@ -585,10 +496,6 @@ func doRuntimeRequestRestart(ctx context.Context, dops drainOps, persistRestart 
 	})
 	fmt.Fprintf(stdout, "Restart requested. Waiting up to %s for controller to stop this session...\n", timeout) //nolint:errcheck // best-effort stdout
 
-	return waitForControllerRestart(ctx, dops, sn, "gc runtime request-restart", pollInterval, timeout, stderr)
-}
-
-func waitForControllerRestart(ctx context.Context, dops drainOps, sn, command string, pollInterval, timeout time.Duration, stderr io.Writer) int {
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
@@ -598,7 +505,7 @@ func waitForControllerRestart(ctx context.Context, dops drainOps, sn, command st
 		select {
 		case <-ctx.Done():
 			// Signal received; leave the flag set so the controller still acts on its next tick.
-			fmt.Fprintf(stderr, "%s: signal received; restart request remains set; controller will stop this session on its next reconcile tick\n", command) //nolint:errcheck // best-effort stderr
+			fmt.Fprintln(stderr, "gc runtime request-restart: signal received; restart request remains set; controller will stop this session on its next reconcile tick") //nolint:errcheck // best-effort stderr
 			return 0
 		case <-ticker.C:
 			requested, err := dops.isRestartRequested(sn)
@@ -613,9 +520,9 @@ func waitForControllerRestart(ctx context.Context, dops drainOps, sn, command st
 			}
 			if time.Now().After(deadline) {
 				if lastPollErr != nil {
-					fmt.Fprintf(stderr, "%s: controller did not act within %s; last poll error: %v; check `gc dashboard` or `gc trace`\n", command, timeout, lastPollErr) //nolint:errcheck // best-effort stderr
+					fmt.Fprintf(stderr, "gc runtime request-restart: controller did not act within %s; last poll error: %v; check `gc dashboard` or `gc trace`\n", timeout, lastPollErr) //nolint:errcheck // best-effort stderr
 				} else {
-					fmt.Fprintf(stderr, "%s: controller did not act within %s; check `gc dashboard` or `gc trace`\n", command, timeout) //nolint:errcheck // best-effort stderr
+					fmt.Fprintf(stderr, "gc runtime request-restart: controller did not act within %s; check `gc dashboard` or `gc trace`\n", timeout) //nolint:errcheck // best-effort stderr
 				}
 				return 1
 			}
@@ -625,25 +532,10 @@ func waitForControllerRestart(ctx context.Context, dops drainOps, sn, command st
 
 // doRuntimeDrainAck sets the drain-ack flag on the session. The controller
 // will stop the session on the next tick.
-func doRuntimeDrainAck(dops drainOps, targetName, sn string, jsonOutput bool, stdout, stderr io.Writer) int {
+func doRuntimeDrainAck(dops drainOps, sn string, stdout, stderr io.Writer) int {
 	if err := dops.setDrainAck(sn); err != nil {
 		fmt.Fprintf(stderr, "gc runtime drain-ack: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
-	}
-	if jsonOutput {
-		if err := writeCLIJSONLine(stdout, runtimeActionJSON{
-			SchemaVersion: "1",
-			OK:            true,
-			Command:       "runtime drain-ack",
-			Action:        "drain-ack",
-			Session:       sn,
-			Target:        targetName,
-			Status:        "acknowledged",
-		}); err != nil {
-			fmt.Fprintf(stderr, "gc runtime drain-ack: writing JSON: %v\n", err) //nolint:errcheck // best-effort stderr
-			return 1
-		}
-		return 0
 	}
 	fmt.Fprintln(stdout, "Drain acknowledged. Controller will stop this session.") //nolint:errcheck // best-effort stdout
 	return 0

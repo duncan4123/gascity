@@ -72,18 +72,13 @@ func TestAuthoritativeDocsUseSingularOverlayDirectory(t *testing.T) {
 	for _, dir := range []string{
 		filepath.Join(repoRoot, "docs", "guides"),
 		filepath.Join(repoRoot, "docs", "tutorials"),
-		filepath.Join(repoRoot, "engdocs", "design", "packv2"),
+		filepath.Join(repoRoot, "docs", "packv2"),
 	} {
 		err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
-			if entry.IsDir() {
-				return nil
-			}
-			switch filepath.Ext(path) {
-			case ".md", ".mdx":
-			default:
+			if entry.IsDir() || filepath.Ext(path) != ".md" {
 				return nil
 			}
 			if filepath.Base(path) == "doc-consistency-audit.md" {
@@ -136,7 +131,7 @@ func allowedPluralOverlayLine(path, migrationGuide, line string) bool {
 
 func TestAllowedPluralOverlayLineRejectsCanonicalDestination(t *testing.T) {
 	migrationGuide := filepath.Join("docs", "guides", "migrating-to-pack-vnext.md")
-	packDoc := filepath.Join("engdocs", "design", "packv2", "doc-pack-v2.md")
+	packDoc := filepath.Join("docs", "packv2", "doc-pack-v2.md")
 
 	legacySourceToSingularDestination := "| Pack-wide overlays | `overlay_dir = \"overlays/default\"` | `overlay/` directory |"
 	if !allowedPluralOverlayLine(packDoc, migrationGuide, legacySourceToSingularDestination) {

@@ -162,7 +162,7 @@ func (s *SessionReconcilerTraceArmStore) list() (TraceArmState, error) {
 }
 
 func traceArmStatus(state TraceArmState, now time.Time) []TraceArm {
-	out := make([]TraceArm, 0, len(state.Arms))
+	var out []TraceArm
 	for _, arm := range state.Arms {
 		if !arm.ExpiresAt.IsZero() && arm.ExpiresAt.Before(now) {
 			continue

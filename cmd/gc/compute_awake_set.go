@@ -19,7 +19,7 @@ type AwakeInput struct {
 	Agents             []AwakeAgent
 	NamedSessions      []AwakeNamedSession
 	SessionBeads       []AwakeSessionBead
-	WorkBeads          []AwakeWorkBead // in_progress assigned work plus ready open assigned work
+	WorkBeads          []AwakeWorkBead
 	ScaleCheckCounts   map[string]int  // agent template → scale_check count
 	NamedSessionDemand map[string]bool // named-session identity → routed/assigned work demand
 	WorkSet            map[string]bool // agent template → work_query found pending work
@@ -41,31 +41,28 @@ type AwakeAgent struct {
 
 // AwakeNamedSession represents a [[named_session]] config entry.
 type AwakeNamedSession struct {
-	Identity    string // qualified name, e.g. "hello-world/refinery"
-	Template    string // agent template name
-	Mode        string // "always" or "on_demand"
-	RuntimeName string // computed runtime session_name (e.g. "hello-world--refinery")
+	Identity string // qualified name, e.g. "hello-world/refinery"
+	Template string // agent template name
+	Mode     string // "always" or "on_demand"
 }
 
 // AwakeSessionBead represents an open session bead from the store.
 type AwakeSessionBead struct {
-	ID                     string
-	SessionName            string
-	Template               string
-	State                  string // "creating", "active", "asleep", "drained", "closed"
-	SleepReason            string
-	ManualSession          bool
-	PendingCreate          bool      // controller claimed this bead for initial start
-	ExplicitWake           bool      // explicit durable wake request is pending
-	DependencyOnly         bool      // only wakeable via dependency gate
-	NamedIdentity          string    // non-empty for named session beads
-	ConfiguredNamedSession bool      // configured_named_session metadata is true
-	Pinned                 bool      // pin_awake durable wake reason
-	Drained                bool      // state=="drained" or sleep_reason=="drained"
-	WaitHold               bool      // user-issued gc wait in progress
-	HeldUntil              time.Time // zero = not held
-	QuarantinedUntil       time.Time // zero = not quarantined
-	IdleSince              time.Time // zero = unknown/not idle
+	ID               string
+	SessionName      string
+	Template         string
+	State            string // "creating", "active", "asleep", "drained", "closed"
+	SleepReason      string
+	ManualSession    bool
+	PendingCreate    bool      // controller claimed this bead for initial start
+	DependencyOnly   bool      // only wakeable via dependency gate
+	NamedIdentity    string    // non-empty for named session beads
+	Pinned           bool      // pin_awake durable wake reason
+	Drained          bool      // state=="drained" or sleep_reason=="drained"
+	WaitHold         bool      // user-issued gc wait in progress
+	HeldUntil        time.Time // zero = not held
+	QuarantinedUntil time.Time // zero = not quarantined
+	IdleSince        time.Time // zero = unknown/not idle
 }
 
 // AwakeWorkBead represents a work bead with an assignee.
@@ -73,14 +70,12 @@ type AwakeWorkBead struct {
 	ID       string
 	Assignee string
 	Status   string // "open", "in_progress"
-	Ready    bool   // true for open work only after readiness/blocker filtering
 }
 
 // AwakeDecision is the output for a single session.
 type AwakeDecision struct {
-	ShouldWake      bool
-	Reason          string // human-readable reason for debugging
-	HasAssignedWork bool   // underlying assigned-work demand before wake reason overrides
+	ShouldWake bool
+	Reason     string // human-readable reason for debugging
 }
 
 // ComputeAwakeSet determines which sessions should be awake.
@@ -105,6 +100,7 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 	// compatible wake causes (pending create, named-always, assigned work) may
 	// still reuse the same bead.
 	desired := make(map[string]string) // sessionName → reason
+	concreteAssignedWork := make(map[string]bool)
 
 	// Newly created beads that still carry a controller create claim must be
 	// launched at least once, even if the work signal that materialized them
@@ -115,14 +111,6 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 		}
 		desired[bead.SessionName] = "pending-create"
 	}
-	for _, bead := range input.SessionBeads {
-		if !bead.ExplicitWake || bead.State == "closed" || bead.DependencyOnly {
-			continue
-		}
-		if agent, ok := agentsByName[bead.Template]; ok && !agent.Suspended {
-			desired[bead.SessionName] = "explicit-wake"
-		}
-	}
 
 	// Named sessions
 	for _, ns := range input.NamedSessions {
@@ -131,7 +119,7 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 		}
 		switch ns.Mode {
 		case "always":
-			if sn := resolveNamedSessionBeadName(input.SessionBeads, ns); sn != "" {
+			if sn := findNamedSessionName(input.SessionBeads, ns.Identity); sn != "" {
 				bead := findBeadBySessionName(input.SessionBeads, sn)
 				if bead != nil && !bead.DependencyOnly {
 					desired[sn] = "named-always"
@@ -148,7 +136,7 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 			if agent, ok := agentsByName[ns.Template]; ok && agent.Suspended {
 				continue
 			}
-			if sn := resolveNamedSessionBeadName(input.SessionBeads, ns); sn != "" {
+			if sn := findNamedSessionName(input.SessionBeads, ns.Identity); sn != "" {
 				bead := findBeadBySessionName(input.SessionBeads, sn)
 				if bead != nil && !bead.DependencyOnly && !bead.Drained && bead.State != "closed" {
 					desired[sn] = "named-demand"
@@ -174,7 +162,7 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 			if filled >= count {
 				break
 			}
-			if sessionHasAssignedWork(input.WorkBeads, input.NamedSessions, bead) {
+			if sessionHasConcreteAssignedWork(input.WorkBeads, bead) {
 				continue
 			}
 			desired[bead.SessionName] = "scaled:demand"
@@ -185,7 +173,7 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 			if filled >= count {
 				break
 			}
-			if sessionHasAssignedWork(input.WorkBeads, input.NamedSessions, bead) {
+			if sessionHasConcreteAssignedWork(input.WorkBeads, bead) {
 				continue
 			}
 			desired[bead.SessionName] = "scaled:creating"
@@ -231,10 +219,10 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 		}
 	}
 
-	// Sessions with assigned work — a session that has in_progress work or
-	// ready open work assigned to it must stay awake. Open work must carry
-	// Ready=true so a blocked routed assignment cannot become wake demand if
-	// a future caller accidentally broadens the collection query.
+	// Sessions with assigned work — a session that has open or in_progress
+	// work assigned to it must stay awake. Compatibility-only readers still
+	// accept current session_name and exact configured named identity tokens,
+	// but normal targeting surfaces write the concrete bead ID.
 	for _, bead := range input.SessionBeads {
 		if bead.State == "closed" {
 			continue
@@ -244,10 +232,15 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 		}
 		for _, wb := range input.WorkBeads {
 			assignee := strings.TrimSpace(wb.Assignee)
-			if assignee == "" || !workBeadHasAwakeDemand(wb) {
+			if assignee == "" || (wb.Status != "open" && wb.Status != "in_progress") {
 				continue
 			}
-			if sessionAssigneeMatches(input.NamedSessions, bead, assignee) {
+			if assignee == bead.ID || assignee == bead.SessionName {
+				desired[bead.SessionName] = "assigned-work"
+				concreteAssignedWork[bead.SessionName] = true
+				break
+			}
+			if bead.NamedIdentity != "" && assignee == bead.NamedIdentity {
 				desired[bead.SessionName] = "assigned-work"
 				break
 			}
@@ -259,16 +252,14 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 
 	for _, bead := range input.SessionBeads {
 		name := bead.SessionName
-		decision := AwakeDecision{
-			HasAssignedWork: desired[name] == "assigned-work",
-		}
+		decision := AwakeDecision{}
 
 		// Desired set (demand-driven wake). wait_hold suppresses normal
 		// demand-driven wake so a session intentionally parked on human
 		// input stays asleep until either its durable wait becomes ready
 		// or it still needs its initial launch.
 		if reason, inDesired := desired[name]; inDesired {
-			if !bead.WaitHold || bead.PendingCreate || bead.ExplicitWake {
+			if !bead.WaitHold || bead.PendingCreate {
 				decision.ShouldWake = true
 				decision.Reason = reason
 			}
@@ -318,13 +309,9 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 		}
 
 		// Idle sleep: desired sessions idle too long should sleep.
-		// Attached, pending, pinned, mode=always named, and sessions with
-		// assigned demand work are exempt. Assigned demand work means either
-		// in_progress ownership or open work with Ready=true; blocked open
-		// assignments do not prevent idle sleep.
+		// Attached, pinned, and mode=always named sessions are exempt.
 		if decision.ShouldWake && !input.AttachedSessions[name] && !input.PendingSessions[name] && !bead.Pinned && !bead.IdleSince.IsZero() &&
-			!isAlwaysNamedSession(input.NamedSessions, bead) &&
-			desired[name] != "assigned-work" {
+			!isAlwaysNamedSession(input.NamedSessions, bead) {
 			agent, hasAgent := agentsByName[bead.Template]
 			var idleTimeout time.Duration
 			switch {
@@ -335,7 +322,7 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 			case isOnDemandSession(input.NamedSessions, bead):
 				idleTimeout = defaultOnDemandIdleTimeout
 			}
-			if idleTimeout > 0 && input.Now.Sub(bead.IdleSince) >= idleTimeout {
+			if idleTimeout > 0 && input.Now.Sub(bead.IdleSince) >= idleTimeout && !concreteAssignedWork[name] {
 				decision.ShouldWake = false
 				decision.Reason = "idle-sleep"
 			}
@@ -375,41 +362,6 @@ func findNamedSessionName(beads []AwakeSessionBead, identity string) string {
 	return ""
 }
 
-// resolveNamedSessionBeadName locates the session_name of the bead that
-// represents a configured named session. The primary match is the bead's
-// NamedIdentity (configured_named_identity metadata). The fallback matches
-// a configured_named_session bead by its session_name when that matches the
-// identity's deterministic runtime name AND its template matches.
-//
-// The fallback recovers a configured named session whose NamedIdentity is
-// MISSING on its bead — for example, a bead minted before
-// configured_named_identity was added. Beads with a non-empty NamedIdentity
-// that doesn't match any [[named_session]] identity are NOT recovered by
-// this fallback (those return "" at the bead.NamedIdentity != ns.Identity
-// check below); a config-change migration that leaves a stale NamedIdentity
-// must be handled separately. Without this fallback, ComputeAwakeSet
-// silently drops the bead from `desired` and the session stays asleep
-// forever even though the config says mode=always. See #1493.
-func resolveNamedSessionBeadName(beads []AwakeSessionBead, ns AwakeNamedSession) string {
-	if sn := findNamedSessionName(beads, ns.Identity); sn != "" {
-		return sn
-	}
-	if ns.RuntimeName == "" {
-		return ""
-	}
-	bead := findBeadBySessionName(beads, ns.RuntimeName)
-	if bead == nil || !bead.ConfiguredNamedSession {
-		return ""
-	}
-	if ns.Template != "" && bead.Template != ns.Template {
-		return ""
-	}
-	if bead.NamedIdentity != "" && bead.NamedIdentity != ns.Identity {
-		return ""
-	}
-	return bead.SessionName
-}
-
 func findBeadBySessionName(beads []AwakeSessionBead, name string) *AwakeSessionBead {
 	for i := range beads {
 		if beads[i].SessionName == name {
@@ -431,69 +383,20 @@ func isNamedSessionTemplate(named []AwakeNamedSession, template string) bool {
 func collectActiveBeads(beads []AwakeSessionBead, template string) []AwakeSessionBead {
 	var result []AwakeSessionBead
 	for _, b := range beads {
-		// Exclude both NamedIdentity-tagged beads AND ConfiguredNamedSession
-		// beads whose NamedIdentity happens to be missing — the latter are
-		// still configured named sessions (recovered via the runtime-name
-		// fallback in namedSessionMatches / resolveNamedSessionBeadName).
-		// Treating them as generic pool candidates would re-introduce the
-		// #1493 failure mode in a different shape: a configured named
-		// session getting woken by generic template scale_check demand.
-		if b.Template == template && b.State == "active" &&
-			b.NamedIdentity == "" && !b.ConfiguredNamedSession &&
-			!b.ManualSession && !b.Drained && !b.DependencyOnly {
+		if b.Template == template && b.State == "active" && b.NamedIdentity == "" && !b.ManualSession && !b.Drained && !b.DependencyOnly {
 			result = append(result, b)
 		}
 	}
 	return result
 }
 
-func sessionHasAssignedWork(workBeads []AwakeWorkBead, named []AwakeNamedSession, bead AwakeSessionBead) bool {
+func sessionHasConcreteAssignedWork(workBeads []AwakeWorkBead, bead AwakeSessionBead) bool {
 	for _, wb := range workBeads {
 		assignee := strings.TrimSpace(wb.Assignee)
-		if assignee == "" || !workBeadHasAwakeDemand(wb) {
+		if assignee == "" || (wb.Status != "open" && wb.Status != "in_progress") {
 			continue
 		}
-		if sessionAssigneeMatches(named, bead, assignee) {
-			return true
-		}
-	}
-	return false
-}
-
-func workBeadHasAwakeDemand(bead AwakeWorkBead) bool {
-	switch bead.Status {
-	case "in_progress":
-		return true
-	case "open":
-		return bead.Ready
-	default:
-		return false
-	}
-}
-
-func sessionAssigneeMatches(named []AwakeNamedSession, bead AwakeSessionBead, assignee string) bool {
-	if assignee == "" {
-		return false
-	}
-	if assignee == bead.ID || assignee == bead.SessionName {
-		return true
-	}
-	if bead.NamedIdentity != "" {
-		return assignee == bead.NamedIdentity
-	}
-	if !bead.ConfiguredNamedSession {
-		return false
-	}
-	// This configured-named fallback mirrors sessionAssignmentIdentifiersForConfig
-	// so awake decisions and cleanup guards recognize the same identities.
-	for _, ns := range named {
-		if ns.RuntimeName == "" || ns.RuntimeName != bead.SessionName {
-			continue
-		}
-		if ns.Template != "" && ns.Template != bead.Template {
-			continue
-		}
-		if assignee == ns.Identity {
+		if assignee == bead.ID || assignee == bead.SessionName {
 			return true
 		}
 	}
@@ -501,30 +404,23 @@ func sessionAssigneeMatches(named []AwakeNamedSession, bead AwakeSessionBead, as
 }
 
 func isOnDemandSession(named []AwakeNamedSession, bead AwakeSessionBead) bool {
-	return namedSessionMatches(named, bead, "on_demand")
+	if bead.NamedIdentity == "" {
+		return false
+	}
+	for _, ns := range named {
+		if ns.Identity == bead.NamedIdentity && ns.Mode == "on_demand" {
+			return true
+		}
+	}
+	return false
 }
 
 func isAlwaysNamedSession(named []AwakeNamedSession, bead AwakeSessionBead) bool {
-	return namedSessionMatches(named, bead, "always")
-}
-
-// namedSessionMatches reports whether bead represents a configured named
-// session of the given mode. The fallback path (bead.ConfiguredNamedSession
-// + matching runtime name + template) mirrors resolveNamedSessionBeadName
-// so a bead with missing/stale NamedIdentity is still recognized as named —
-// otherwise idle-sleep suppression and on-demand keep-awake silently lose
-// their exemption for affected beads. See #1493.
-func namedSessionMatches(named []AwakeNamedSession, bead AwakeSessionBead, mode string) bool {
+	if bead.NamedIdentity == "" {
+		return false
+	}
 	for _, ns := range named {
-		if ns.Mode != mode {
-			continue
-		}
-		if bead.NamedIdentity != "" && ns.Identity == bead.NamedIdentity {
-			return true
-		}
-		if bead.NamedIdentity == "" && bead.ConfiguredNamedSession &&
-			ns.RuntimeName != "" && ns.RuntimeName == bead.SessionName &&
-			(ns.Template == "" || ns.Template == bead.Template) {
+		if ns.Identity == bead.NamedIdentity && ns.Mode == "always" {
 			return true
 		}
 	}
@@ -534,11 +430,7 @@ func namedSessionMatches(named []AwakeNamedSession, bead AwakeSessionBead, mode 
 func collectCreatingBeads(beads []AwakeSessionBead, template string) []AwakeSessionBead {
 	var result []AwakeSessionBead
 	for _, b := range beads {
-		// See collectActiveBeads above for why ConfiguredNamedSession beads
-		// must be excluded even when NamedIdentity is empty.
-		if b.Template == template && b.State == "creating" &&
-			b.NamedIdentity == "" && !b.ConfiguredNamedSession &&
-			!b.ManualSession && !b.Drained && !b.DependencyOnly {
+		if b.Template == template && b.State == "creating" && b.NamedIdentity == "" && !b.ManualSession && !b.Drained && !b.DependencyOnly {
 			result = append(result, b)
 		}
 	}

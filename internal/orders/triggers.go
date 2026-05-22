@@ -2,9 +2,7 @@ package orders
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -39,13 +37,6 @@ type TriggerOptions struct {
 	ConditionEnv     []string
 	ConditionTimeout time.Duration
 }
-
-var (
-	// conditionCheckPostCancelWaitDelay is os/exec's pipe-close wait after
-	// Cancel returns; the TERM and KILL waits each use conditionCheckSignalGrace.
-	conditionCheckPostCancelWaitDelay = 2 * time.Second
-	conditionCheckSignalGrace         = 2 * time.Second
-)
 
 // CheckTrigger evaluates an order's trigger condition and returns whether it's due.
 // ep is an events Provider used by event triggers to query events; may be nil for
@@ -145,15 +136,7 @@ func cronFieldMatches(field string, value int) bool {
 		return true
 	}
 	for _, part := range strings.Split(field, ",") {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "*/") {
-			step, err := strconv.Atoi(strings.TrimPrefix(part, "*/"))
-			if err == nil && step > 0 && value%step == 0 {
-				return true
-			}
-			continue
-		}
-		n, err := strconv.Atoi(part)
+		n, err := strconv.Atoi(strings.TrimSpace(part))
 		if err == nil && n == value {
 			return true
 		}
@@ -172,28 +155,13 @@ func checkCondition(a Order, opts TriggerOptions) TriggerResult {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", a.Check)
-	cleanupCommand := prepareConditionCommand(cmd, conditionCheckSignalGrace)
-	cmd.WaitDelay = conditionCheckPostCancelWaitDelay
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
 	if opts.ConditionDir != "" {
 		cmd.Dir = opts.ConditionDir
 	}
 	cmd.Env = mergeConditionEnv(os.Environ(), opts.ConditionEnv)
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			reason := fmt.Sprintf("check command timed out after %s", timeout)
-			if cleanupErr := cleanupCommand(); cleanupErr != nil {
-				reason = fmt.Sprintf("%s; cleanup failed: %v", reason, cleanupErr)
-			}
-			return TriggerResult{Due: false, Reason: reason}
-		}
-		if errors.Is(err, exec.ErrWaitDelay) {
-			reason := "check command cleanup exceeded post-cancel wait delay"
-			if cleanupErr := cleanupCommand(); cleanupErr != nil {
-				reason = fmt.Sprintf("%s: %v", reason, cleanupErr)
-			}
-			return TriggerResult{Due: false, Reason: reason}
+			return TriggerResult{Due: false, Reason: fmt.Sprintf("check command timed out after %s", timeout)}
 		}
 		return TriggerResult{Due: false, Reason: fmt.Sprintf("check command failed: %v", err)}
 	}

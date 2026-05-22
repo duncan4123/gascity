@@ -153,15 +153,6 @@ func (h *RuntimeHandle) Close(ctx context.Context) (err error) {
 	return err
 }
 
-// CloseDetailed asks the provider to close the live runtime session and
-// returns no bead cleanup artifacts for runtime-only handles.
-func (h *RuntimeHandle) CloseDetailed(ctx context.Context) (sessionpkg.CloseResult, error) {
-	if err := h.Close(ctx); err != nil {
-		return sessionpkg.CloseResult{}, err
-	}
-	return sessionpkg.CloseResult{}, nil
-}
-
 // Rename reports unsupported because runtime-only handles have no persisted name update.
 func (h *RuntimeHandle) Rename(ctx context.Context, _ string) (err error) {
 	event := h.beginOperationEvent(ctx, workerOperationRename)
@@ -340,10 +331,9 @@ func (h *RuntimeHandle) PendingStatus(ctx context.Context) (*PendingInteraction,
 // LiveObservation reports runtime presence metadata for a legacy runtime-only
 // worker target.
 func (h *RuntimeHandle) LiveObservation(_ context.Context) (LiveObservation, error) {
-	liveness := runtime.ObserveLiveness(h.provider, h.sessionName, h.processNames)
 	obs := LiveObservation{
-		Running:     liveness.Running,
-		Alive:       liveness.Alive,
+		Running:     h.provider.IsRunning(h.sessionName),
+		Alive:       false,
 		SessionName: h.sessionName,
 	}
 	if suspended, err := h.provider.GetMeta(h.sessionName, "suspended"); err == nil && strings.TrimSpace(suspended) == "true" {
@@ -353,6 +343,7 @@ func (h *RuntimeHandle) LiveObservation(_ context.Context) (LiveObservation, err
 		obs.RuntimeSessionID = strings.TrimSpace(sessionID)
 	}
 	if obs.Running {
+		obs.Alive = h.provider.ProcessAlive(h.sessionName, h.processNames)
 		obs.Attached = h.provider.IsAttached(h.sessionName)
 		if last, err := h.provider.GetLastActivity(h.sessionName); err == nil && !last.IsZero() {
 			lastCopy := last

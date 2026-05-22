@@ -569,23 +569,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v0/city/{cityName}/events/rotate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Force rotate the city event log */
-        post: operations["rotate-events"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v0/city/{cityName}/events/stream": {
         parameters: {
             query?: never;
@@ -1629,23 +1612,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v0/city/{cityName}/session/{id}/permission-mode": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Post v0 city by city name session by ID permission mode */
-        post: operations["post-v0-city-by-city-name-session-by-id-permission-mode"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v0/city/{cityName}/session/{id}/rename": {
         parameters: {
             query?: never;
@@ -2009,13 +1975,10 @@ export interface components {
             InjectFragmentsAppend: string[] | null;
             InstallAgentHooks: string[] | null;
             InstallAgentHooksAppend: string[] | null;
-            Lifecycle: string | null;
             MCP: string[] | null;
             MCPAppend: string[] | null;
             /** Format: int64 */
             MaxActiveSessions: number | null;
-            MaxSessionAge: string | null;
-            MaxSessionAgeJitter: string | null;
             /** Format: int64 */
             MinActiveSessions: number | null;
             Name: string;
@@ -2043,7 +2006,6 @@ export interface components {
             SleepAfterIdle: string | null;
             StartCommand: string | null;
             Suspended: boolean | null;
-            TmuxAlias: string | null;
             WakeMode: string | null;
             WorkDir: string | null;
         };
@@ -2060,8 +2022,6 @@ export interface components {
             scope?: string;
             /** @description Override suspended state. */
             suspended?: boolean;
-            /** @description Override tmux session name template. */
-            tmux_alias?: string;
             /** @description Override session working directory. */
             work_dir?: string;
         };
@@ -2152,7 +2112,6 @@ export interface components {
             created_at: string;
             dependencies?: components["schemas"]["Dep"][] | null;
             description?: string;
-            ephemeral?: boolean;
             from?: string;
             id: string;
             issue_type: string;
@@ -2549,53 +2508,7 @@ export interface components {
             /** @description Event type. */
             type: string;
         };
-        EventPayload: components["schemas"]["AdapterEventPayload"] | components["schemas"]["BeadEventPayload"] | components["schemas"]["BoundEventPayload"] | components["schemas"]["CityCreateSucceededPayload"] | components["schemas"]["CityLifecyclePayload"] | components["schemas"]["CityUnregisterSucceededPayload"] | components["schemas"]["GroupCreatedEventPayload"] | components["schemas"]["InboundEventPayload"] | components["schemas"]["MailEventPayload"] | components["schemas"]["NoPayload"] | components["schemas"]["OutboundEventPayload"] | components["schemas"]["ProjectIdentityStampedPayload"] | components["schemas"]["RequestFailedPayload"] | components["schemas"]["RotatedPayload"] | components["schemas"]["SessionCreateSucceededPayload"] | components["schemas"]["SessionDrainAckedWithAssignedWorkPayload"] | components["schemas"]["SessionLifecyclePayload"] | components["schemas"]["SessionMessageSucceededPayload"] | components["schemas"]["SessionSubmitSucceededPayload"] | components["schemas"]["SupervisorFSPressureSkippedTickPayload"] | components["schemas"]["SupervisorShutdownPayload"] | components["schemas"]["UnboundEventPayload"] | components["schemas"]["WorkerOperationEventPayload"];
-        EventRotateAnchor: {
-            /**
-             * Format: int64
-             * @description Anchor event sequence.
-             */
-            seq: number;
-            /**
-             * Format: date-time
-             * @description Anchor event timestamp.
-             */
-            ts: string;
-            /**
-             * @description Anchor event type.
-             * @example events.rotated
-             */
-            type: string;
-        };
-        EventRotateArchive: {
-            /**
-             * @description Archive compression status.
-             * @enum {string}
-             */
-            compression_status: "pending" | "complete";
-            /**
-             * Format: int64
-             * @description First event sequence included in the archive.
-             */
-            first_seq: number;
-            /**
-             * Format: int64
-             * @description Last event sequence included in the archive.
-             */
-            last_seq: number;
-            /** @description Absolute path to the archive. */
-            path: string;
-        };
-        EventRotateResponse: {
-            /** @description Anchor event metadata when rotated is true. */
-            anchor_event?: components["schemas"]["EventRotateAnchor"];
-            /** @description Archive metadata when rotated is true. */
-            archive?: components["schemas"]["EventRotateArchive"];
-            /** @description No-op reason when rotated is false. */
-            reason?: string;
-            /** @description Whether an archive was produced. */
-            rotated: boolean;
-        };
+        EventPayload: components["schemas"]["AdapterEventPayload"] | components["schemas"]["BeadEventPayload"] | components["schemas"]["BoundEventPayload"] | components["schemas"]["CityCreateSucceededPayload"] | components["schemas"]["CityLifecyclePayload"] | components["schemas"]["CityUnregisterSucceededPayload"] | components["schemas"]["GroupCreatedEventPayload"] | components["schemas"]["InboundEventPayload"] | components["schemas"]["MailEventPayload"] | components["schemas"]["NoPayload"] | components["schemas"]["OutboundEventPayload"] | components["schemas"]["RequestFailedPayload"] | components["schemas"]["SessionCreateSucceededPayload"] | components["schemas"]["SessionMessageSucceededPayload"] | components["schemas"]["SessionSubmitSucceededPayload"] | components["schemas"]["UnboundEventPayload"] | components["schemas"]["WorkerOperationEventPayload"];
         EventStreamEnvelope: {
             actor: string;
             message?: string;
@@ -3371,13 +3284,6 @@ export interface components {
             OnBoot: string | null;
             OnDeath: string | null;
         };
-        ProjectIdentityStampedPayload: {
-            layer: string;
-            new_id: string;
-            old_id?: string;
-            scope_root: string;
-            source: string;
-        };
         ProviderCreateInputBody: {
             /** @description ACP transport command arguments override. */
             acp_args?: string[] | null;
@@ -3430,7 +3336,6 @@ export interface components {
         ProviderPatch: {
             ACPArgs: string[] | null;
             ACPCommand: string | null;
-            AcceptStartupDialogs: boolean | null;
             Args: string[] | null;
             ArgsAppend: string[] | null;
             Base: string | null;
@@ -3448,8 +3353,6 @@ export interface components {
             Replace: boolean;
         };
         ProviderPatchSetInputBody: {
-            /** @description Override startup dialog acceptance behavior. */
-            accept_startup_dialogs?: boolean;
             /** @description Override ACP transport command arguments. */
             acp_args?: string[] | null;
             /** @description Override ACP transport command binary. */
@@ -3619,8 +3522,6 @@ export interface components {
             status: string;
         };
         RigCreateInputBody: {
-            /** @description Mainline branch (e.g. main, master). Auto-detected when omitted. */
-            default_branch?: string;
             /** @description Rig name. */
             name: string;
             /** @description Filesystem path. */
@@ -3638,18 +3539,12 @@ export interface components {
             status: string;
         };
         RigPatch: {
-            DefaultBranch: string | null;
-            FormulaVars: {
-                [key: string]: string;
-            };
             Name: string;
             Path: string | null;
             Prefix: string | null;
             Suspended: boolean | null;
         };
         RigPatchSetInputBody: {
-            /** @description Override mainline branch. */
-            default_branch?: string;
             /** @description Rig name. */
             name?: string;
             /** @description Override filesystem path. */
@@ -3662,7 +3557,6 @@ export interface components {
         RigResponse: {
             /** Format: int64 */
             agent_count: number;
-            default_branch?: string;
             git?: components["schemas"]["GitStatus"];
             /** Format: date-time */
             last_activity?: string;
@@ -3674,21 +3568,12 @@ export interface components {
             suspended: boolean;
         };
         RigUpdateInputBody: {
-            /** @description Mainline branch (e.g. main, master). */
-            default_branch?: string;
             /** @description Filesystem path. */
             path?: string;
             /** @description Session name prefix. */
             prefix?: string;
             /** @description Whether rig is suspended. */
             suspended?: boolean;
-        };
-        RotatedPayload: {
-            prior_archive: string;
-            /** Format: int64 */
-            prior_first_seq: number;
-            /** Format: int64 */
-            prior_last_seq: number;
         };
         ScopeGroup: Record<string, never>;
         ServiceRestartOutputBody: {
@@ -3764,31 +3649,11 @@ export interface components {
             /** @description Full session state as returned by GET /session/{id}. For session.create, this result is emitted only after the session has left creating and can accept normal metadata and lifecycle commands. */
             session: components["schemas"]["SessionResponse"];
         };
-        SessionDrainAckedWithAssignedWorkPayload: {
-            /** @description ID of the work bead still holding this session as its assignee. */
-            bead_id: string;
-            /** @description Status of the stranded bead at emission time (typically 'in_progress' for cap-hit, 'open' if recovery races claim). */
-            bead_status?: string;
-            /** @description Short diagnostic context. Today both emission sites pass 'drain_acked_with_assigned_work'; reserved for finer-grained shape discriminators if later Shape-N variants land. */
-            reason?: string;
-            /** @description Canonical session bead ID for the session that drain-acked. */
-            session_id: string;
-            /** @description Pool template name when known at the emission site. */
-            template?: string;
-        };
         SessionInfo: {
             attached: boolean;
             /** Format: date-time */
             last_activity?: string;
             name: string;
-        };
-        SessionLifecyclePayload: {
-            /** @description Short human-readable reason. */
-            reason?: string;
-            /** @description Canonical session bead ID. Always present. */
-            session_id: string;
-            /** @description Session template name when known at the emission site. */
-            template?: string;
         };
         SessionMessageInputBody: {
             /** @description Message text to send. */
@@ -3809,10 +3674,6 @@ export interface components {
         SessionPendingResponse: {
             pending?: components["schemas"]["PendingInteraction"];
             supported: boolean;
-        };
-        SessionPermissionModeBody: {
-            /** @description Provider schema value for the permission_mode option. */
-            permission_mode: string;
         };
         /**
          * Session raw transcript frame
@@ -3847,7 +3708,6 @@ export interface components {
         SessionResponse: {
             active_bead?: string;
             activity?: string;
-            agent_kind?: string;
             alias?: string;
             attached: boolean;
             configured_named_session?: boolean;
@@ -3860,7 +3720,6 @@ export interface components {
             id: string;
             kind?: string;
             last_active?: string;
-            last_nudge_delivered_at?: string;
             last_output?: string;
             metadata?: {
                 [key: string]: string;
@@ -4119,35 +3978,7 @@ export interface components {
             /** Format: int64 */
             total: number;
         };
-        SupervisorFSPressureSkippedTickPayload: {
-            /**
-             * Format: double
-             * @description The Linux PSI some avg60 value observed for filesystem IO pressure.
-             */
-            avg60: number;
-            /**
-             * Format: int64
-             * @description Number of consecutive pressure skips including this tick.
-             */
-            consecutive_skips: number;
-            /**
-             * Format: int64
-             * @description Maximum consecutive skips before the supervisor forces one reconciliation tick.
-             */
-            max_consecutive_skips: number;
-            /** @description The pressure decision outcome: skipped for a shed tick or forced for the bounded liveness tick. */
-            outcome: string;
-            /**
-             * Format: double
-             * @description The configured avg60 threshold that triggered the skip.
-             */
-            threshold: number;
-            /** @description The daemon tick trigger, such as patrol or poke. */
-            trigger?: string;
-        };
         SupervisorHealthOutputBody: {
-            /** @description Build identity (typically a short git commit hash, with "-dirty" suffix when built from an unclean tree). Empty when unavailable. */
-            build_id?: string;
             /**
              * Format: int64
              * @description Cities currently running.
@@ -4169,22 +4000,6 @@ export interface components {
             uptime_sec: number;
             /** @description Supervisor version. */
             version: string;
-        };
-        SupervisorShutdownPayload: {
-            /** @description For source=socket_stop, the address reported by the connecting client. Typically empty for unix-socket peers. */
-            client_addr?: string;
-            /**
-             * @description Resulting shutdown mode.
-             * @enum {string}
-             */
-            mode: "destructive" | "preserve_sessions" | "unknown";
-            /** @description For source=signal, the human-readable signal name (e.g. "terminated", "interrupt"). Empty for socket_stop. */
-            signal?: string;
-            /**
-             * @description Which path triggered the shutdown.
-             * @enum {string}
-             */
-            source: "signal" | "socket_stop";
         };
         SupervisorStartup: {
             /** @description Current phase (when not ready). */
@@ -4221,7 +4036,7 @@ export interface components {
          * Typed city event stream envelope
          * @description Discriminated union of city event stream envelopes. Each variant constrains the envelope type and payload schema together.
          */
-        TypedEventStreamEnvelope: components["schemas"]["TypedEventStreamEnvelopeBeadClosed"] | components["schemas"]["TypedEventStreamEnvelopeBeadCreated"] | components["schemas"]["TypedEventStreamEnvelopeBeadUpdated"] | components["schemas"]["TypedEventStreamEnvelopeCityCreated"] | components["schemas"]["TypedEventStreamEnvelopeCityResumed"] | components["schemas"]["TypedEventStreamEnvelopeCitySuspended"] | components["schemas"]["TypedEventStreamEnvelopeCityUnregisterRequested"] | components["schemas"]["TypedEventStreamEnvelopeControllerStarted"] | components["schemas"]["TypedEventStreamEnvelopeControllerStopped"] | components["schemas"]["TypedEventStreamEnvelopeConvoyClosed"] | components["schemas"]["TypedEventStreamEnvelopeConvoyCreated"] | components["schemas"]["TypedEventStreamEnvelopeEventsRotated"] | components["schemas"]["TypedEventStreamEnvelopeExtmsgAdapterAdded"] | components["schemas"]["TypedEventStreamEnvelopeExtmsgAdapterRemoved"] | components["schemas"]["TypedEventStreamEnvelopeExtmsgBound"] | components["schemas"]["TypedEventStreamEnvelopeExtmsgGroupCreated"] | components["schemas"]["TypedEventStreamEnvelopeExtmsgInbound"] | components["schemas"]["TypedEventStreamEnvelopeExtmsgOutbound"] | components["schemas"]["TypedEventStreamEnvelopeExtmsgUnbound"] | components["schemas"]["TypedEventStreamEnvelopeMailArchived"] | components["schemas"]["TypedEventStreamEnvelopeMailDeleted"] | components["schemas"]["TypedEventStreamEnvelopeMailMarkedRead"] | components["schemas"]["TypedEventStreamEnvelopeMailMarkedUnread"] | components["schemas"]["TypedEventStreamEnvelopeMailRead"] | components["schemas"]["TypedEventStreamEnvelopeMailReplied"] | components["schemas"]["TypedEventStreamEnvelopeMailSent"] | components["schemas"]["TypedEventStreamEnvelopeOrderCompleted"] | components["schemas"]["TypedEventStreamEnvelopeOrderFailed"] | components["schemas"]["TypedEventStreamEnvelopeOrderFired"] | components["schemas"]["TypedEventStreamEnvelopeProjectIdentityStamped"] | components["schemas"]["TypedEventStreamEnvelopeProviderSwapped"] | components["schemas"]["TypedEventStreamEnvelopeRequestFailed"] | components["schemas"]["TypedEventStreamEnvelopeRequestResultCityCreate"] | components["schemas"]["TypedEventStreamEnvelopeRequestResultCityUnregister"] | components["schemas"]["TypedEventStreamEnvelopeRequestResultSessionCreate"] | components["schemas"]["TypedEventStreamEnvelopeRequestResultSessionMessage"] | components["schemas"]["TypedEventStreamEnvelopeRequestResultSessionSubmit"] | components["schemas"]["TypedEventStreamEnvelopeSessionCrashed"] | components["schemas"]["TypedEventStreamEnvelopeSessionDrainAckedWithAssignedWork"] | components["schemas"]["TypedEventStreamEnvelopeSessionDraining"] | components["schemas"]["TypedEventStreamEnvelopeSessionIdleKilled"] | components["schemas"]["TypedEventStreamEnvelopeSessionMaxAgeKilled"] | components["schemas"]["TypedEventStreamEnvelopeSessionQuarantined"] | components["schemas"]["TypedEventStreamEnvelopeSessionStopped"] | components["schemas"]["TypedEventStreamEnvelopeSessionSuspended"] | components["schemas"]["TypedEventStreamEnvelopeSessionUndrained"] | components["schemas"]["TypedEventStreamEnvelopeSessionUpdated"] | components["schemas"]["TypedEventStreamEnvelopeSessionWoke"] | components["schemas"]["TypedEventStreamEnvelopeSessionWorkQueryFailed"] | components["schemas"]["TypedEventStreamEnvelopeSupervisorFsPressureSkippedTick"] | components["schemas"]["TypedEventStreamEnvelopeSupervisorShutdownRequested"] | components["schemas"]["TypedEventStreamEnvelopeWorkerOperation"] | components["schemas"]["TypedEventStreamEnvelopeCustom"];
+        TypedEventStreamEnvelope: components["schemas"]["TypedEventStreamEnvelopeBeadClosed"] | components["schemas"]["TypedEventStreamEnvelopeBeadCreated"] | components["schemas"]["TypedEventStreamEnvelopeBeadUpdated"] | components["schemas"]["TypedEventStreamEnvelopeCityCreated"] | components["schemas"]["TypedEventStreamEnvelopeCityResumed"] | components["schemas"]["TypedEventStreamEnvelopeCitySuspended"] | components["schemas"]["TypedEventStreamEnvelopeCityUnregisterRequested"] | components["schemas"]["TypedEventStreamEnvelopeControllerStarted"] | components["schemas"]["TypedEventStreamEnvelopeControllerStopped"] | components["schemas"]["TypedEventStreamEnvelopeConvoyClosed"] | components["schemas"]["TypedEventStreamEnvelopeConvoyCreated"] | components["schemas"]["TypedEventStreamEnvelopeExtmsgAdapterAdded"] | components["schemas"]["TypedEventStreamEnvelopeExtmsgAdapterRemoved"] | components["schemas"]["TypedEventStreamEnvelopeExtmsgBound"] | components["schemas"]["TypedEventStreamEnvelopeExtmsgGroupCreated"] | components["schemas"]["TypedEventStreamEnvelopeExtmsgInbound"] | components["schemas"]["TypedEventStreamEnvelopeExtmsgOutbound"] | components["schemas"]["TypedEventStreamEnvelopeExtmsgUnbound"] | components["schemas"]["TypedEventStreamEnvelopeMailArchived"] | components["schemas"]["TypedEventStreamEnvelopeMailDeleted"] | components["schemas"]["TypedEventStreamEnvelopeMailMarkedRead"] | components["schemas"]["TypedEventStreamEnvelopeMailMarkedUnread"] | components["schemas"]["TypedEventStreamEnvelopeMailRead"] | components["schemas"]["TypedEventStreamEnvelopeMailReplied"] | components["schemas"]["TypedEventStreamEnvelopeMailSent"] | components["schemas"]["TypedEventStreamEnvelopeOrderCompleted"] | components["schemas"]["TypedEventStreamEnvelopeOrderFailed"] | components["schemas"]["TypedEventStreamEnvelopeOrderFired"] | components["schemas"]["TypedEventStreamEnvelopeProviderSwapped"] | components["schemas"]["TypedEventStreamEnvelopeRequestFailed"] | components["schemas"]["TypedEventStreamEnvelopeRequestResultCityCreate"] | components["schemas"]["TypedEventStreamEnvelopeRequestResultCityUnregister"] | components["schemas"]["TypedEventStreamEnvelopeRequestResultSessionCreate"] | components["schemas"]["TypedEventStreamEnvelopeRequestResultSessionMessage"] | components["schemas"]["TypedEventStreamEnvelopeRequestResultSessionSubmit"] | components["schemas"]["TypedEventStreamEnvelopeSessionCrashed"] | components["schemas"]["TypedEventStreamEnvelopeSessionDraining"] | components["schemas"]["TypedEventStreamEnvelopeSessionIdleKilled"] | components["schemas"]["TypedEventStreamEnvelopeSessionQuarantined"] | components["schemas"]["TypedEventStreamEnvelopeSessionStopped"] | components["schemas"]["TypedEventStreamEnvelopeSessionSuspended"] | components["schemas"]["TypedEventStreamEnvelopeSessionUndrained"] | components["schemas"]["TypedEventStreamEnvelopeSessionUpdated"] | components["schemas"]["TypedEventStreamEnvelopeSessionWoke"] | components["schemas"]["TypedEventStreamEnvelopeWorkerOperation"] | components["schemas"]["TypedEventStreamEnvelopeCustom"];
         /** TypedEventStreamEnvelope bead.closed */
         TypedEventStreamEnvelopeBeadClosed: {
             actor: string;
@@ -4424,23 +4239,6 @@ export interface components {
              * @enum {string}
              */
             type: "TypedEventStreamEnvelopeCustom";
-            workflow?: components["schemas"]["WorkflowEventProjection"];
-        };
-        /** TypedEventStreamEnvelope events.rotated */
-        TypedEventStreamEnvelopeEventsRotated: {
-            actor: string;
-            message?: string;
-            payload: components["schemas"]["RotatedPayload"];
-            /** Format: int64 */
-            seq: number;
-            subject?: string;
-            /** Format: date-time */
-            ts: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "events.rotated";
             workflow?: components["schemas"]["WorkflowEventProjection"];
         };
         /** TypedEventStreamEnvelope extmsg.adapter_added */
@@ -4732,23 +4530,6 @@ export interface components {
             type: "order.fired";
             workflow?: components["schemas"]["WorkflowEventProjection"];
         };
-        /** TypedEventStreamEnvelope project.identity.stamped */
-        TypedEventStreamEnvelopeProjectIdentityStamped: {
-            actor: string;
-            message?: string;
-            payload: components["schemas"]["ProjectIdentityStampedPayload"];
-            /** Format: int64 */
-            seq: number;
-            subject?: string;
-            /** Format: date-time */
-            ts: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "project.identity.stamped";
-            workflow?: components["schemas"]["WorkflowEventProjection"];
-        };
         /** TypedEventStreamEnvelope provider.swapped */
         TypedEventStreamEnvelopeProviderSwapped: {
             actor: string;
@@ -4872,7 +4653,7 @@ export interface components {
         TypedEventStreamEnvelopeSessionCrashed: {
             actor: string;
             message?: string;
-            payload: components["schemas"]["SessionLifecyclePayload"];
+            payload: components["schemas"]["NoPayload"];
             /** Format: int64 */
             seq: number;
             subject?: string;
@@ -4883,23 +4664,6 @@ export interface components {
              * @enum {string}
              */
             type: "session.crashed";
-            workflow?: components["schemas"]["WorkflowEventProjection"];
-        };
-        /** TypedEventStreamEnvelope session.drain_acked_with_assigned_work */
-        TypedEventStreamEnvelopeSessionDrainAckedWithAssignedWork: {
-            actor: string;
-            message?: string;
-            payload: components["schemas"]["SessionDrainAckedWithAssignedWorkPayload"];
-            /** Format: int64 */
-            seq: number;
-            subject?: string;
-            /** Format: date-time */
-            ts: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "session.drain_acked_with_assigned_work";
             workflow?: components["schemas"]["WorkflowEventProjection"];
         };
         /** TypedEventStreamEnvelope session.draining */
@@ -4936,23 +4700,6 @@ export interface components {
             type: "session.idle_killed";
             workflow?: components["schemas"]["WorkflowEventProjection"];
         };
-        /** TypedEventStreamEnvelope session.max_age_killed */
-        TypedEventStreamEnvelopeSessionMaxAgeKilled: {
-            actor: string;
-            message?: string;
-            payload: components["schemas"]["NoPayload"];
-            /** Format: int64 */
-            seq: number;
-            subject?: string;
-            /** Format: date-time */
-            ts: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "session.max_age_killed";
-            workflow?: components["schemas"]["WorkflowEventProjection"];
-        };
         /** TypedEventStreamEnvelope session.quarantined */
         TypedEventStreamEnvelopeSessionQuarantined: {
             actor: string;
@@ -4974,7 +4721,7 @@ export interface components {
         TypedEventStreamEnvelopeSessionStopped: {
             actor: string;
             message?: string;
-            payload: components["schemas"]["SessionLifecyclePayload"];
+            payload: components["schemas"]["NoPayload"];
             /** Format: int64 */
             seq: number;
             subject?: string;
@@ -5055,57 +4802,6 @@ export interface components {
             type: "session.woke";
             workflow?: components["schemas"]["WorkflowEventProjection"];
         };
-        /** TypedEventStreamEnvelope session.work_query_failed */
-        TypedEventStreamEnvelopeSessionWorkQueryFailed: {
-            actor: string;
-            message?: string;
-            payload: components["schemas"]["SessionLifecyclePayload"];
-            /** Format: int64 */
-            seq: number;
-            subject?: string;
-            /** Format: date-time */
-            ts: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "session.work_query_failed";
-            workflow?: components["schemas"]["WorkflowEventProjection"];
-        };
-        /** TypedEventStreamEnvelope supervisor.fs_pressure.skipped_tick */
-        TypedEventStreamEnvelopeSupervisorFsPressureSkippedTick: {
-            actor: string;
-            message?: string;
-            payload: components["schemas"]["SupervisorFSPressureSkippedTickPayload"];
-            /** Format: int64 */
-            seq: number;
-            subject?: string;
-            /** Format: date-time */
-            ts: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "supervisor.fs_pressure.skipped_tick";
-            workflow?: components["schemas"]["WorkflowEventProjection"];
-        };
-        /** TypedEventStreamEnvelope supervisor.shutdown_requested */
-        TypedEventStreamEnvelopeSupervisorShutdownRequested: {
-            actor: string;
-            message?: string;
-            payload: components["schemas"]["SupervisorShutdownPayload"];
-            /** Format: int64 */
-            seq: number;
-            subject?: string;
-            /** Format: date-time */
-            ts: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "supervisor.shutdown_requested";
-            workflow?: components["schemas"]["WorkflowEventProjection"];
-        };
         /** TypedEventStreamEnvelope worker.operation */
         TypedEventStreamEnvelopeWorkerOperation: {
             actor: string;
@@ -5127,7 +4823,7 @@ export interface components {
          * Typed supervisor event stream envelope
          * @description Discriminated union of supervisor event stream envelopes. Each variant constrains the envelope type and payload schema together and includes the source city.
          */
-        TypedTaggedEventStreamEnvelope: components["schemas"]["TypedTaggedEventStreamEnvelopeBeadClosed"] | components["schemas"]["TypedTaggedEventStreamEnvelopeBeadCreated"] | components["schemas"]["TypedTaggedEventStreamEnvelopeBeadUpdated"] | components["schemas"]["TypedTaggedEventStreamEnvelopeCityCreated"] | components["schemas"]["TypedTaggedEventStreamEnvelopeCityResumed"] | components["schemas"]["TypedTaggedEventStreamEnvelopeCitySuspended"] | components["schemas"]["TypedTaggedEventStreamEnvelopeCityUnregisterRequested"] | components["schemas"]["TypedTaggedEventStreamEnvelopeControllerStarted"] | components["schemas"]["TypedTaggedEventStreamEnvelopeControllerStopped"] | components["schemas"]["TypedTaggedEventStreamEnvelopeConvoyClosed"] | components["schemas"]["TypedTaggedEventStreamEnvelopeConvoyCreated"] | components["schemas"]["TypedTaggedEventStreamEnvelopeEventsRotated"] | components["schemas"]["TypedTaggedEventStreamEnvelopeExtmsgAdapterAdded"] | components["schemas"]["TypedTaggedEventStreamEnvelopeExtmsgAdapterRemoved"] | components["schemas"]["TypedTaggedEventStreamEnvelopeExtmsgBound"] | components["schemas"]["TypedTaggedEventStreamEnvelopeExtmsgGroupCreated"] | components["schemas"]["TypedTaggedEventStreamEnvelopeExtmsgInbound"] | components["schemas"]["TypedTaggedEventStreamEnvelopeExtmsgOutbound"] | components["schemas"]["TypedTaggedEventStreamEnvelopeExtmsgUnbound"] | components["schemas"]["TypedTaggedEventStreamEnvelopeMailArchived"] | components["schemas"]["TypedTaggedEventStreamEnvelopeMailDeleted"] | components["schemas"]["TypedTaggedEventStreamEnvelopeMailMarkedRead"] | components["schemas"]["TypedTaggedEventStreamEnvelopeMailMarkedUnread"] | components["schemas"]["TypedTaggedEventStreamEnvelopeMailRead"] | components["schemas"]["TypedTaggedEventStreamEnvelopeMailReplied"] | components["schemas"]["TypedTaggedEventStreamEnvelopeMailSent"] | components["schemas"]["TypedTaggedEventStreamEnvelopeOrderCompleted"] | components["schemas"]["TypedTaggedEventStreamEnvelopeOrderFailed"] | components["schemas"]["TypedTaggedEventStreamEnvelopeOrderFired"] | components["schemas"]["TypedTaggedEventStreamEnvelopeProjectIdentityStamped"] | components["schemas"]["TypedTaggedEventStreamEnvelopeProviderSwapped"] | components["schemas"]["TypedTaggedEventStreamEnvelopeRequestFailed"] | components["schemas"]["TypedTaggedEventStreamEnvelopeRequestResultCityCreate"] | components["schemas"]["TypedTaggedEventStreamEnvelopeRequestResultCityUnregister"] | components["schemas"]["TypedTaggedEventStreamEnvelopeRequestResultSessionCreate"] | components["schemas"]["TypedTaggedEventStreamEnvelopeRequestResultSessionMessage"] | components["schemas"]["TypedTaggedEventStreamEnvelopeRequestResultSessionSubmit"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionCrashed"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionDrainAckedWithAssignedWork"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionDraining"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionIdleKilled"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionMaxAgeKilled"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionQuarantined"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionStopped"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionSuspended"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionUndrained"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionUpdated"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionWoke"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionWorkQueryFailed"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSupervisorFsPressureSkippedTick"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSupervisorShutdownRequested"] | components["schemas"]["TypedTaggedEventStreamEnvelopeWorkerOperation"] | components["schemas"]["TypedTaggedEventStreamEnvelopeCustom"];
+        TypedTaggedEventStreamEnvelope: components["schemas"]["TypedTaggedEventStreamEnvelopeBeadClosed"] | components["schemas"]["TypedTaggedEventStreamEnvelopeBeadCreated"] | components["schemas"]["TypedTaggedEventStreamEnvelopeBeadUpdated"] | components["schemas"]["TypedTaggedEventStreamEnvelopeCityCreated"] | components["schemas"]["TypedTaggedEventStreamEnvelopeCityResumed"] | components["schemas"]["TypedTaggedEventStreamEnvelopeCitySuspended"] | components["schemas"]["TypedTaggedEventStreamEnvelopeCityUnregisterRequested"] | components["schemas"]["TypedTaggedEventStreamEnvelopeControllerStarted"] | components["schemas"]["TypedTaggedEventStreamEnvelopeControllerStopped"] | components["schemas"]["TypedTaggedEventStreamEnvelopeConvoyClosed"] | components["schemas"]["TypedTaggedEventStreamEnvelopeConvoyCreated"] | components["schemas"]["TypedTaggedEventStreamEnvelopeExtmsgAdapterAdded"] | components["schemas"]["TypedTaggedEventStreamEnvelopeExtmsgAdapterRemoved"] | components["schemas"]["TypedTaggedEventStreamEnvelopeExtmsgBound"] | components["schemas"]["TypedTaggedEventStreamEnvelopeExtmsgGroupCreated"] | components["schemas"]["TypedTaggedEventStreamEnvelopeExtmsgInbound"] | components["schemas"]["TypedTaggedEventStreamEnvelopeExtmsgOutbound"] | components["schemas"]["TypedTaggedEventStreamEnvelopeExtmsgUnbound"] | components["schemas"]["TypedTaggedEventStreamEnvelopeMailArchived"] | components["schemas"]["TypedTaggedEventStreamEnvelopeMailDeleted"] | components["schemas"]["TypedTaggedEventStreamEnvelopeMailMarkedRead"] | components["schemas"]["TypedTaggedEventStreamEnvelopeMailMarkedUnread"] | components["schemas"]["TypedTaggedEventStreamEnvelopeMailRead"] | components["schemas"]["TypedTaggedEventStreamEnvelopeMailReplied"] | components["schemas"]["TypedTaggedEventStreamEnvelopeMailSent"] | components["schemas"]["TypedTaggedEventStreamEnvelopeOrderCompleted"] | components["schemas"]["TypedTaggedEventStreamEnvelopeOrderFailed"] | components["schemas"]["TypedTaggedEventStreamEnvelopeOrderFired"] | components["schemas"]["TypedTaggedEventStreamEnvelopeProviderSwapped"] | components["schemas"]["TypedTaggedEventStreamEnvelopeRequestFailed"] | components["schemas"]["TypedTaggedEventStreamEnvelopeRequestResultCityCreate"] | components["schemas"]["TypedTaggedEventStreamEnvelopeRequestResultCityUnregister"] | components["schemas"]["TypedTaggedEventStreamEnvelopeRequestResultSessionCreate"] | components["schemas"]["TypedTaggedEventStreamEnvelopeRequestResultSessionMessage"] | components["schemas"]["TypedTaggedEventStreamEnvelopeRequestResultSessionSubmit"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionCrashed"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionDraining"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionIdleKilled"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionQuarantined"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionStopped"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionSuspended"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionUndrained"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionUpdated"] | components["schemas"]["TypedTaggedEventStreamEnvelopeSessionWoke"] | components["schemas"]["TypedTaggedEventStreamEnvelopeWorkerOperation"] | components["schemas"]["TypedTaggedEventStreamEnvelopeCustom"];
         /** TypedTaggedEventStreamEnvelope bead.closed */
         TypedTaggedEventStreamEnvelopeBeadClosed: {
             actor: string;
@@ -5342,24 +5038,6 @@ export interface components {
              * @enum {string}
              */
             type: "TypedTaggedEventStreamEnvelopeCustom";
-            workflow?: components["schemas"]["WorkflowEventProjection"];
-        };
-        /** TypedTaggedEventStreamEnvelope events.rotated */
-        TypedTaggedEventStreamEnvelopeEventsRotated: {
-            actor: string;
-            city: string;
-            message?: string;
-            payload: components["schemas"]["RotatedPayload"];
-            /** Format: int64 */
-            seq: number;
-            subject?: string;
-            /** Format: date-time */
-            ts: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "events.rotated";
             workflow?: components["schemas"]["WorkflowEventProjection"];
         };
         /** TypedTaggedEventStreamEnvelope extmsg.adapter_added */
@@ -5668,24 +5346,6 @@ export interface components {
             type: "order.fired";
             workflow?: components["schemas"]["WorkflowEventProjection"];
         };
-        /** TypedTaggedEventStreamEnvelope project.identity.stamped */
-        TypedTaggedEventStreamEnvelopeProjectIdentityStamped: {
-            actor: string;
-            city: string;
-            message?: string;
-            payload: components["schemas"]["ProjectIdentityStampedPayload"];
-            /** Format: int64 */
-            seq: number;
-            subject?: string;
-            /** Format: date-time */
-            ts: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "project.identity.stamped";
-            workflow?: components["schemas"]["WorkflowEventProjection"];
-        };
         /** TypedTaggedEventStreamEnvelope provider.swapped */
         TypedTaggedEventStreamEnvelopeProviderSwapped: {
             actor: string;
@@ -5817,7 +5477,7 @@ export interface components {
             actor: string;
             city: string;
             message?: string;
-            payload: components["schemas"]["SessionLifecyclePayload"];
+            payload: components["schemas"]["NoPayload"];
             /** Format: int64 */
             seq: number;
             subject?: string;
@@ -5828,24 +5488,6 @@ export interface components {
              * @enum {string}
              */
             type: "session.crashed";
-            workflow?: components["schemas"]["WorkflowEventProjection"];
-        };
-        /** TypedTaggedEventStreamEnvelope session.drain_acked_with_assigned_work */
-        TypedTaggedEventStreamEnvelopeSessionDrainAckedWithAssignedWork: {
-            actor: string;
-            city: string;
-            message?: string;
-            payload: components["schemas"]["SessionDrainAckedWithAssignedWorkPayload"];
-            /** Format: int64 */
-            seq: number;
-            subject?: string;
-            /** Format: date-time */
-            ts: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "session.drain_acked_with_assigned_work";
             workflow?: components["schemas"]["WorkflowEventProjection"];
         };
         /** TypedTaggedEventStreamEnvelope session.draining */
@@ -5884,24 +5526,6 @@ export interface components {
             type: "session.idle_killed";
             workflow?: components["schemas"]["WorkflowEventProjection"];
         };
-        /** TypedTaggedEventStreamEnvelope session.max_age_killed */
-        TypedTaggedEventStreamEnvelopeSessionMaxAgeKilled: {
-            actor: string;
-            city: string;
-            message?: string;
-            payload: components["schemas"]["NoPayload"];
-            /** Format: int64 */
-            seq: number;
-            subject?: string;
-            /** Format: date-time */
-            ts: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "session.max_age_killed";
-            workflow?: components["schemas"]["WorkflowEventProjection"];
-        };
         /** TypedTaggedEventStreamEnvelope session.quarantined */
         TypedTaggedEventStreamEnvelopeSessionQuarantined: {
             actor: string;
@@ -5925,7 +5549,7 @@ export interface components {
             actor: string;
             city: string;
             message?: string;
-            payload: components["schemas"]["SessionLifecyclePayload"];
+            payload: components["schemas"]["NoPayload"];
             /** Format: int64 */
             seq: number;
             subject?: string;
@@ -6010,60 +5634,6 @@ export interface components {
             type: "session.woke";
             workflow?: components["schemas"]["WorkflowEventProjection"];
         };
-        /** TypedTaggedEventStreamEnvelope session.work_query_failed */
-        TypedTaggedEventStreamEnvelopeSessionWorkQueryFailed: {
-            actor: string;
-            city: string;
-            message?: string;
-            payload: components["schemas"]["SessionLifecyclePayload"];
-            /** Format: int64 */
-            seq: number;
-            subject?: string;
-            /** Format: date-time */
-            ts: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "session.work_query_failed";
-            workflow?: components["schemas"]["WorkflowEventProjection"];
-        };
-        /** TypedTaggedEventStreamEnvelope supervisor.fs_pressure.skipped_tick */
-        TypedTaggedEventStreamEnvelopeSupervisorFsPressureSkippedTick: {
-            actor: string;
-            city: string;
-            message?: string;
-            payload: components["schemas"]["SupervisorFSPressureSkippedTickPayload"];
-            /** Format: int64 */
-            seq: number;
-            subject?: string;
-            /** Format: date-time */
-            ts: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "supervisor.fs_pressure.skipped_tick";
-            workflow?: components["schemas"]["WorkflowEventProjection"];
-        };
-        /** TypedTaggedEventStreamEnvelope supervisor.shutdown_requested */
-        TypedTaggedEventStreamEnvelopeSupervisorShutdownRequested: {
-            actor: string;
-            city: string;
-            message?: string;
-            payload: components["schemas"]["SupervisorShutdownPayload"];
-            /** Format: int64 */
-            seq: number;
-            subject?: string;
-            /** Format: date-time */
-            ts: string;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            type: "supervisor.shutdown_requested";
-            workflow?: components["schemas"]["WorkflowEventProjection"];
-        };
         /** TypedTaggedEventStreamEnvelope worker.operation */
         TypedTaggedEventStreamEnvelopeWorkerOperation: {
             actor: string;
@@ -6088,54 +5658,14 @@ export interface components {
             session_id: string;
         };
         WorkerOperationEventPayload: {
-            /** @description Qualified agent identity (best-effort, absent if the session has no agent_name metadata or alias). */
-            agent_name?: string;
-            /** @description Work bead this operation is acting on (best-effort, may be absent for non-bead-scoped ops). */
-            bead_id?: string;
-            /**
-             * Format: int64
-             * @description Input tokens written into the prompt cache (best-effort, currently always absent).
-             */
-            cache_creation_tokens?: number;
-            /**
-             * Format: int64
-             * @description Cached input tokens read (best-effort, currently always absent).
-             */
-            cache_read_tokens?: number;
-            /**
-             * Format: int64
-             * @description Output tokens (best-effort, currently always absent).
-             */
-            completion_tokens?: number;
-            /**
-             * Format: double
-             * @description Estimated invocation cost in USD (best-effort, currently always absent; see #1255 for pricing seam).
-             */
-            cost_usd_estimate?: number;
             delivered?: boolean;
             /** Format: int64 */
             duration_ms: number;
             error?: string;
             /** Format: date-time */
             finished_at: string;
-            /**
-             * Format: int64
-             * @description LLM invocation wall-clock latency (best-effort, currently always absent — no source).
-             */
-            latency_ms?: number;
-            /** @description LLM model identifier (best-effort, may be absent until follow-up wiring lands). */
-            model?: string;
             op_id: string;
             operation: string;
-            /** @description SHA-256 of the rendered prompt (best-effort, currently always absent; #1256 follow-up). */
-            prompt_sha?: string;
-            /**
-             * Format: int64
-             * @description Non-cached input tokens (best-effort, currently always absent; treat zero as 'not measured', not 'free').
-             */
-            prompt_tokens?: number;
-            /** @description Template version frontmatter (best-effort, currently always absent; #1256 follow-up). */
-            prompt_version?: string;
             provider?: string;
             queued?: boolean;
             result: string;
@@ -8053,46 +7583,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EventEmitOutputBody"];
-                };
-            };
-            /** @description Error */
-            default: {
-                headers: {
-                    "X-GC-Request-Id": components["headers"]["X-GC-Request-Id"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ErrorModel"];
-                };
-            };
-        };
-    };
-    "rotate-events": {
-        parameters: {
-            query?: {
-                /** @description Wait for archive compression to complete before returning. */
-                wait?: boolean;
-            };
-            header: {
-                /** @description Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks. */
-                "X-GC-Request": string;
-            };
-            path: {
-                /** @description City name. */
-                cityName: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    "X-GC-Request-Id": components["headers"]["X-GC-Request-Id"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EventRotateResponse"];
                 };
             };
             /** @description Error */
@@ -11307,50 +10797,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionPendingResponse"];
-                };
-            };
-            /** @description Error */
-            default: {
-                headers: {
-                    "X-GC-Request-Id": components["headers"]["X-GC-Request-Id"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ErrorModel"];
-                };
-            };
-        };
-    };
-    "post-v0-city-by-city-name-session-by-id-permission-mode": {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks. */
-                "X-GC-Request": string;
-            };
-            path: {
-                /** @description City name. */
-                cityName: string;
-                /** @description Session ID, alias, or runtime session_name. */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SessionPermissionModeBody"];
-            };
-        };
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    "X-GC-Index"?: number;
-                    "X-GC-Request-Id": components["headers"]["X-GC-Request-Id"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SessionResponse"];
                 };
             };
             /** @description Error */

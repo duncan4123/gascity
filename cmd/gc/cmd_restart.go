@@ -13,8 +13,7 @@ import (
 
 // newRestartCmd creates the top-level "gc restart" command.
 func newRestartCmd(stdout, stderr io.Writer) *cobra.Command {
-	var jsonOut bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "restart [path]",
 		Short: "Restart all agent sessions in the city",
 		Long: `Restart the city by stopping it then starting it again.
@@ -24,46 +23,25 @@ mode this unregisters the city, then re-registers it and triggers an
 immediate reconcile.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			if cmdRestartJSON(args, stdout, stderr, jsonOut) != 0 {
+			if cmdRestart(args, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSONL summary")
-	return cmd
 }
 
-func cmdRestartJSON(args []string, stdout, stderr io.Writer, jsonOut bool) int {
+// cmdRestart stops the city, then re-starts it under the supervisor.
+func cmdRestart(args []string, stdout, stderr io.Writer) int {
 	nameOverride, err := restartRegistrationName(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc restart: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
-	restartStdout := stdout
-	if jsonOut {
-		restartStdout = io.Discard
-	}
-	if code := cmdStop(args, restartStdout, stderr, 0, false); code != 0 {
+	if code := cmdStop(args, stdout, stderr); code != 0 {
 		return code
 	}
-	code := doStartWithNameOverride(args, false /*controllerMode*/, restartStdout, stderr, nameOverride)
-	if code != 0 || !jsonOut {
-		return code
-	}
-	cityPath := ""
-	if dir, err := resolveStartDir(args); err == nil {
-		if resolved, err := requireBootstrappedCity(dir); err == nil {
-			cityPath = resolved
-		}
-	}
-	return writeLifecycleActionJSONOrExit(stdout, stderr, "gc restart", lifecycleActionJSON{
-		Command:  "restart",
-		Action:   "restart",
-		Message:  "City restarted under supervisor.",
-		CityName: nameOverride,
-		CityPath: cityPath,
-	})
+	return doStartWithNameOverride(args, false /*controllerMode*/, stdout, stderr, nameOverride)
 }
 
 func restartRegistrationName(args []string) (string, error) {

@@ -5,17 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/gastownhall/gascity/internal/buildimage"
 	"github.com/spf13/cobra"
-)
-
-var (
-	buildImageAssembleContext = buildimage.AssembleContext
-	buildImageBuild           = buildimage.Build
-	buildImagePush            = buildimage.Push
 )
 
 func newBuildImageCmd(stdout, stderr io.Writer) *cobra.Command {
@@ -25,7 +18,6 @@ func newBuildImageCmd(stdout, stderr io.Writer) *cobra.Command {
 		rigPaths    []string
 		push        bool
 		contextOnly bool
-		jsonOut     bool
 	)
 
 	cmd := &cobra.Command{
@@ -53,26 +45,9 @@ volume mounts at runtime.`,
   gc build-image ~/bright-lights --tag registry.io/my-city:latest --push`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			out := stdout
-			if jsonOut {
-				out = stderr
-			}
-			result, code := doBuildImageWithResult(args, tag, baseImage, rigPaths, push, contextOnly, out, stderr)
+			code := doBuildImage(args, tag, baseImage, rigPaths, push, contextOnly, stdout, stderr)
 			if code != 0 {
 				return errExit
-			}
-			if jsonOut {
-				return writeCLIJSONLineOrErr(stdout, stderr, "gc build-image", buildImageJSONResult{
-					SchemaVersion: "1",
-					OK:            true,
-					CityPath:      result.CityPath,
-					Tag:           tag,
-					BaseImage:     baseImage,
-					ContextOnly:   contextOnly,
-					ContextDir:    result.ContextDir,
-					Push:          push,
-					RigPathCount:  len(rigPaths),
-				})
 			}
 			return nil
 		},
@@ -83,38 +58,14 @@ volume mounts at runtime.`,
 	cmd.Flags().StringSliceVar(&rigPaths, "rig-path", nil, "rig name:path pairs (repeatable)")
 	cmd.Flags().BoolVar(&push, "push", false, "push image after building")
 	cmd.Flags().BoolVar(&contextOnly, "context-only", false, "write build context without running docker build")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON summary")
 
 	return cmd
 }
 
-type buildImageJSONResult struct {
-	SchemaVersion string `json:"schema_version"`
-	OK            bool   `json:"ok"`
-	CityPath      string `json:"city_path,omitempty"`
-	Tag           string `json:"tag,omitempty"`
-	BaseImage     string `json:"base_image"`
-	ContextOnly   bool   `json:"context_only"`
-	ContextDir    string `json:"context_dir,omitempty"`
-	Push          bool   `json:"push"`
-	RigPathCount  int    `json:"rig_path_count"`
-}
-
-type buildImageRunResult struct {
-	CityPath   string
-	ContextDir string
-}
-
-func doBuildImage(args []string, tag, baseImage string, rigPaths []string, push, contextOnly bool, stdout, stderr io.Writer) int { //nolint:unparam // preserved for existing tests; command path needs doBuildImageWithResult.
-	_, code := doBuildImageWithResult(args, tag, baseImage, rigPaths, push, contextOnly, stdout, stderr)
-	return code
-}
-
-func doBuildImageWithResult(args []string, tag, baseImage string, rigPaths []string, push, contextOnly bool, stdout, stderr io.Writer) (buildImageRunResult, int) {
-	result := buildImageRunResult{}
+func doBuildImage(args []string, tag, baseImage string, rigPaths []string, push, contextOnly bool, stdout, stderr io.Writer) int {
 	if !contextOnly && tag == "" {
 		fmt.Fprintln(stderr, "gc build-image: --tag is required (or use --context-only)") //nolint:errcheck // best-effort stderr
-		return result, 1
+		return 1
 	}
 
 	// Resolve city path.
@@ -126,12 +77,8 @@ func doBuildImageWithResult(args []string, tag, baseImage string, rigPaths []str
 		cityPath, err = resolveCommandCity(nil)
 		if err != nil {
 			fmt.Fprintf(stderr, "gc build-image: %v\n", err) //nolint:errcheck // best-effort stderr
-			return result, 1
+			return 1
 		}
-	}
-	result.CityPath = cityPath
-	if abs, err := filepath.Abs(cityPath); err == nil {
-		result.CityPath = abs
 	}
 
 	// Parse rig-path flags (name:path format).
@@ -140,7 +87,7 @@ func doBuildImageWithResult(args []string, tag, baseImage string, rigPaths []str
 		name, path, ok := strings.Cut(rp, ":")
 		if !ok || name == "" || path == "" {
 			fmt.Fprintf(stderr, "gc build-image: invalid --rig-path %q (expected name:path)\n", rp) //nolint:errcheck // best-effort stderr
-			return result, 1
+			return 1
 		}
 		rigs[name] = path
 	}
@@ -149,7 +96,7 @@ func doBuildImageWithResult(args []string, tag, baseImage string, rigPaths []str
 	outputDir, err := os.MkdirTemp("", "gc-build-image-*")
 	if err != nil {
 		fmt.Fprintf(stderr, "gc build-image: creating temp dir: %v\n", err) //nolint:errcheck // best-effort stderr
-		return result, 1
+		return 1
 	}
 	if !contextOnly {
 		defer func() { _ = os.RemoveAll(outputDir) }()
@@ -162,37 +109,35 @@ func doBuildImageWithResult(args []string, tag, baseImage string, rigPaths []str
 		BaseImage: baseImage,
 		Tag:       tag,
 		RigPaths:  rigs,
-		Stderr:    stderr,
 	}
-	if err := buildImageAssembleContext(opts); err != nil {
+	if err := buildimage.AssembleContext(opts); err != nil {
 		fmt.Fprintf(stderr, "gc build-image: %v\n", err) //nolint:errcheck // best-effort stderr
-		return result, 1
+		return 1
 	}
 
 	if contextOnly {
-		result.ContextDir = outputDir
 		fmt.Fprintf(stdout, "Build context written to: %s\n", outputDir) //nolint:errcheck // best-effort stdout
-		return result, 0
+		return 0
 	}
 
 	// Build image.
 	fmt.Fprintf(stdout, "Building image %s...\n", tag) //nolint:errcheck // best-effort stdout
 	ctx := context.Background()
-	if err := buildImageBuild(ctx, outputDir, tag, stdout, stderr); err != nil {
+	if err := buildimage.Build(ctx, outputDir, tag, stdout, stderr); err != nil {
 		fmt.Fprintf(stderr, "gc build-image: %v\n", err) //nolint:errcheck // best-effort stderr
-		return result, 1
+		return 1
 	}
 	fmt.Fprintf(stdout, "Image built: %s\n", tag) //nolint:errcheck // best-effort stdout
 
 	// Push if requested.
 	if push {
 		fmt.Fprintf(stdout, "Pushing %s...\n", tag) //nolint:errcheck // best-effort stdout
-		if err := buildImagePush(ctx, tag, stdout, stderr); err != nil {
+		if err := buildimage.Push(ctx, tag, stdout, stderr); err != nil {
 			fmt.Fprintf(stderr, "gc build-image: %v\n", err) //nolint:errcheck // best-effort stderr
-			return result, 1
+			return 1
 		}
 		fmt.Fprintf(stdout, "Pushed: %s\n", tag) //nolint:errcheck // best-effort stdout
 	}
 
-	return result, 0
+	return 0
 }

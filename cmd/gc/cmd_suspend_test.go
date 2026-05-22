@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,7 +24,7 @@ func TestSuspendResume(t *testing.T) {
 
 	// Suspend.
 	var stdout, stderr bytes.Buffer
-	code := doSuspendCity(f, cityPath, true, false, &stdout, &stderr)
+	code := doSuspendCity(f, cityPath, true, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("suspend code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -49,7 +48,7 @@ func TestSuspendResume(t *testing.T) {
 	// Resume.
 	stdout.Reset()
 	stderr.Reset()
-	code = doSuspendCity(f, cityPath, false, false, &stdout, &stderr)
+	code = doSuspendCity(f, cityPath, false, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("resume code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -57,7 +56,7 @@ func TestSuspendResume(t *testing.T) {
 		t.Errorf("stdout = %q, want resume message", stdout.String())
 	}
 
-	// Verify config was updated (suspended field dropped via omitempty).
+	// Verify config was updated and keeps an explicit false value.
 	written = f.Files[filepath.Join(cityPath, "city.toml")]
 	got, err = config.Parse(written)
 	if err != nil {
@@ -66,35 +65,8 @@ func TestSuspendResume(t *testing.T) {
 	if got.Workspace.Suspended {
 		t.Error("Workspace.Suspended = true after resume, want false")
 	}
-	if strings.Contains(string(written), "suspended") {
-		t.Errorf("written TOML should omit 'suspended' when false:\n%s", written)
-	}
-}
-
-func TestSuspendJSON(t *testing.T) {
-	f := fsys.NewFake()
-	cfg := config.DefaultCity("bright-lights")
-	data, err := cfg.Marshal()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cityPath := "/city"
-	f.Files[filepath.Join(cityPath, "city.toml")] = data
-
-	var stdout, stderr bytes.Buffer
-	code := doSuspendCity(f, cityPath, true, true, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("suspend code = %d, want 0; stderr: %s", code, stderr.String())
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %q", stderr.String())
-	}
-	var got lifecycleActionJSON
-	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
-		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
-	}
-	if got.SchemaVersion != "1" || !got.OK || got.Command != "suspend" || got.CityPath != cityPath {
-		t.Fatalf("payload = %+v", got)
+	if !strings.Contains(string(written), "suspended = false") {
+		t.Errorf("written TOML should keep 'suspended = false':\n%s", written)
 	}
 }
 
@@ -111,7 +83,7 @@ func TestSuspendAlreadySuspended(t *testing.T) {
 	f.Files[filepath.Join("/city", "city.toml")] = data
 
 	var stdout, stderr bytes.Buffer
-	code := doSuspendCity(f, "/city", true, false, &stdout, &stderr)
+	code := doSuspendCity(f, "/city", true, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("suspend code = %d, want 0 (idempotent)", code)
 	}
@@ -127,7 +99,7 @@ func TestResumeAlreadyResumed(t *testing.T) {
 	f.Files[filepath.Join("/city", "city.toml")] = data
 
 	var stdout, stderr bytes.Buffer
-	code := doSuspendCity(f, "/city", false, false, &stdout, &stderr)
+	code := doSuspendCity(f, "/city", false, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("resume code = %d, want 0 (idempotent)", code)
 	}
@@ -151,7 +123,7 @@ dir = "myrig"
 `)
 
 	var stdout, stderr bytes.Buffer
-	code := doSuspendCity(f, "/city", true, false, &stdout, &stderr)
+	code := doSuspendCity(f, "/city", true, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("suspend code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -170,7 +142,7 @@ dir = "myrig"
 	// Resume should also preserve.
 	stdout.Reset()
 	stderr.Reset()
-	code = doSuspendCity(f, "/city", false, false, &stdout, &stderr)
+	code = doSuspendCity(f, "/city", false, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("resume code = %d, want 0; stderr: %s", code, stderr.String())
 	}

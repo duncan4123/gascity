@@ -1,6 +1,4 @@
 scope = "rig"
-start_command = "gc agent-script --script {{.ConfigDir}}/assets/scripts/lifecycle-refinery-merge.yaml"
-lifecycle = "one_shot"
+start_command = "{{.ConfigDir}}/assets/scripts/mock-refinery.sh"
 nudge = "Check for merge-ready beads and merge them to main."
 idle_timeout = "10m"
-max_active_sessions = 1

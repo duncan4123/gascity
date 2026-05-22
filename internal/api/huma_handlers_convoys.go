@@ -8,8 +8,6 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/gastownhall/gascity/internal/beads"
-	convoycore "github.com/gastownhall/gascity/internal/convoy"
-	"github.com/gastownhall/gascity/internal/sourceworkflow"
 )
 
 // convoyProgress is the shared {total, closed} progress shape used by
@@ -164,7 +162,11 @@ func (s *Server) humaHandleConvoyGet(_ context.Context, input *ConvoyGetInput) (
 			return nil, huma.Error404NotFound("bead " + id + " is not a convoy")
 		}
 
-		children, err := convoycore.Members(store, id, true)
+		children, err := store.List(beads.ListQuery{
+			ParentID:      id,
+			IncludeClosed: true,
+			Sort:          beads.SortCreatedAsc,
+		})
 		if err != nil {
 			return nil, huma.Error500InternalServerError(err.Error())
 		}
@@ -175,7 +177,7 @@ func (s *Server) humaHandleConvoyGet(_ context.Context, input *ConvoyGetInput) (
 		total := len(children)
 		closed := 0
 		for _, c := range children {
-			if convoycore.IsTerminalStatus(c.Status) {
+			if c.Status == "closed" {
 				closed++
 			}
 		}
@@ -200,11 +202,16 @@ func (s *Server) humaHandleConvoyCreate(_ context.Context, input *ConvoyCreateIn
 		return nil, huma.Error400BadRequest("rig is required when multiple rigs are configured")
 	}
 
-	// Pre-validate all items exist before creating the convoy.
+	// Pre-validate all items exist AND capture their current parent so
+	// a mid-link failure can roll each one back, not just delete the
+	// new convoy and leave items pointing at a deleted ID.
+	prevParent := make(map[string]string, len(input.Body.Items))
 	for _, itemID := range input.Body.Items {
-		if _, err := store.Get(itemID); err != nil {
+		item, err := store.Get(itemID)
+		if err != nil {
 			return nil, storeError(err)
 		}
+		prevParent[itemID] = item.ParentID
 	}
 
 	convoy, err := store.Create(beads.Bead{
@@ -215,12 +222,17 @@ func (s *Server) humaHandleConvoyCreate(_ context.Context, input *ConvoyCreateIn
 		return nil, huma.Error500InternalServerError(err.Error())
 	}
 
-	// Link child items to convoy one at a time. On first failure, roll
-	// back previously-created tracks deps and THEN delete the new convoy.
+	// Link child items to convoy one at a time. On first failure,
+	// roll back previously-reparented items to their original
+	// parents (via rollbackConvoyMembership) and THEN delete the
+	// new convoy bead. Earlier code deleted the convoy without
+	// restoring item parents, leaving items pointing at a deleted
+	// convoy ID — a worse state than half-populated.
 	applied := make([]string, 0, len(input.Body.Items))
 	for _, itemID := range input.Body.Items {
-		if err := convoycore.TrackItem(store, convoy.ID, itemID); err != nil {
-			rollbackConvoyTracks(store, convoy.ID, applied, "convoy.create")
+		pid := convoy.ID
+		if err := store.Update(itemID, beads.UpdateOpts{ParentID: &pid}); err != nil {
+			rollbackConvoyMembership(store, applied, prevParent, "convoy.create")
 			if delErr := store.Delete(convoy.ID); delErr != nil {
 				log.Printf("gc api: convoy create rollback: delete %s after link failure: %v", convoy.ID, delErr)
 			}
@@ -236,8 +248,8 @@ func (s *Server) humaHandleConvoyCreate(_ context.Context, input *ConvoyCreateIn
 }
 
 // humaHandleConvoyAdd is the Huma-typed handler for POST /v0/convoy/{id}/add.
-// Applies each tracks link one at a time; on first failure, rolls back
-// previously-applied links so the convoy never ends up half-added.
+// Applies each parent-link update one at a time; on first failure, rolls
+// back previously-applied updates so the convoy never ends up half-added.
 func (s *Server) humaHandleConvoyAdd(_ context.Context, input *ConvoyAddInput) (*OKResponse, error) {
 	id := input.ID
 	stores := s.state.BeadStores()
@@ -253,16 +265,21 @@ func (s *Server) humaHandleConvoyAdd(_ context.Context, input *ConvoyAddInput) (
 		if b.Type != "convoy" {
 			return nil, huma.Error400BadRequest("bead " + id + " is not a convoy")
 		}
-		// Pre-validate all items exist before linking.
+		// Pre-validate all items exist and capture their previous parent
+		// so rollback can restore it if one of the Updates later fails.
+		prevParent := make(map[string]string, len(input.Body.Items))
 		for _, itemID := range input.Body.Items {
-			if _, err := store.Get(itemID); err != nil {
+			item, err := store.Get(itemID)
+			if err != nil {
 				return nil, storeError(err)
 			}
+			prevParent[itemID] = item.ParentID
 		}
 		applied := make([]string, 0, len(input.Body.Items))
 		for _, itemID := range input.Body.Items {
-			if err := convoycore.TrackItem(store, id, itemID); err != nil {
-				rollbackConvoyTracks(store, id, applied, "convoy.add")
+			pid := id
+			if err := store.Update(itemID, beads.UpdateOpts{ParentID: &pid}); err != nil {
+				rollbackConvoyMembership(store, applied, prevParent, "convoy.add")
 				return nil, huma.Error500InternalServerError("failed to link item " + itemID + ": " + err.Error())
 			}
 			applied = append(applied, itemID)
@@ -290,9 +307,7 @@ func (s *Server) humaHandleConvoyRemove(_ context.Context, input *ConvoyRemoveIn
 		if b.Type != "convoy" {
 			return nil, huma.Error400BadRequest("bead " + id + " is not a convoy")
 		}
-		// Pre-validate all items exist and belong to this convoy via either
-		// legacy parent-child membership or the current tracks dependency.
-		snapshots := make(map[string]convoyMembershipSnapshot, len(input.Body.Items))
+		// Pre-validate all items exist and belong to this convoy.
 		for _, itemID := range input.Body.Items {
 			item, gerr := store.Get(itemID)
 			if gerr != nil {
@@ -301,39 +316,23 @@ func (s *Server) humaHandleConvoyRemove(_ context.Context, input *ConvoyRemoveIn
 				}
 				return nil, huma.Error500InternalServerError(gerr.Error())
 			}
-			hadTrack, terr := convoycore.HasTrack(store, id, itemID)
-			if terr != nil {
-				return nil, huma.Error500InternalServerError(terr.Error())
-			}
-			if item.ParentID != id && !hadTrack {
+			if item.ParentID != id {
 				return nil, huma.Error400BadRequest("item " + itemID + " does not belong to convoy " + id)
 			}
-			snapshots[itemID] = convoyMembershipSnapshot{
-				ParentID: item.ParentID,
-				HadTrack: hadTrack,
-			}
 		}
-
+		// Unlink items by clearing their ParentID. Same rollback shape
+		// as ConvoyAdd: record the old parent per item so a mid-loop
+		// failure can restore the convoy to its pre-call state.
+		prevParent := make(map[string]string, len(input.Body.Items))
+		for _, itemID := range input.Body.Items {
+			prevParent[itemID] = id
+		}
 		applied := make([]string, 0, len(input.Body.Items))
 		empty := ""
 		for _, itemID := range input.Body.Items {
-			snapshot := snapshots[itemID]
-			if snapshot.HadTrack {
-				if err := convoycore.UntrackItem(store, id, itemID); err != nil {
-					rollbackConvoyMembershipRemoval(store, id, applied, snapshots, "convoy.remove")
-					return nil, huma.Error500InternalServerError("failed to unlink item " + itemID + ": " + err.Error())
-				}
-			}
-			if snapshot.ParentID == id {
-				if err := store.Update(itemID, beads.UpdateOpts{ParentID: &empty}); err != nil {
-					if snapshot.HadTrack {
-						if trackErr := convoycore.TrackItem(store, id, itemID); trackErr != nil {
-							log.Printf("gc api: convoy.remove rollback failed for current item %s tracks dep: %v", itemID, trackErr)
-						}
-					}
-					rollbackConvoyMembershipRemoval(store, id, applied, snapshots, "convoy.remove")
-					return nil, huma.Error500InternalServerError("failed to unlink item " + itemID + ": " + err.Error())
-				}
+			if err := store.Update(itemID, beads.UpdateOpts{ParentID: &empty}); err != nil {
+				rollbackConvoyMembership(store, applied, prevParent, "convoy.remove")
+				return nil, huma.Error500InternalServerError("failed to unlink item " + itemID + ": " + err.Error())
 			}
 			applied = append(applied, itemID)
 		}
@@ -344,34 +343,17 @@ func (s *Server) humaHandleConvoyRemove(_ context.Context, input *ConvoyRemoveIn
 	return nil, huma.Error404NotFound("convoy " + id + " not found")
 }
 
-func rollbackConvoyTracks(store beads.Store, convoyID string, applied []string, op string) {
+// rollbackConvoyMembership reverses a series of ParentID updates. If a
+// rollback Update itself fails, the inconsistent state is logged — an
+// operator-visible signal that a reconciler or follow-up delete is
+// needed. Best-effort: walks applied in reverse so later-applied items
+// are restored first.
+func rollbackConvoyMembership(store beads.Store, applied []string, prevParent map[string]string, op string) {
 	for i := len(applied) - 1; i >= 0; i-- {
 		itemID := applied[i]
-		if err := convoycore.UntrackItem(store, convoyID, itemID); err != nil {
-			log.Printf("gc api: %s rollback failed for item %s tracks dep: %v", op, itemID, err)
-		}
-	}
-}
-
-type convoyMembershipSnapshot struct {
-	ParentID string
-	HadTrack bool
-}
-
-func rollbackConvoyMembershipRemoval(store beads.Store, convoyID string, applied []string, snapshots map[string]convoyMembershipSnapshot, op string) {
-	for i := len(applied) - 1; i >= 0; i-- {
-		itemID := applied[i]
-		snapshot := snapshots[itemID]
-		if snapshot.ParentID == convoyID {
-			prev := snapshot.ParentID
-			if err := store.Update(itemID, beads.UpdateOpts{ParentID: &prev}); err != nil {
-				log.Printf("gc api: %s rollback failed for item %s parent (→ %q): %v", op, itemID, prev, err)
-			}
-		}
-		if snapshot.HadTrack {
-			if err := convoycore.TrackItem(store, convoyID, itemID); err != nil {
-				log.Printf("gc api: %s rollback failed for item %s tracks dep: %v", op, itemID, err)
-			}
+		prev := prevParent[itemID]
+		if err := store.Update(itemID, beads.UpdateOpts{ParentID: &prev}); err != nil {
+			log.Printf("gc api: %s rollback failed for item %s (→ %q): %v", op, itemID, prev, err)
 		}
 	}
 }
@@ -394,7 +376,11 @@ func (s *Server) humaHandleConvoyCheck(_ context.Context, input *ConvoyCheckInpu
 			return nil, huma.Error400BadRequest("bead " + id + " is not a convoy")
 		}
 
-		children, err := convoycore.Members(store, id, true)
+		children, err := store.List(beads.ListQuery{
+			ParentID:      id,
+			IncludeClosed: true,
+			Sort:          beads.SortCreatedAsc,
+		})
 		if err != nil {
 			return nil, huma.Error500InternalServerError(err.Error())
 		}
@@ -402,7 +388,7 @@ func (s *Server) humaHandleConvoyCheck(_ context.Context, input *ConvoyCheckInpu
 		total := len(children)
 		closed := 0
 		for _, c := range children {
-			if convoycore.IsTerminalStatus(c.Status) {
+			if c.Status == "closed" {
 				closed++
 			}
 		}
@@ -546,10 +532,7 @@ func (s *Server) humaDeleteWorkflow(workflowID string) (*OKResponse, error) {
 			continue
 		}
 		found = true
-		info.store.CloseAll(ids, map[string]string{ //nolint:errcheck
-			"gc.outcome":   "skipped",
-			"close_reason": sourceworkflow.WorkflowSkippedCloseReason,
-		})
+		info.store.CloseAll(ids, map[string]string{"gc.outcome": "skipped"}) //nolint:errcheck
 	}
 
 	if !found {
@@ -692,10 +675,7 @@ func (s *Server) humaHandleWorkflowDelete(_ context.Context, input *WorkflowDele
 		found = true
 
 		// Phase 1: Batch close all open beads.
-		n, closeErr := info.store.CloseAll(ids, map[string]string{
-			"gc.outcome":   "skipped",
-			"close_reason": sourceworkflow.WorkflowSkippedCloseReason,
-		})
+		n, closeErr := info.store.CloseAll(ids, map[string]string{"gc.outcome": "skipped"})
 		closed += n
 		if closeErr != nil {
 			pa.record("store "+info.scopeRef+" close", closeErr)

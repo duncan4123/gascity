@@ -42,7 +42,7 @@ func doWispAutoclose(beadID string, stdout, _ io.Writer) {
 		return
 	}
 	storeRoot := convoyAutocloseStoreRoot(cwd)
-	cityPath := autocloseCityPathForStoreRoot(storeRoot)
+	cityPath := cityForStoreDir(storeRoot)
 	store, err := openStoreAtForCity(storeRoot, cityPath)
 	if err != nil {
 		return

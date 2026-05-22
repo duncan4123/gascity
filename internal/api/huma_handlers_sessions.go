@@ -2,8 +2,6 @@ package api
 
 import (
 	"errors"
-	"net/http"
-	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/gastownhall/gascity/internal/beads"
@@ -54,8 +52,6 @@ func humaSessionManagerError(err error) error {
 		return huma.Error409Conflict("invalid_interaction: " + err.Error())
 	case errors.Is(err, session.ErrSessionClosed), errors.Is(err, session.ErrResumeRequired):
 		return huma.Error409Conflict("conflict: " + err.Error())
-	case errors.Is(err, session.ErrSessionActive):
-		return huma.Error409Conflict("conflict: " + err.Error())
 	case errors.Is(err, session.ErrNotSession):
 		return huma.Error400BadRequest("invalid: " + err.Error())
 	case errors.Is(err, session.ErrIllegalTransition):
@@ -72,21 +68,6 @@ func humaStoreError(err error) error {
 		return huma.Error404NotFound("not_found: " + err.Error())
 	}
 	return huma.Error500InternalServerError("internal: " + err.Error())
-}
-
-func writeHumaStatusError(w http.ResponseWriter, err error) {
-	var statusErr huma.StatusError
-	if errors.As(err, &statusErr) {
-		code := "error"
-		msg := statusErr.Error()
-		if before, after, ok := strings.Cut(msg, ": "); ok {
-			code = before
-			msg = after
-		}
-		writeError(w, statusErr.GetStatus(), code, msg)
-		return
-	}
-	writeError(w, http.StatusInternalServerError, "internal", err.Error())
 }
 
 // --- Session List ---

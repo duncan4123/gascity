@@ -14,8 +14,7 @@ import (
 
 // newSessionWakeCmd creates the "gc session wake <id-or-alias>" command.
 func newSessionWakeCmd(stdout, stderr io.Writer) *cobra.Command {
-	var jsonOutput bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "wake <session-id-or-alias>",
 		Short: "Wake a session (request start and clear holds)",
 		Long: `Request wake for a session and release user hold or crash-loop quarantine metadata.
@@ -29,20 +28,17 @@ Accepts a session ID (e.g., gc-42) or session alias (e.g., mayor).`,
   gc session wake mayor`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			if cmdSessionWake(args, stdout, stderr, jsonOutput) != 0 {
+			if cmdSessionWake(args, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 		ValidArgsFunction: completeSessionIDs,
 	}
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "emit JSONL")
-	return cmd
 }
 
 // cmdSessionWake is the CLI entry point for "gc session wake".
-func cmdSessionWake(args []string, stdout, stderr io.Writer, jsonOutput ...bool) int {
-	asJSON := sessionJSONRequested(jsonOutput)
+func cmdSessionWake(args []string, stdout, stderr io.Writer) int {
 	store, code := openCityStore(stderr, "gc session wake")
 	if store == nil {
 		return code
@@ -85,8 +81,6 @@ func cmdSessionWake(args []string, stdout, stderr io.Writer, jsonOutput ...bool)
 			"state_reason":              "",
 			"pending_create_claim":      "",
 			"pending_create_started_at": "",
-			"wake_request":              "",
-			"wake_requested_at":         "",
 		}); err != nil {
 			fmt.Fprintf(stderr, "gc session wake: updating metadata: %v\n", err) //nolint:errcheck
 			return 1
@@ -103,18 +97,6 @@ func cmdSessionWake(args []string, stdout, stderr io.Writer, jsonOutput ...bool)
 		}
 	}
 
-	if asJSON {
-		if err := writeSessionActionJSON(stdout, sessionActionResult{
-			Action:              "wake",
-			SessionID:           id,
-			State:               "wake_requested",
-			WaitNudgesWithdrawn: len(nudgeIDs),
-		}); err != nil {
-			fmt.Fprintf(stderr, "gc session wake: %v\n", err) //nolint:errcheck
-			return 1
-		}
-		return 0
-	}
 	fmt.Fprintf(stdout, "Session %s: wake requested.\n", id) //nolint:errcheck
 	return 0
 }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"io"
 	"strings"
 	"testing"
 
@@ -11,7 +10,7 @@ import (
 
 func TestEmitSessionSubmitResultFollowUpQueued(t *testing.T) {
 	var stdout bytes.Buffer
-	emitSessionSubmitResult(&stdout, io.Discard, "mayor", session.SubmitIntentFollowUp, true, false)
+	emitSessionSubmitResult(&stdout, "mayor", session.SubmitIntentFollowUp, true)
 	if got := stdout.String(); !strings.Contains(got, "Queued follow-up for mayor") {
 		t.Fatalf("stdout = %q, want queued confirmation", got)
 	}
@@ -19,24 +18,13 @@ func TestEmitSessionSubmitResultFollowUpQueued(t *testing.T) {
 
 func TestEmitSessionSubmitResultFollowUpImmediate(t *testing.T) {
 	var stdout bytes.Buffer
-	emitSessionSubmitResult(&stdout, io.Discard, "mayor", session.SubmitIntentFollowUp, false, false)
+	emitSessionSubmitResult(&stdout, "mayor", session.SubmitIntentFollowUp, false)
 	got := stdout.String()
 	if strings.Contains(got, "Queued") {
 		t.Fatalf("stdout = %q, should not say Queued when message was delivered immediately", got)
 	}
 	if !strings.Contains(got, "Submitted follow-up to mayor") {
 		t.Fatalf("stdout = %q, want submitted follow-up confirmation", got)
-	}
-}
-
-func TestEmitSessionSubmitResultJSON(t *testing.T) {
-	var stdout bytes.Buffer
-	emitSessionSubmitResult(&stdout, io.Discard, "mayor", session.SubmitIntentFollowUp, true, true)
-	got := stdout.String()
-	for _, want := range []string{`"schema_version":"1"`, `"ok":true`, `"target":"mayor"`, `"intent":"follow_up"`, `"queued":true`, `"outcome":"queued"`} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("stdout = %q, missing %s", got, want)
-		}
 	}
 }
 

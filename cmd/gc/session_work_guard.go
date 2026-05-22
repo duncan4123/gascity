@@ -24,7 +24,6 @@ import (
 func closeSessionBeadIfUnassigned(
 	store beads.Store,
 	rigStores map[string]beads.Store,
-	cfg *config.City,
 	session beads.Bead,
 	reason string,
 	now time.Time,
@@ -33,16 +32,13 @@ func closeSessionBeadIfUnassigned(
 	if stderr == nil {
 		stderr = io.Discard
 	}
-	hasAssignedWork, err := sessionHasOpenAssignedWorkForConfig(store, rigStores, session, cfg)
+	hasAssignedWork, err := sessionHasOpenAssignedWork(store, rigStores, session)
 	if err != nil {
 		fmt.Fprintf(stderr, "session work guard: checking assigned work for %s: %v\n", session.ID, err) //nolint:errcheck
 		return false
 	}
 	if hasAssignedWork {
 		return false
-	}
-	if isFailedCreateSessionBead(session) {
-		return closeFailedCreateBead(store, session.ID, now, stderr)
 	}
 	return closeBead(store, session.ID, reason, now, stderr)
 }
@@ -71,9 +67,6 @@ func closeSessionBeadIfReachableStoreUnassigned(
 	}
 	if hasAssignedWork {
 		return false
-	}
-	if isFailedCreateSessionBead(session) {
-		return closeFailedCreateBead(store, session.ID, now, stderr)
 	}
 	return closeBead(store, session.ID, reason, now, stderr)
 }

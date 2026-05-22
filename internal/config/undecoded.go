@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -94,13 +95,20 @@ func agentDefaultsTablesOverlap(md toml.MetaData) bool {
 }
 
 func specializedUndecodedWarning(source, key string) (string, bool) {
+	isPackSource := filepath.Base(source) == "pack.toml"
 	switch key {
 	case "agent_defaults.provider", "agents.provider":
-		return fmt.Sprintf("%s: %q is not supported in this release wave; keep setting provider per agent in agents/<name>/agent.toml", source, key), true
+		if isPackSource {
+			return fmt.Sprintf("%s: %q is not supported in this release wave; keep setting provider per agent in agents/<name>/agent.toml", source, key), true
+		}
+		return fmt.Sprintf("%s: %q is not supported in this release wave; keep using workspace.provider (or set provider per agent in agents/<name>/agent.toml)", source, key), true
 	case "agent_defaults.scope", "agents.scope":
 		return fmt.Sprintf("%s: %q is not supported in this release wave; keep setting scope per agent in agents/<name>/agent.toml", source, key), true
 	case "agent_defaults.install_agent_hooks", "agents.install_agent_hooks":
-		return fmt.Sprintf("%s: %q is not supported in this release wave; keep setting install_agent_hooks per agent in agents/<name>/agent.toml", source, key), true
+		if isPackSource {
+			return fmt.Sprintf("%s: %q is not supported in this release wave; keep setting install_agent_hooks per agent in agents/<name>/agent.toml", source, key), true
+		}
+		return fmt.Sprintf("%s: %q is not supported in this release wave; keep using workspace.install_agent_hooks (or set install_agent_hooks per agent in agents/<name>/agent.toml)", source, key), true
 	default:
 		return "", false
 	}
@@ -178,7 +186,6 @@ func knownTOMLKeys() []string {
 		reflect.TypeOf(SessionConfig{}),
 		reflect.TypeOf(MailConfig{}),
 		reflect.TypeOf(EventsConfig{}),
-		reflect.TypeOf(EventsRotationConfig{}),
 		reflect.TypeOf(DoltConfig{}),
 		reflect.TypeOf(FormulasConfig{}),
 		reflect.TypeOf(DaemonConfig{}),
@@ -189,7 +196,7 @@ func knownTOMLKeys() []string {
 		reflect.TypeOf(ServiceWorkflowConfig{}),
 		reflect.TypeOf(ServiceProcessConfig{}),
 		reflect.TypeOf(AgentDefaults{}),
-		reflect.TypeOf(PackConfig{}),
+		reflect.TypeOf(packConfig{}),
 		reflect.TypeOf(PackMeta{}),
 		reflect.TypeOf(Import{}),
 		reflect.TypeOf(NamedSession{}),
@@ -197,8 +204,8 @@ func knownTOMLKeys() []string {
 		reflect.TypeOf(PackDoctorEntry{}),
 		reflect.TypeOf(PackCommandEntry{}),
 		reflect.TypeOf(PackGlobal{}),
-		reflect.TypeOf(PackDefaults{}),
-		reflect.TypeOf(PackRigDefaults{}),
+		reflect.TypeOf(packDefaults{}),
+		reflect.TypeOf(packRigDefaults{}),
 	}
 	for _, t := range types {
 		collectTOMLTags(t, seen)

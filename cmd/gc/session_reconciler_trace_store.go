@@ -627,7 +627,7 @@ func ReadTraceRecords(rootDir string, filter TraceFilter) ([]SessionReconcilerTr
 		}
 		paths = filtered
 	}
-	records := make([]SessionReconcilerTraceRecord, 0)
+	var records []SessionReconcilerTraceRecord
 	for _, path := range paths {
 		fileRecords, _, err := readTraceRecordsFile(path, filter, true)
 		if err != nil {

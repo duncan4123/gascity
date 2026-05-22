@@ -56,29 +56,8 @@ func TestGastownSmoke(t *testing.T) {
 			}
 		}
 
-		var unexpectedWarnings []string
-		var foundProviderWarning bool
-		var foundGlobalFragmentsWarning bool
-		for _, warning := range prov.Warnings {
-			if config.IsLegacyWorkspaceFieldWarning(warning) {
-				if strings.Contains(warning, "workspace.provider is deprecated:") {
-					foundProviderWarning = true
-				}
-				if strings.Contains(warning, "workspace.global_fragments is deprecated:") {
-					foundGlobalFragmentsWarning = true
-				}
-			} else {
-				unexpectedWarnings = append(unexpectedWarnings, warning)
-			}
-		}
-		if len(unexpectedWarnings) > 0 {
-			t.Errorf("unexpected provenance warnings: %v", unexpectedWarnings)
-		}
-		if !foundProviderWarning {
-			t.Error("expected gastown workspace.provider deprecation warning")
-		}
-		if !foundGlobalFragmentsWarning {
-			t.Error("expected gastown workspace.global_fragments deprecation warning")
+		if len(prov.Warnings) > 0 {
+			t.Errorf("unexpected provenance warnings: %v", prov.Warnings)
 		}
 	})
 
@@ -271,7 +250,7 @@ func TestGastownSmoke_WithRig(t *testing.T) {
 	c.InitFrom(filepath.Join(helpers.ExamplesDir(), "gastown"))
 
 	// Create a minimal git repo to serve as a rig.
-	rigDir := filepath.Join(helpers.TempDir(t), "myrig")
+	rigDir := filepath.Join(t.TempDir(), "myrig")
 	if err := os.MkdirAll(rigDir, 0o755); err != nil {
 		t.Fatalf("creating rig dir: %v", err)
 	}

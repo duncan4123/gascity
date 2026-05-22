@@ -32,7 +32,6 @@ const (
 	FieldWaitingReason     = "convergence.waiting_reason"
 	FieldRetrySource       = "convergence.retry_source"
 	FieldCityPath          = "convergence.city_path"
-	FieldRig               = "convergence.rig"
 	FieldEvaluatePrompt    = "convergence.evaluate_prompt"
 	FieldGateStdout        = "convergence.gate_stdout"
 	FieldGateStderr        = "convergence.gate_stderr"
