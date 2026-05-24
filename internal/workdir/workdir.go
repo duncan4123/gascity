@@ -16,12 +16,13 @@ import (
 
 // PathContext holds template variables for work_dir expansion.
 type PathContext struct {
-	Agent     string
-	AgentBase string
-	Rig       string
-	RigRoot   string
-	CityRoot  string
-	CityName  string
+	Agent         string
+	AgentBase     string
+	Rig           string
+	RigRoot       string
+	CityRoot      string
+	CityName      string
+	WorktreesRoot string
 }
 
 // CityName returns the effective workspace name for workdir/template expansion.
@@ -103,12 +104,13 @@ func PathContextForQualifiedName(cityPath, cityName, qualifiedName string, a con
 	rigName := rigNameForQualifiedAgent(cityPath, qualifiedName, a, rigs)
 	_, agentBase := config.ParseQualifiedName(qualifiedName)
 	return PathContext{
-		Agent:     qualifiedName,
-		AgentBase: agentBase,
-		Rig:       rigName,
-		RigRoot:   RigRootForName(rigName, rigs),
-		CityRoot:  cityPath,
-		CityName:  cityName,
+		Agent:         qualifiedName,
+		AgentBase:     agentBase,
+		Rig:           rigName,
+		RigRoot:       RigRootForName(rigName, rigs),
+		CityRoot:      cityPath,
+		CityName:      cityName,
+		WorktreesRoot: WorktreesRoot(cityPath),
 	}
 }
 
