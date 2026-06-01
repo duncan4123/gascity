@@ -2,9 +2,11 @@ package api
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/supervisor"
 )
@@ -28,6 +30,8 @@ var configEffectiveAPIClientFactory = func(baseURL string) effectiveAPIConfigCli
 	return NewClient(baseURL)
 }
 
+var configEffectiveAPIProbeTimeout = 150 * time.Millisecond
+
 type effectiveAPIConfigClient interface {
 	ListCities() ([]CityInfo, error)
 }
@@ -47,16 +51,18 @@ func configEffectiveAPIURL(state State) string {
 	switch bind {
 	case "", "0.0.0.0":
 		bind = "127.0.0.1"
-	case "::":
+	case "::", "[::]":
 		bind = "::1"
 	}
 	return "http://" + net.JoinHostPort(bind, strconv.Itoa(cfg.API.Port))
 }
 
-func discoverReachableConfigSupervisorAPI() (string, bool) {
+func discoverReachableConfigSupervisorAPI() (baseURL string, ok bool) {
 	defer func() {
-		if recover() != nil {
-			// Test environments may intentionally omit GC_HOME/real supervisor setup.
+		if recovered := recover(); recovered != nil {
+			log.Printf("api: config supervisor API discovery skipped after panic: %v", recovered)
+			baseURL = ""
+			ok = false
 		}
 	}()
 	baseURL, err := configEffectiveAPIBaseURLHook()
@@ -65,8 +71,26 @@ func discoverReachableConfigSupervisorAPI() (string, bool) {
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	client := configEffectiveAPIClientFactory(baseURL)
-	if _, err := client.ListCities(); err != nil {
+	if !configEffectiveAPIClientReachable(client, configEffectiveAPIProbeTimeout) {
 		return "", false
 	}
 	return baseURL, true
+}
+
+func configEffectiveAPIClientReachable(client effectiveAPIConfigClient, timeout time.Duration) bool {
+	if timeout <= 0 {
+		_, err := client.ListCities()
+		return err == nil
+	}
+	done := make(chan bool, 1)
+	go func() {
+		_, err := client.ListCities()
+		done <- err == nil
+	}()
+	select {
+	case ok := <-done:
+		return ok
+	case <-time.After(timeout):
+		return false
+	}
 }

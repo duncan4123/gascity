@@ -1729,9 +1729,13 @@
           "type": "string",
           "description": "Dir is the targeting key. Empty targets a city-scoped named session."
         },
+        "name": {
+          "type": "string",
+          "description": "Name is the canonical named-session identity. Use this to disambiguate\nsessions that share the same template."
+        },
         "template": {
           "type": "string",
-          "description": "Template is the targeting key (required)."
+          "description": "Template is a compatibility targeting key when Name is omitted."
         },
         "mode": {
           "type": "string",
@@ -1744,10 +1748,7 @@
       },
       "additionalProperties": false,
       "type": "object",
-      "required": [
-        "template"
-      ],
-      "description": "NamedSessionPatch modifies an existing named session identified by (Dir, Template)."
+      "description": "NamedSessionPatch modifies an existing named session identified by canonical name or, for compatibility, by an unambiguous template."
     },
     "OptionChoice": {
       "properties": {

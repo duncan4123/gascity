@@ -16,7 +16,7 @@ func openOptimizedDoltliteStore(storePath string, store *beads.BdStore) (beads.S
 	if !nativeDoltliteBeadsEnabled() {
 		return nil, false
 	}
-	direct, err := beads.NewDoltliteNativeStore(storePath, store)
+	direct, err := beads.NewDoltliteReadStore(storePath, store)
 	if err == nil {
 		return direct, true
 	}

@@ -1,17 +1,20 @@
 package main
 
 import (
-	"fmt"
 	"strings"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/api"
 	"github.com/gastownhall/gascity/internal/config"
 )
 
-var effectiveAPIBaseURLHook = supervisorAPIBaseURL
-var effectiveAPIClientFactory = func(baseURL string) effectiveAPIClient {
-	return api.NewClient(baseURL)
-}
+var (
+	effectiveAPIBaseURLHook   = supervisorAPIBaseURL
+	effectiveAPIClientFactory = func(baseURL string) effectiveAPIClient {
+		return api.NewClient(baseURL)
+	}
+	effectiveAPIProbeTimeout = 150 * time.Millisecond
+)
 
 type effectiveAPIClient interface {
 	ListCities() ([]api.CityInfo, error)
@@ -37,15 +40,26 @@ func discoverReachableSupervisorAPIBaseURL() (string, bool) {
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	client := effectiveAPIClientFactory(baseURL)
-	if _, err := client.ListCities(); err != nil {
+	if !effectiveAPIClientReachable(client, effectiveAPIProbeTimeout) {
 		return "", false
 	}
 	return baseURL, true
 }
 
-func effectiveAPIStatusLine(cityPath string, cfg *config.City) string {
-	if url := resolveEffectiveAPIURL(cityPath, cfg); url != "" {
-		return fmt.Sprintf("  API:        %s\n", url)
+func effectiveAPIClientReachable(client effectiveAPIClient, timeout time.Duration) bool {
+	if timeout <= 0 {
+		_, err := client.ListCities()
+		return err == nil
 	}
-	return ""
+	done := make(chan bool, 1)
+	go func() {
+		_, err := client.ListCities()
+		done <- err == nil
+	}()
+	select {
+	case ok := <-done:
+		return ok
+	case <-time.After(timeout):
+		return false
+	}
 }

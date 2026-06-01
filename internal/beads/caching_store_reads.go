@@ -416,9 +416,7 @@ func (c *CachingStore) CachedReady() ([]Bead, bool) {
 
 func cachedBeadReady(statusByID map[string]string, deps []Dep) bool {
 	for _, dep := range deps {
-		switch dep.Type {
-		case "blocks", "waits-for", "conditional-blocks":
-		default:
+		if !isReadyBlockingDependencyType(dep.Type) {
 			continue
 		}
 		if status, ok := statusByID[dep.DependsOnID]; ok && status != "closed" {

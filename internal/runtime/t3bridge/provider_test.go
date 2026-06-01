@@ -356,6 +356,41 @@ func TestBuildThreadEnv_DropsStartupEnvelopeAndDoltliteServerEnv(t *testing.T) {
 	}
 }
 
+func TestBuildThreadEnv_MirrorsDoltEndpointForNonDoltliteSessions(t *testing.T) {
+	env := buildThreadEnv(map[string]string{
+		"GC_BEADS_BACKEND":         "dolt",
+		"GC_NATIVE_DOLTLITE_BEADS": "true",
+		"GC_DOLT_HOST":             "dolt.example.internal",
+		"GC_DOLT_PORT":             "4407",
+		"BEADS_DOLT_SERVER_HOST":   "stale.example.invalid",
+		"BEADS_DOLT_SERVER_PORT":   "9999",
+		"BEADS_DOLT_PORT":          "9998",
+		"BEADS_DOLT_SERVER_MODE":   "0",
+		"BEADS_DOLT_SHARED_SERVER": "1",
+		"GC_STARTUP_ENVELOPE":      `{"runtime":{"provider":"claudeAgent","model":"claude-sonnet-4-6"}}`,
+		"NOT_GC":                   "ignore",
+	})
+
+	want := map[string]string{
+		"GC_DOLT_HOST":           "dolt.example.internal",
+		"GC_DOLT_PORT":           "4407",
+		"BEADS_DOLT_SERVER_HOST": "dolt.example.internal",
+		"BEADS_DOLT_SERVER_PORT": "4407",
+		"BEADS_DOLT_PORT":        "4407",
+		"BEADS_DOLT_SERVER_MODE": "1",
+	}
+	for key, value := range want {
+		if env[key] != value {
+			t.Fatalf("%s = %q, want %q", key, env[key], value)
+		}
+	}
+	for _, key := range []string{"GC_STARTUP_ENVELOPE", "BEADS_DOLT_SHARED_SERVER", "NOT_GC"} {
+		if _, ok := env[key]; ok {
+			t.Fatalf("%s should not persist into non-DoltLite thread env", key)
+		}
+	}
+}
+
 func TestBuildGCMetadata_UsesFirstClassT3BridgeProviderName(t *testing.T) {
 	meta := buildGCMetadata(StartupEnvelope{}, "codex", nil)
 	if got := meta["gc.provider"]; got != "t3bridge" {

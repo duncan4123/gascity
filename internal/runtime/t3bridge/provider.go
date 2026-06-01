@@ -34,6 +34,8 @@ var (
 	cachedBridgeWSTokenExpiresAt time.Time
 )
 
+var _ runtime.Provider = (*Provider)(nil)
+
 var defaultWSURLCandidates = []string{
 	"ws://127.0.0.1:3773/ws",
 	"ws://localhost:3773/ws",
@@ -1395,7 +1397,7 @@ func buildThreadEnv(env map[string]string) map[string]string {
 			threadEnv[key] = value
 		}
 	}
-	if strings.EqualFold(threadEnv["GC_BEADS_BACKEND"], "doltlite") || strings.EqualFold(env["BEADS_BACKEND"], "doltlite") || strings.EqualFold(threadEnv["GC_NATIVE_DOLTLITE_BEADS"], "true") {
+	if strings.EqualFold(threadEnv["GC_BEADS_BACKEND"], "doltlite") || strings.EqualFold(env["BEADS_BACKEND"], "doltlite") {
 		for _, key := range []string{
 			"GC_DOLT_HOST",
 			"GC_DOLT_PORT",
@@ -1409,6 +1411,14 @@ func buildThreadEnv(env map[string]string) map[string]string {
 			delete(threadEnv, key)
 		}
 		return threadEnv
+	}
+	if host := strings.TrimSpace(threadEnv["GC_DOLT_HOST"]); host != "" {
+		threadEnv["BEADS_DOLT_SERVER_HOST"] = host
+	}
+	if port := strings.TrimSpace(threadEnv["GC_DOLT_PORT"]); port != "" {
+		threadEnv["BEADS_DOLT_PORT"] = port
+		threadEnv["BEADS_DOLT_SERVER_PORT"] = port
+		threadEnv["BEADS_DOLT_SERVER_MODE"] = "1"
 	}
 	delete(threadEnv, "BEADS_DOLT_SHARED_SERVER")
 	return threadEnv

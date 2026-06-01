@@ -7080,6 +7080,108 @@ esac
 	}
 }
 
+func TestGcBeadsBdInitDoltliteInitializesDelegatedBdWrites(t *testing.T) {
+	bdPath, err := exec.LookPath("bd")
+	if err != nil {
+		t.Skip("bd CLI required for DoltLite wrapper init smoke test")
+	}
+
+	cityPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cityPath, ".gc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[workspace]\nname = \"demo\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := MaterializeBuiltinPacks(cityPath); err != nil {
+		t.Fatalf("MaterializeBuiltinPacks: %v", err)
+	}
+	script := gcBeadsBdScriptPath(cityPath)
+
+	cmd := exec.Command(script, "init", cityPath, "gc", "hq")
+	cmd.Env = sanitizedBaseEnv(append(gcBeadsBdTestHomeEnv(t),
+		"GC_CITY_PATH="+cityPath,
+		"GC_BEADS_BACKEND=doltlite",
+		"BEADS_BACKEND=doltlite",
+		"BD_NON_INTERACTIVE=1",
+		"BD_BIN="+bdPath,
+		"PATH="+os.Getenv("PATH"),
+	)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("gc-beads-bd doltlite init failed: %v\n%s", err, out)
+	}
+
+	metaData, err := os.ReadFile(filepath.Join(cityPath, ".beads", "metadata.json"))
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	metaText := string(metaData)
+	for _, want := range []string{`"backend": "doltlite"`, `"database": "doltlite"`, `"dolt_database": "hq"`} {
+		if !strings.Contains(metaText, want) {
+			t.Fatalf("metadata missing %q:\n%s", want, metaText)
+		}
+	}
+
+	create := exec.Command(bdPath, "create", "--json", "probe task")
+	create.Dir = cityPath
+	create.Env = sanitizedBaseEnv(append(gcBeadsBdTestHomeEnv(t),
+		"BEADS_DIR="+filepath.Join(cityPath, ".beads"),
+		"GC_BEADS_BACKEND=doltlite",
+		"BEADS_BACKEND=doltlite",
+		"BD_NON_INTERACTIVE=1",
+		"PATH="+os.Getenv("PATH"),
+	)...)
+	created, err := create.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bd create after doltlite init failed: %v\n%s", err, created)
+	}
+	var createdIssue struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal(created, &createdIssue); err != nil {
+		t.Fatalf("parse bd create output: %v\n%s", err, created)
+	}
+	if !strings.HasPrefix(createdIssue.ID, "gc-") {
+		t.Fatalf("created issue ID = %q, want gc-*", createdIssue.ID)
+	}
+	if createdIssue.Title != "probe task" {
+		t.Fatalf("created issue title = %q, want probe task", createdIssue.Title)
+	}
+}
+
+func TestGcBeadsBdInitDoltliteRejectsUnsafeCustomTypes(t *testing.T) {
+	cityPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cityPath, ".gc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[workspace]\nname = \"demo\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(repoRootForLint(t), "examples", "bd", "assets", "scripts", "gc-beads-bd.sh")
+	cmd := exec.Command(script, "init", cityPath, "gc", "hq")
+	cmd.Env = sanitizedBaseEnv(append(gcBeadsBdTestHomeEnv(t),
+		"GC_CITY_PATH="+cityPath,
+		"GC_BEADS_BACKEND=doltlite",
+		"BEADS_BACKEND=doltlite",
+		"GC_BEADS_CUSTOM_TYPES=task,bad'type",
+	)...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("gc-beads-bd doltlite init succeeded with unsafe custom type:\n%s", out)
+	}
+	if !strings.Contains(string(out), "invalid custom bead types") {
+		t.Fatalf("gc-beads-bd doltlite init error = %q, want invalid custom bead types", out)
+	}
+
+	if _, err := os.Stat(filepath.Join(cityPath, ".beads", "embeddeddolt")); err == nil {
+		t.Fatal("rejected doltlite init created delegated bd storage")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat delegated bd storage: %v", err)
+	}
+}
+
 // ── isExternalDolt tests ──────────────────────────────────────────────
 
 func TestIsExternalDoltEnvFallback(t *testing.T) {

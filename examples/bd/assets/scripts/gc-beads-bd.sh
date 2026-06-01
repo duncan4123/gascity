@@ -399,7 +399,7 @@ read_metadata_string_field() {
 
 metadata_is_doltlite() {
     local meta_file="$1"
-    [ "$(read_metadata_string_field "$meta_file" backend)" = "doltlite" ]
+    [ "$(read_metadata_string_field "$meta_file" backend)" = "doltlite" ] || [ "$(read_metadata_string_field "$meta_file" database)" = "doltlite" ]
 }
 
 write_doltlite_metadata() {
@@ -421,6 +421,75 @@ write_doltlite_metadata() {
 EOF
     chmod 600 "$tmp"
     mv "$tmp" "$metadata_path"
+}
+
+ensure_doltlite_schema() {
+    local db_path="$1" db_dir
+    db_dir="${db_path%/*}"
+    mkdir -p "$db_dir"
+    command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 is required to initialize doltlite beads"
+
+    sqlite3 "$db_path" <<'SQL' || die "failed to initialize doltlite database schema"
+CREATE TABLE IF NOT EXISTS config (
+  "key" TEXT PRIMARY KEY,
+  value TEXT
+);
+CREATE TABLE IF NOT EXISTS issues (
+  id TEXT PRIMARY KEY,
+  title TEXT,
+  status TEXT,
+  issue_type TEXT,
+  priority INTEGER,
+  created_at TEXT,
+  updated_at TEXT,
+  assignee TEXT,
+  description TEXT,
+  design TEXT,
+  acceptance_criteria TEXT,
+  notes TEXT,
+  metadata TEXT
+);
+CREATE TABLE IF NOT EXISTS wisps (
+  id TEXT PRIMARY KEY,
+  title TEXT,
+  status TEXT,
+  issue_type TEXT,
+  priority INTEGER,
+  created_at TEXT,
+  updated_at TEXT,
+  assignee TEXT,
+  description TEXT,
+  design TEXT,
+  acceptance_criteria TEXT,
+  notes TEXT,
+  metadata TEXT
+);
+CREATE TABLE IF NOT EXISTS labels (
+  issue_id TEXT,
+  label TEXT
+);
+CREATE TABLE IF NOT EXISTS wisp_labels (
+  issue_id TEXT,
+  label TEXT
+);
+CREATE TABLE IF NOT EXISTS dependencies (
+  issue_id TEXT,
+  depends_on_id TEXT,
+  depends_on_issue_id TEXT,
+  depends_on_wisp_id TEXT,
+  depends_on_external TEXT,
+  type TEXT
+);
+CREATE TABLE IF NOT EXISTS wisp_dependencies (
+  issue_id TEXT,
+  depends_on_id TEXT,
+  depends_on_issue_id TEXT,
+  depends_on_wisp_id TEXT,
+  depends_on_external TEXT,
+  type TEXT
+);
+SQL
+    chmod 600 "$db_path" 2>/dev/null || true
 }
 
 identity_toml_present() {
@@ -475,13 +544,10 @@ ensure_bd_runtime_custom_types() {
     ensure_bd_runtime_config_value "$db" "types.custom" "$types"
 }
 
-ensure_bd_runtime_config_value() {
-    local db="$1"
-    local key="$2"
-    local value="$3"
-    [ -n "$db" ] || return 0
+validate_bd_runtime_config_value() {
+    local key="$1"
+    local value="$2"
     [ -n "$value" ] || return 0
-    valid_sql_name "$db" || die "invalid dolt database name: $db"
     case "$key" in
         issue_prefix)
             valid_sql_name "$value" || die "invalid beads prefix: $value"
@@ -493,6 +559,16 @@ ensure_bd_runtime_config_value() {
             die "unsupported bd runtime config key: $key"
             ;;
     esac
+}
+
+ensure_bd_runtime_config_value() {
+    local db="$1"
+    local key="$2"
+    local value="$3"
+    [ -n "$db" ] || return 0
+    [ -n "$value" ] || return 0
+    valid_sql_name "$db" || die "invalid dolt database name: $db"
+    validate_bd_runtime_config_value "$key" "$value"
 
     # bd v1.0.3 rejects `bd config set issue_prefix`; GC still needs raw
     # bd commands to see GC's config in the DB-backed config table.
@@ -508,21 +584,16 @@ ensure_doltlite_runtime_config_value() {
     [ -n "$value" ] || return 0
     [ -f "$db_path" ] || die "missing doltlite database: $db_path"
     command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 is required to configure doltlite runtime state"
-    case "$key" in
-        issue_prefix)
-            valid_sql_name "$value" || die "invalid beads prefix: $value"
-            ;;
-        types.custom)
-            valid_custom_types_value "$value" || die "invalid custom bead types: $value"
-            ;;
-        *)
-            die "unsupported bd runtime config key: $key"
-            ;;
-    esac
+    validate_bd_runtime_config_value "$key" "$value"
 
     key_sql=$(printf '%s' "$key" | sed "s/'/''/g")
     value_sql=$(printf '%s' "$value" | sed "s/'/''/g")
-    sqlite3 "$db_path" "REPLACE INTO config (\"key\", value) VALUES ('$key_sql', '$value_sql');" ||
+    sqlite3 "$db_path" <<SQL ||
+.parameter init
+.parameter set @gc_config_key '$key_sql'
+.parameter set @gc_config_value '$value_sql'
+REPLACE INTO config ("key", value) VALUES (@gc_config_key, @gc_config_value);
+SQL
         die "failed to set doltlite runtime $key for $db_path"
 }
 
@@ -2138,6 +2209,36 @@ run_bd_doltlite() {
     )
 }
 
+doltlite_bd_issue_prefix() {
+    local dir="$1"
+    run_bd_doltlite "$dir" config get issue_prefix 2>/dev/null | sed 's/[[:space:]]*$//' || true
+}
+
+doltlite_bd_schema_ready() {
+    local dir="$1" prefix="$2"
+    doltlite_bd_issue_prefix "$dir" | grep -Fx "$prefix" >/dev/null 2>&1
+}
+
+run_bd_doltlite_init() {
+    local dir="$1" prefix="$2" database="$3" reinit="${4:-false}"
+    if [ "$reinit" = true ]; then
+        run_bd_doltlite "$dir" init --reinit-local --quiet -p "$prefix" --database "$database" --skip-hooks --skip-agents || die "bd doltlite init failed for $dir"
+        return 0
+    fi
+    run_bd_doltlite "$dir" init --quiet -p "$prefix" --database "$database" --skip-hooks --skip-agents || die "bd doltlite init failed for $dir"
+}
+
+ensure_doltlite_bd_schema() {
+    local dir="$1" prefix="$2" database="$3" reinit=false
+    if doltlite_bd_schema_ready "$dir" "$prefix"; then
+        return 0
+    fi
+    if [ -d "$dir/.beads/embeddeddolt/$database/.dolt" ]; then
+        reinit=true
+    fi
+    run_bd_doltlite_init "$dir" "$prefix" "$database" "$reinit"
+}
+
 doltlite_maintenance_due() {
     local dir="$1"
     local stamp="$dir/.beads/doltlite/.gc-maintenance.stamp"
@@ -2146,7 +2247,7 @@ doltlite_maintenance_due() {
     [ "$interval" -gt 0 ] 2>/dev/null || return 0
     [ -f "$stamp" ] || return 0
     now=$(date +%s 2>/dev/null || echo 0)
-    last=$(stat -c %Y "$stamp" 2>/dev/null || echo 0)
+    last=$(stat -c %Y "$stamp" 2>/dev/null || stat -f %m "$stamp" 2>/dev/null || echo 0)
     [ $((now - last)) -ge "$interval" ]
 }
 
@@ -2266,7 +2367,7 @@ op_init() {
     local custom_types="${GC_BEADS_CUSTOM_TYPES:-molecule,convoy,message,event,gate,merge-request,agent,role,rig,session,spec,convergence,step}"
 
     if is_doltlite_backend; then
-        local database db_path
+        local database already_ready
         database="$dolt_database"
         if [ -z "$database" ]; then
             database="$prefix"
@@ -2274,18 +2375,18 @@ op_init() {
         if ! valid_sql_name "$database"; then
             die "invalid doltlite database name: $database (must be alphanumeric, hyphens, underscores)"
         fi
+        validate_bd_runtime_config_value "types.custom" "$custom_types"
         ensure_beads_dir_permissions "$dir"
-        db_path="$dir/.beads/doltlite/$database.db"
-        if [ ! -f "$metadata_path" ] || [ ! -f "$db_path" ]; then
-            run_bd_doltlite "$dir" init --quiet --backend=doltlite -p "$prefix" --database "$database" --skip-hooks --skip-agents || die "bd init failed for $dir"
-        elif ! metadata_is_doltlite "$metadata_path" || [ "$(read_existing_dolt_database "$metadata_path")" != "$database" ]; then
-            write_doltlite_metadata "$dir" "$database"
-        else
+        already_ready=false
+        if doltlite_bd_schema_ready "$dir" "$prefix"; then
+            already_ready=true
+        fi
+        ensure_doltlite_bd_schema "$dir" "$prefix" "$database"
+        write_doltlite_metadata "$dir" "$database"
+        if [ "$already_ready" = true ]; then
             run_doltlite_existing_db_maintenance "$dir"
         fi
         ensure_types_custom_in_yaml "$dir" "$custom_types"
-        ensure_doltlite_runtime_custom_types "$db_path" "$custom_types"
-        ensure_doltlite_runtime_issue_prefix "$db_path" "$prefix"
         exit 0
     fi
 
@@ -2732,7 +2833,11 @@ if ! load_runtime_layout_from_gc; then
     LOCK_FILE="${GC_DOLT_LOCK_FILE:-$PACK_STATE_DIR/dolt.lock}"
     CONFIG_FILE="${GC_DOLT_CONFIG_FILE:-$PACK_STATE_DIR/dolt-config.yaml}"
 fi
-mkdir -p "$DATA_DIR" "$PACK_STATE_DIR"
+if is_doltlite_backend; then
+    mkdir -p "$PACK_STATE_DIR"
+else
+    mkdir -p "$DATA_DIR" "$PACK_STATE_DIR"
+fi
 
 # Resolve DOLT_PORT now that STATE_FILE is set.
 DOLT_PORT=$(allocate_port)

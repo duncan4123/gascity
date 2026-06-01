@@ -153,13 +153,16 @@ type AgentPatch struct {
 	OptionDefaults map[string]string `toml:"option_defaults,omitempty"`
 }
 
-// NamedSessionPatch modifies an existing named session identified by
-// (Dir, Template). Pointer fields distinguish "not set" from zero values.
+// NamedSessionPatch modifies an existing named session identified by canonical
+// name or, for compatibility, by an unambiguous template.
 type NamedSessionPatch struct {
 	// Dir is the targeting key. Empty targets a city-scoped named session.
 	Dir string `toml:"dir,omitempty"`
-	// Template is the targeting key (required).
-	Template string `toml:"template" jsonschema:"required"`
+	// Name is the canonical named-session identity. Use this to disambiguate
+	// sessions that share the same template.
+	Name string `toml:"name,omitempty"`
+	// Template is a compatibility targeting key when Name is omitted.
+	Template string `toml:"template,omitempty"`
 	// Mode overrides the named-session controller mode ("on_demand" or "always").
 	Mode *string `toml:"mode,omitempty" jsonschema:"enum=on_demand,enum=always"`
 }
@@ -341,21 +344,44 @@ func ApplyPatches(cfg *City, patches Patches) error {
 }
 
 func applyNamedSessionPatch(cfg *City, patch *NamedSessionPatch) error {
-	if patch.Template == "" {
-		return fmt.Errorf("named_session patch: template is required")
+	target, matches, err := namedSessionPatchMatches(cfg, patch)
+	if err != nil {
+		return err
 	}
-	target := patch.Template
-	if patch.Dir != "" {
-		target = patch.Dir + "/" + patch.Template
+	if len(matches) == 0 {
+		return fmt.Errorf("named_session %q not found in merged config", target)
 	}
+	if len(matches) > 1 {
+		return fmt.Errorf("named_session patch target %q is ambiguous; set name to the named_session identity", target)
+	}
+	applyNamedSessionPatchFields(&cfg.NamedSessions[matches[0]], patch)
+	return nil
+}
+
+func namedSessionPatchMatches(cfg *City, patch *NamedSessionPatch) (string, []int, error) {
+	if patch.Name == "" && patch.Template == "" {
+		return "", nil, fmt.Errorf("named_session patch: name or template is required")
+	}
+	if patch.Name != "" {
+		target := qualifiedNameFromPatch(patch.Dir, patch.Name)
+		matches := make([]int, 0, 1)
+		for i := range cfg.NamedSessions {
+			if cfg.NamedSessions[i].QualifiedName() == target {
+				matches = append(matches, i)
+			}
+		}
+		return target, matches, nil
+	}
+
+	target := qualifiedNameFromPatch(patch.Dir, patch.Template)
+	matches := make([]int, 0, 1)
 	for i := range cfg.NamedSessions {
 		s := &cfg.NamedSessions[i]
-		if s.Dir == patch.Dir && s.Template == patch.Template {
-			applyNamedSessionPatchFields(s, patch)
-			return nil
+		if s.QualifiedName() == target || s.TemplateQualifiedName() == target {
+			matches = append(matches, i)
 		}
 	}
-	return fmt.Errorf("named_session %q not found in merged config", target)
+	return target, matches, nil
 }
 
 func applyNamedSessionPatchFields(s *NamedSession, p *NamedSessionPatch) {

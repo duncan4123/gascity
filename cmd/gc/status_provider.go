@@ -2,23 +2,24 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/gastownhall/gascity/internal/runtime"
 )
 
-var statusProviderCallTimeout = 50 * time.Millisecond
-var statusProviderDegradeWindow = 30 * time.Second
+var (
+	statusProviderCallTimeout    = 50 * time.Millisecond
+	statusProviderTimeoutWarning = func() {
+		fmt.Fprintln(os.Stderr, "gc status: runtime status probe timed out; using partial status")
+	}
+)
 
 type statusProvider struct {
-	base runtime.Provider
-	mu   sync.Mutex
-	down time.Time
-}
-
-func newStatusSessionProvider() runtime.Provider {
-	return newBoundedStatusProvider(newSessionProvider())
+	base     runtime.Provider
+	warnOnce sync.Once
 }
 
 func newBoundedStatusProvider(base runtime.Provider) runtime.Provider {
@@ -28,22 +29,7 @@ func newBoundedStatusProvider(base runtime.Provider) runtime.Provider {
 	return &statusProvider{base: base}
 }
 
-func (p *statusProvider) shouldDegrade() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return time.Now().Before(p.down)
-}
-
-func (p *statusProvider) markDegraded() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.down = time.Now().Add(statusProviderDegradeWindow)
-}
-
 func boundedStatusCall[T any](p *statusProvider, fallback T, fn func() T) T {
-	if p.shouldDegrade() {
-		return fallback
-	}
 	if statusProviderCallTimeout <= 0 {
 		return fn()
 	}
@@ -55,7 +41,7 @@ func boundedStatusCall[T any](p *statusProvider, fallback T, fn func() T) T {
 	case result := <-resultCh:
 		return result
 	case <-time.After(statusProviderCallTimeout):
-		p.markDegraded()
+		p.warnOnce.Do(statusProviderTimeoutWarning)
 		return fallback
 	}
 }
@@ -91,6 +77,12 @@ func (p *statusProvider) Attach(name string) error {
 func (p *statusProvider) ProcessAlive(name string, processNames []string) bool {
 	return boundedStatusCall(p, false, func() bool {
 		return p.base.ProcessAlive(name, processNames)
+	})
+}
+
+func (p *statusProvider) ObserveLiveness(name string, processNames []string) runtime.Liveness {
+	return boundedStatusCall(p, runtime.Liveness{}, func() runtime.Liveness {
+		return runtime.ObserveLiveness(p.base, name, processNames)
 	})
 }
 

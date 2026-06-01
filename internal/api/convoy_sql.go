@@ -131,7 +131,7 @@ func workflowSQLSnapshot(user, password, host string, port int, database, rootID
 	// Use subquery instead of IN (?,?,...) — dolt handles subqueries much
 	// faster than large parameter lists (13s vs 46ms for 95 IDs).
 	depRows, err := db.Query(`
-		SELECT d.issue_id, d.depends_on_id, d.type
+		SELECT d.issue_id, d.depends_on_id, COALESCE(NULLIF(d.type, ''), 'blocks')
 		FROM dependencies d
 		WHERE d.issue_id IN (
 			SELECT i.id FROM issues i
@@ -153,11 +153,7 @@ func workflowSQLSnapshot(user, password, host string, port int, database, rootID
 		if err := depRows.Scan(&issueID, &dependsOnID, &depType); err != nil {
 			return nil, nil, nil, fmt.Errorf("dep scan: %w", err)
 		}
-		d := beads.Dep{
-			IssueID:     issueID.String,
-			DependsOnID: dependsOnID.String,
-			Type:        depType.String,
-		}
+		d := workflowSQLDepFromRow(issueID, dependsOnID, depType)
 		depMap[d.IssueID] = append(depMap[d.IssueID], d)
 	}
 	if err := depRows.Err(); err != nil {
@@ -197,6 +193,18 @@ func workflowSQLSnapshot(user, password, host string, port int, database, rootID
 	}
 
 	return workflowBeads, beadIndex, depMap, nil
+}
+
+func workflowSQLDepFromRow(issueID, dependsOnID, depType sql.NullString) beads.Dep {
+	typ := depType.String
+	if typ == "" {
+		typ = "blocks"
+	}
+	return beads.Dep{
+		IssueID:     issueID.String,
+		DependsOnID: dependsOnID.String,
+		Type:        typ,
+	}
 }
 
 // tryFullWorkflowSQL does the entire workflow snapshot via SQL — root

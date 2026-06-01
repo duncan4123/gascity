@@ -43,7 +43,6 @@ const (
 	orderTrackingSweepMetadataReason       = "stale-order-tracking"
 	orderTrackingSweepMetadataInitiator    = "order-tracking-sweep"
 	orderTrackingWatchdogMetadataInitiator = "controller-watchdog"
-	orderOpenWorkProbeLimit                = 50
 	orderTrackingCloseVerifyAttempts       = 3
 	orderTrackingCloseVerifyRetryDelay     = 25 * time.Millisecond
 
@@ -1162,7 +1161,6 @@ func (m *memoryOrderDispatcher) rigSuspendedByName(rigName string) bool {
 func (m *memoryOrderDispatcher) hasOpenWorkStrict(store beads.Store, scopedName string) (bool, error) {
 	results, err := beads.HandlesFor(store).Live.List(beads.ListQuery{
 		Label: "order-run:" + scopedName,
-		Limit: orderOpenWorkProbeLimit,
 		Sort:  beads.SortCreatedDesc,
 		// Tracking beads are ephemeral while wisp roots are issue-tier, so
 		// the authoritative single-flight gate must union both tiers.

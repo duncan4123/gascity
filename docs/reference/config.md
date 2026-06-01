@@ -487,12 +487,13 @@ NamedSession defines a canonical persistent session backed by an agent template.
 
 ## NamedSessionPatch
 
-NamedSessionPatch modifies an existing named session identified by (Dir, Template).
+NamedSessionPatch modifies an existing named session identified by canonical name or, for compatibility, by an unambiguous template.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `dir` | string |  |  | Dir is the targeting key. Empty targets a city-scoped named session. |
-| `template` | string | **yes** |  | Template is the targeting key (required). |
+| `name` | string |  |  | Name is the canonical named-session identity. Use this to disambiguate sessions that share the same template. |
+| `template` | string |  |  | Template is a compatibility targeting key when Name is omitted. |
 | `mode` | string |  |  | Mode overrides the named-session controller mode ("on_demand" or "always"). Enum: `on_demand`, `always` |
 
 ## OptionChoice
