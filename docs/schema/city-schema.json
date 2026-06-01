@@ -944,6 +944,10 @@
           "type": "string",
           "description": "Provider selects the bead store backend: \"bd\" (default), \"file\",\nor \"exec:\u003cscript\u003e\" for a user-supplied script.",
           "default": "bd"
+        },
+        "backend": {
+          "type": "string",
+          "description": "Backend selects the bd storage engine when Provider is \"bd\".\nEmpty defaults to \"dolt\"; T3Code uses \"doltlite\" for local dev stores."
         }
       },
       "additionalProperties": false,
@@ -1719,6 +1723,32 @@
       ],
       "description": "NamedSession defines a canonical persistent session backed by an agent template."
     },
+    "NamedSessionPatch": {
+      "properties": {
+        "dir": {
+          "type": "string",
+          "description": "Dir is the targeting key. Empty targets a city-scoped named session."
+        },
+        "template": {
+          "type": "string",
+          "description": "Template is the targeting key (required)."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "on_demand",
+            "always"
+          ],
+          "description": "Mode overrides the named-session controller mode (\"on_demand\" or \"always\")."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "template"
+      ],
+      "description": "NamedSessionPatch modifies an existing named session identified by (Dir, Template)."
+    },
     "OptionChoice": {
       "properties": {
         "value": {
@@ -1872,6 +1902,13 @@
           },
           "type": "array",
           "description": "Agents targets agents by (dir, name)."
+        },
+        "named_session": {
+          "items": {
+            "$ref": "#/$defs/NamedSessionPatch"
+          },
+          "type": "array",
+          "description": "NamedSessions targets configured named sessions by (dir, template)."
         },
         "rigs": {
           "items": {

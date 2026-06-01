@@ -140,6 +140,8 @@ func TestDoltliteReadStorePoolDemandCount(t *testing.T) {
 func TestDoltliteReadStoreCachesInvalidateOnWorkingSetWrites(t *testing.T) {
 	store, closeStore := newTestDoltliteReadStore(t)
 	defer closeStore()
+	writer := openTestDoltliteWriter(t, store.db)
+	defer writer.Close() //nolint:errcheck // test cleanup
 
 	sessions, err := store.ListSessionBeads()
 	if err != nil {
@@ -150,14 +152,14 @@ func TestDoltliteReadStoreCachesInvalidateOnWorkingSetWrites(t *testing.T) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := store.db.Exec(`
+	if _, err := writer.Exec(`
 		INSERT INTO issues (
 			id, title, status, issue_type, priority, created_at, updated_at,
 			description, design, acceptance_criteria, notes, metadata
 		)
 		VALUES (?, ?, 'open', 'session', 2, ?, ?, '', '', '', '', ?)
 	`, "gc-session-2", "session 2", now, now, `{"session_name":"session-2"}`); err != nil {
-		t.Fatalf("insert uncommitted session: %v", err)
+		t.Fatalf("insert session through writer: %v", err)
 	}
 
 	sessions, err = store.ListSessionBeads()
@@ -177,14 +179,14 @@ func TestDoltliteReadStoreCachesInvalidateOnWorkingSetWrites(t *testing.T) {
 	}
 
 	later := time.Now().UTC().Add(time.Second).Format(time.RFC3339Nano)
-	if _, err := store.db.Exec(`
+	if _, err := writer.Exec(`
 		INSERT INTO issues (
 			id, title, status, issue_type, priority, created_at, updated_at,
 			description, design, acceptance_criteria, notes, metadata
 		)
 		VALUES (?, ?, 'open', 'task', 2, ?, ?, '', '', '', '', ?)
 	`, "gc-routed-2", "routed 2", later, later, `{"gc.routed_to":"rig/polecat"}`); err != nil {
-		t.Fatalf("insert uncommitted routed work: %v", err)
+		t.Fatalf("insert routed work through writer: %v", err)
 	}
 
 	count, err = store.PoolDemandCount("rig/polecat")
@@ -526,6 +528,40 @@ func hasTestBead(rows []Bead, id string) bool {
 		}
 	}
 	return false
+}
+
+func openTestDoltliteWriter(t *testing.T, readDB *sql.DB) *sql.DB {
+	t.Helper()
+	rows, err := readDB.Query("PRAGMA database_list")
+	if err != nil {
+		t.Fatalf("query database list: %v", err)
+	}
+	defer rows.Close() //nolint:errcheck // test cleanup
+
+	var dbPath string
+	for rows.Next() {
+		var seq int
+		var name, file string
+		if err := rows.Scan(&seq, &name, &file); err != nil {
+			t.Fatalf("scan database list: %v", err)
+		}
+		if name == "main" {
+			dbPath = file
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read database list: %v", err)
+	}
+	if dbPath == "" {
+		t.Fatal("main database path not found")
+	}
+
+	writer, err := sql.Open("sqlite3", "file:"+dbPath+"?mode=rw&_busy_timeout=10000")
+	if err != nil {
+		t.Fatalf("open writable doltlite db: %v", err)
+	}
+	return writer
 }
 
 func setTestDoltliteConfig(t *testing.T, dbPath string) {

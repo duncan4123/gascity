@@ -43,6 +43,7 @@ const (
 	orderTrackingSweepMetadataReason       = "stale-order-tracking"
 	orderTrackingSweepMetadataInitiator    = "order-tracking-sweep"
 	orderTrackingWatchdogMetadataInitiator = "controller-watchdog"
+	orderOpenWorkProbeLimit                = 50
 	orderTrackingCloseVerifyAttempts       = 3
 	orderTrackingCloseVerifyRetryDelay     = 25 * time.Millisecond
 

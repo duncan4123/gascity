@@ -49,9 +49,6 @@ func removeDoltRuntimeStateFile(path string) error {
 }
 
 func readPublishedDoltRuntimeStateHint(cityPath string) (doltRuntimeState, bool, error) {
-	if !cityUsesManagedDoltBeadsLifecycle(cityPath) {
-		return doltRuntimeState{}, false, nil
-	}
 	owned, err := managedDoltLifecycleOwned(cityPath)
 	if err != nil {
 		return doltRuntimeState{}, false, fmt.Errorf("determine managed dolt ownership for published hint: %w", err)
@@ -132,9 +129,6 @@ func syncManagedDoltPortMirrors(cityPath string) error {
 }
 
 func publishManagedDoltRuntimeState(cityPath string) error {
-	if !cityUsesManagedDoltBeadsLifecycle(cityPath) {
-		return nil
-	}
 	owned, err := managedDoltLifecycleOwned(cityPath)
 	if err != nil {
 		return err

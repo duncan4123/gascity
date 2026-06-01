@@ -164,7 +164,6 @@ type NamedSessionPatch struct {
 	Mode *string `toml:"mode,omitempty" jsonschema:"enum=on_demand,enum=always"`
 }
 
-
 // PoolOverride modifies legacy [pool] fields that map to session scaling. Nil fields are not changed.
 type PoolOverride struct {
 	// Min overrides the minimum number of sessions.
@@ -276,7 +275,11 @@ type GitHubPRMonitorPatch struct {
 
 // IsEmpty reports whether p has no patch operations.
 func (p *Patches) IsEmpty() bool {
-	return len(p.Agents) == 0 && len(p.Rigs) == 0 && len(p.Providers) == 0 && len(p.GitHubPRMonitors) == 0
+	return len(p.Agents) == 0 &&
+		len(p.NamedSessions) == 0 &&
+		len(p.Rigs) == 0 &&
+		len(p.Providers) == 0 &&
+		len(p.GitHubPRMonitors) == 0
 }
 
 // Fragments returns a pointer to the given inject_fragments list for use

@@ -55,15 +55,16 @@ func observeStatusTargetsParallel(
 }
 
 type cityStatusSnapshot struct {
-	CityName      string
-	CityPath      string
-	Controller    ControllerJSON
-	Suspended     bool
-	Beads         *beads.BeadsDiagnostic
-	Agents        []cityStatusAgentRow
-	Rigs          []StatusRigJSON
-	NamedSessions []cityStatusNamedSession
-	Summary       StatusSummaryJSON
+	CityName        string
+	CityPath        string
+	EffectiveAPIURL string
+	Controller      ControllerJSON
+	Suspended       bool
+	Beads           *beads.BeadsDiagnostic
+	Agents          []cityStatusAgentRow
+	Rigs            []StatusRigJSON
+	NamedSessions   []cityStatusNamedSession
+	Summary         StatusSummaryJSON
 }
 
 type cityStatusAgentRow struct {

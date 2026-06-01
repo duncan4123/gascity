@@ -50,13 +50,13 @@ func (s *DoltliteNativeStore) Create(b Bead) (Bead, error) {
 	var created gcbeads.Issue
 	err := s.withNativeWriteRetry(func() error {
 		var err error
-		created, err = s.native.Create(context.Background(), nativeIssueFromBead(b))
+		created, err = s.native.Create(context.Background(), doltliteNativeIssueFromBead(b))
 		return err
 	})
 	if err != nil {
 		return Bead{}, fmt.Errorf("doltlite create: %w", mapNativeErr(err))
 	}
-	return beadFromNativeIssue(created, b), nil
+	return beadFromDoltliteNativeIssue(created, b), nil
 }
 
 func (s *DoltliteNativeStore) Update(id string, opts UpdateOpts) error {
@@ -183,7 +183,7 @@ func (s *DoltliteNativeStore) Ping() error {
 	return nil
 }
 
-func nativeIssueFromBead(b Bead) gcbeads.Issue {
+func doltliteNativeIssueFromBead(b Bead) gcbeads.Issue {
 	metadata := cloneStringMap(b.Metadata)
 	if b.From != "" {
 		if metadata == nil {
@@ -229,7 +229,7 @@ func nativeIssueFromBead(b Bead) gcbeads.Issue {
 	}
 }
 
-func beadFromNativeIssue(issue gcbeads.Issue, fallback Bead) Bead {
+func beadFromDoltliteNativeIssue(issue gcbeads.Issue, fallback Bead) Bead {
 	bead := Bead{
 		ID:           issue.ID,
 		Title:        issue.Title,

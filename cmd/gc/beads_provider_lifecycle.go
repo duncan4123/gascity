@@ -1252,9 +1252,6 @@ func managedDoltStatePath(cityPath string) string {
 }
 
 func currentManagedDoltPort(cityPath string) string {
-	if !cityUsesManagedDoltBeadsLifecycle(cityPath) {
-		return ""
-	}
 	owned, err := managedDoltLifecycleOwned(cityPath)
 	if err != nil {
 		log.Printf("gc: managed dolt ownership probe failed for %s: %v", cityPath, err)

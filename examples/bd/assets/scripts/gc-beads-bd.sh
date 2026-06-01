@@ -499,6 +499,45 @@ ensure_bd_runtime_config_value() {
     server_sql_retry "USE \`$db\`; INSERT INTO config (\`key\`, value) VALUES ('$key', '$value') ON DUPLICATE KEY UPDATE value = VALUES(value)" >/dev/null || die "failed to set bd runtime $key for $db"
 }
 
+ensure_doltlite_runtime_config_value() {
+    local db_path="$1"
+    local key="$2"
+    local value="$3"
+    local key_sql value_sql
+    [ -n "$db_path" ] || return 0
+    [ -n "$value" ] || return 0
+    [ -f "$db_path" ] || die "missing doltlite database: $db_path"
+    command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 is required to configure doltlite runtime state"
+    case "$key" in
+        issue_prefix)
+            valid_sql_name "$value" || die "invalid beads prefix: $value"
+            ;;
+        types.custom)
+            valid_custom_types_value "$value" || die "invalid custom bead types: $value"
+            ;;
+        *)
+            die "unsupported bd runtime config key: $key"
+            ;;
+    esac
+
+    key_sql=$(printf '%s' "$key" | sed "s/'/''/g")
+    value_sql=$(printf '%s' "$value" | sed "s/'/''/g")
+    sqlite3 "$db_path" "REPLACE INTO config (\"key\", value) VALUES ('$key_sql', '$value_sql');" ||
+        die "failed to set doltlite runtime $key for $db_path"
+}
+
+ensure_doltlite_runtime_issue_prefix() {
+    local db_path="$1"
+    local prefix="$2"
+    ensure_doltlite_runtime_config_value "$db_path" "issue_prefix" "$prefix"
+}
+
+ensure_doltlite_runtime_custom_types() {
+    local db_path="$1"
+    local types="$2"
+    ensure_doltlite_runtime_config_value "$db_path" "types.custom" "$types"
+}
+
 bd_runtime_schema_ready() {
     local db="$1"
     [ -n "$db" ] || return 1
@@ -2244,8 +2283,9 @@ op_init() {
         else
             run_doltlite_existing_db_maintenance "$dir"
         fi
-        run_bd_doltlite "$dir" config set issue_prefix "$prefix" 2>/dev/null || true
-        run_bd_doltlite "$dir" config set types.custom "$custom_types" 2>/dev/null || true
+        ensure_types_custom_in_yaml "$dir" "$custom_types"
+        ensure_doltlite_runtime_custom_types "$db_path" "$custom_types"
+        ensure_doltlite_runtime_issue_prefix "$db_path" "$prefix"
         exit 0
     fi
 
