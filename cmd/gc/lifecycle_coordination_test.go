@@ -252,6 +252,67 @@ func TestLifecycleCoordination_StartOrder(t *testing.T) {
 	}
 }
 
+func TestStartBeadsLifecycleContinuesAfterRigInitFailure(t *testing.T) {
+	cityPath := t.TempDir()
+	cityName := "partialstart"
+	badRigPath := filepath.Join(cityPath, "rigs", "bad")
+	goodRigPath := filepath.Join(cityPath, "rigs", "good")
+	for _, dir := range []string{badRigPath, goodRigPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"),
+		[]byte("[workspace]\nname = \""+cityName+"\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logFile := filepath.Join(t.TempDir(), "ops.log")
+	script := filepath.Join(t.TempDir(), "partial-beads.sh")
+	content := fmt.Sprintf(`#!/bin/sh
+echo "$@" >> %q
+case "$1" in
+  init)
+    if [ "$2" = %q ]; then
+      echo "intentional bad rig init" >&2
+      exit 42
+    fi
+    mkdir -p "$2/.beads"
+    ;;
+  create)
+    cat >/dev/null
+    printf '{"id":"spy-1","title":"spy bead","status":"open","type":"task"}\n'
+    ;;
+esac
+exit 0
+`, logFile, badRigPath)
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GC_BEADS", "exec:"+script)
+
+	cfg := testCityConfig(cityName, []config.Rig{
+		{Name: "bad", Path: badRigPath, Prefix: "bd"},
+		{Name: "good", Path: goodRigPath, Prefix: "gd"},
+	})
+	var stderr strings.Builder
+	if err := startBeadsLifecycle(cityPath, cityName, cfg, &stderr); err != nil {
+		t.Fatalf("startBeadsLifecycle() error = %v, want nil when one rig init fails", err)
+	}
+	if !cfg.Rigs[0].Suspended {
+		t.Fatal("failed rig was not suspended for this startup")
+	}
+	if cfg.Rigs[1].Suspended {
+		t.Fatal("successful rig was suspended")
+	}
+	if got := stderr.String(); !strings.Contains(got, `rig "bad" beads`) || !strings.Contains(got, "intentional bad rig init") {
+		t.Fatalf("stderr = %q, want failed rig init warning", got)
+	}
+
+	ops := readOpLog(t, logFile)
+	assertOpSubsequence(t, ops, "init "+cityPath, "init "+badRigPath, "init "+goodRigPath)
+}
+
 // TestLifecycleCoordination_StopOrder verifies that stop is called
 // during gc stop via shutdownBeadsProvider.
 func TestLifecycleCoordination_StopOrder(t *testing.T) {
