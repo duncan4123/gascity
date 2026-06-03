@@ -126,11 +126,15 @@ func requiredBuiltinPackNames(cityPath string) []string {
 		required = append(required, "bd")
 	}
 	provider := strings.TrimSpace(configuredBeadsProviderValue(cityPath))
+	normalizedProvider := normalizeRawBeadsProvider(cityPath, provider)
 	usesDirectExecLifecycle := strings.HasPrefix(provider, "exec:") &&
 		execProviderBase(provider) == "gc-beads-bd" &&
-		normalizeRawBeadsProvider(cityPath, provider) != "bd"
-	if usesDirectExecLifecycle {
-		required = append(required, "dolt")
+		normalizedProvider != "bd"
+	if providerUsesBdStoreContract(normalizedProvider) || usesDirectExecLifecycle {
+		required = appendRequiredBuiltinPack(required, "bd")
+		for _, name := range resolveBeadsBackend(cityPath).RequiredBuiltinPacks() {
+			required = appendRequiredBuiltinPack(required, name)
+		}
 	}
 	return required
 }
@@ -336,6 +340,19 @@ func usesOSFS(fs fsys.FS) bool {
 	default:
 		return false
 	}
+}
+
+func appendRequiredBuiltinPack(names []string, name string) []string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return names
+	}
+	for _, existing := range names {
+		if existing == name {
+			return names
+		}
+	}
+	return append(names, name)
 }
 
 // packExists checks if a pack.toml exists in the given directory.

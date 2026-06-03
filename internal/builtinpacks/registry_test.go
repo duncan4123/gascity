@@ -23,6 +23,7 @@ func TestAllAndSourceAreDeterministic(t *testing.T) {
 		"core=internal/bootstrap/packs/core",
 		"bd=examples/bd",
 		"dolt=examples/bd/dolt",
+		"beads-doltlite=examples/beads-doltlite",
 		"gastown=examples/gastown/packs/gastown",
 		"gascity=",
 	}

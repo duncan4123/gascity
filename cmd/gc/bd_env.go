@@ -350,6 +350,7 @@ func applyCanonicalDoltAuthEnv(env map[string]string, cityPath, scopeRoot string
 // (true, err) on a known backend that failed to project; caller MUST
 // surface this error rather than retrying.
 func applyCanonicalScopeBackendEnv(env map[string]string, cityPath, scopeRoot string) (bool, error) {
+	backend := resolveBeadsBackend(cityPath)
 	resolved, err := contract.ResolveScopeConfigState(fsys.OSFS{}, cityPath, scopeRoot, "")
 	if err != nil {
 		return false, err
@@ -370,7 +371,7 @@ func applyCanonicalScopeBackendEnv(env map[string]string, cityPath, scopeRoot st
 	}
 	if resolved.State.EndpointOrigin == contract.EndpointOriginInheritedCity &&
 		(meta.Backend == "" || meta.Backend == "doltlite") &&
-		cityUsesDoltliteBeadsBackend(cityPath) {
+		backend.Name() == "doltlite" {
 		clearProjectedDoltEnv(env)
 		clearProjectedPostgresEnv(env)
 		env["GC_BEADS_BACKEND"] = "doltlite"
@@ -433,19 +434,20 @@ func applyCityPostgresBackendEnv(env map[string]string, cityPath string) (bool, 
 }
 
 func scopeBackendIsDoltlite(cityPath, scopeRoot string) bool {
+	backend := resolveBeadsBackend(cityPath)
 	meta, ok, err := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(scopeRoot))
 	if err == nil && ok && meta.Backend != "" {
 		return meta.Backend == "doltlite"
 	}
 	if samePath(cityPath, scopeRoot) {
-		return cityUsesDoltliteBeadsBackend(cityPath)
+		return backend.Name() == "doltlite"
 	}
 	resolved, err := contract.ResolveScopeConfigState(fsys.OSFS{}, cityPath, scopeRoot, "")
 	if err != nil || resolved.Kind != contract.ScopeConfigAuthoritative {
 		return false
 	}
 	return resolved.State.EndpointOrigin == contract.EndpointOriginInheritedCity &&
-		cityUsesDoltliteBeadsBackend(cityPath)
+		backend.Name() == "doltlite"
 }
 
 func scopeOverridesCityBackend(cityPath, scopeRoot string) bool {
