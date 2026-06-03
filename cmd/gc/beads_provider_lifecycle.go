@@ -531,8 +531,12 @@ func initAndHookDir(cityPath, dir, prefix string) error {
 		}
 	}
 	// Non-fatal: hooks are convenience (event forwarding), not critical.
-	if err := installBeadHooks(dir, cityPath); err != nil {
-		return fmt.Errorf("install hooks at %s: %w", dir, err)
+	// Skip for doltlite backends: hooks emit events to the dolt-backed
+	// event log, which doltlite-native stores don't use.
+	if !cityUsesDoltliteBeadsBackend(cityPath) {
+		if err := installBeadHooks(dir, cityPath); err != nil {
+			return fmt.Errorf("install hooks at %s: %w", dir, err)
+		}
 	}
 	return nil
 }
