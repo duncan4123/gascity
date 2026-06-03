@@ -2843,6 +2843,13 @@ fi
 # Resolve DOLT_PORT now that STATE_FILE is set.
 DOLT_PORT=$(allocate_port)
 
+if is_doltlite_backend; then
+    case "$op" in
+        init|create|get|update|close|reopen|list|ready|children|list-by-label|set-metadata|delete|dep-add|dep-remove|dep-list) ;;
+        *) exit 2 ;;
+    esac
+fi
+
 case "$op" in
     start)        op_start ;;
     ensure-ready) op_ensure_ready ;;
