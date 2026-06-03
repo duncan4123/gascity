@@ -111,6 +111,51 @@ func TestOpenStoreAtForCityContextDriftFallsBackWithPreflightDiagnostic(t *testi
 	}
 }
 
+func TestOpenStoreAtForCityDoltliteSkipsNativePreflight(t *testing.T) {
+	scope := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(scope, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scope, ".beads", "metadata.json"), []byte(`{"backend":"doltlite","database":"doltlite","dolt_database":"gascity"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var bdOpened bool
+
+	result, err := OpenStoreAtForCity(context.Background(), StoreOpenOptions{
+		ScopeRoot: scope,
+		Provider:  "bd",
+		PreflightChecker: contract.PreflightChecker{
+			BDContext: func(string) (contract.PreflightBDContext, error) {
+				t.Fatal("BDContext preflight called for doltlite scope")
+				return contract.PreflightBDContext{}, nil
+			},
+		},
+		OpenBdStore: func() (Store, error) {
+			bdOpened = true
+			return NewMemStore(), nil
+		},
+		OpenNativeStore: func() (Store, error) {
+			t.Fatal("OpenNativeStore called for doltlite scope")
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("OpenStoreAtForCity() error = %v", err)
+	}
+	if !bdOpened {
+		t.Fatal("OpenBdStore was not called")
+	}
+	if result.Diagnostic.Store != storeNameBdStore {
+		t.Fatalf("diagnostic store = %q, want %q", result.Diagnostic.Store, storeNameBdStore)
+	}
+	if result.Diagnostic.NativeStoreEligible {
+		t.Fatal("diagnostic native_store_eligible = true, want false")
+	}
+	if result.Diagnostic.PreflightGate != "doltlite_fallback" {
+		t.Fatalf("diagnostic preflight_gate = %q, want doltlite_fallback", result.Diagnostic.PreflightGate)
+	}
+}
+
 func TestOpenStoreAtForCityForceFallbackSkipsPreflightAndNativeOpen(t *testing.T) {
 	t.Setenv(nativeForceFallbackEnv, "1")
 

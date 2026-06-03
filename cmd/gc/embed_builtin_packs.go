@@ -265,16 +265,29 @@ func requiredBuiltinPackNames(cityPath string) []string {
 
 	provider := strings.TrimSpace(configuredBeadsProviderValue(cityPath))
 	normalizedProvider := normalizeRawBeadsProvider(cityPath, provider)
-	if providerUsesBdStoreContract(normalizedProvider) {
-		required = append(required, "bd")
-	}
 	usesDirectExecLifecycle := strings.HasPrefix(provider, "exec:") &&
 		execProviderBase(provider) == "gc-beads-bd" &&
 		normalizedProvider != "bd"
-	if usesDirectExecLifecycle {
-		required = append(required, "dolt")
+	if providerUsesBdStoreContract(normalizedProvider) || usesDirectExecLifecycle {
+		required = appendRequiredBuiltinPack(required, "bd")
+		for _, name := range resolveBeadsBackend(cityPath).RequiredBuiltinPacks() {
+			required = appendRequiredBuiltinPack(required, name)
+		}
 	}
 	return required
+}
+
+func appendRequiredBuiltinPack(names []string, name string) []string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return names
+	}
+	for _, existing := range names {
+		if existing == name {
+			return names
+		}
+	}
+	return append(names, name)
 }
 
 func emitBuiltinPackRefreshWarning(w io.Writer, err error) {
@@ -294,8 +307,8 @@ func emitBuiltinPackRefreshWarning(w io.Writer, err error) {
 // Core is always required: it ships the role prompts referenced by implicit
 // agents, the gc-* skills, mechanical housekeeping orders, and the
 // overlay/per-provider hook files. When the beads provider is "bd" (the
-// default), bd is required and its own pack imports pull in dolt
-// transitively. Gastown is never required — it needs an explicit import.
+// default), bd is required along with the active backend's required pack.
+// Gastown is never required — it needs an explicit import.
 func requiredBuiltinIncludePaths(cityPath string) []string {
 	names := requiredBuiltinPackNames(cityPath)
 	paths := make([]string, 0, len(names))

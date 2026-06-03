@@ -960,13 +960,13 @@ func TestLoadCityConfigFallsBackToExistingBuiltinPacksWhenRefreshFails(t *testin
 		t.Fatalf("MaterializeBuiltinPacks() error: %v", err)
 	}
 
-	// dolt is a non-required pack, so a failed refresh is non-fatal:
+	// gastown is a non-required pack, so a failed refresh is non-fatal:
 	// loadCityConfig falls back to the existing materialized packs and emits a
 	// warning. Under Option B (gastownhall/gascity#2429) a correct-mode edited
 	// file is preserved with no write attempt, so the refresh failure is driven
 	// by a missing file the materializer must rewrite (scaffolding) while the
 	// directory is read-only.
-	targetDir := filepath.Join(dir, citylayout.SystemPacksRoot, "dolt", "commands", "compact")
+	targetDir := filepath.Join(dir, citylayout.SystemPacksRoot, "gastown", "commands", "status")
 	targetFile := filepath.Join(targetDir, "run.sh")
 	wantContent, err := os.ReadFile(targetFile)
 	if err != nil {
@@ -1025,7 +1025,7 @@ func TestLoadCityConfigDeduplicatesBuiltinPackRefreshWarningsPerProcess(t *testi
 	// Missing non-required file forces a scaffolding write that fails while the
 	// directory is read-only (see Option B note in
 	// TestLoadCityConfigFallsBackToExistingBuiltinPacksWhenRefreshFails).
-	targetDir := filepath.Join(dir, citylayout.SystemPacksRoot, "dolt", "commands", "compact")
+	targetDir := filepath.Join(dir, citylayout.SystemPacksRoot, "gastown", "commands", "status")
 	targetFile := filepath.Join(targetDir, "run.sh")
 	if err := os.Remove(targetFile); err != nil {
 		t.Fatalf("Remove(run.sh): %v", err)
@@ -1061,7 +1061,7 @@ func TestLoadCityConfigForRegistryDoesNotSuppressBuiltinPackRefreshWarnings(t *t
 	// Missing non-required file forces a scaffolding write that fails while the
 	// directory is read-only (see Option B note in
 	// TestLoadCityConfigFallsBackToExistingBuiltinPacksWhenRefreshFails).
-	targetDir := filepath.Join(dir, citylayout.SystemPacksRoot, "dolt", "commands", "compact")
+	targetDir := filepath.Join(dir, citylayout.SystemPacksRoot, "gastown", "commands", "status")
 	targetFile := filepath.Join(targetDir, "run.sh")
 	if err := os.Remove(targetFile); err != nil {
 		t.Fatalf("Remove(run.sh): %v", err)
@@ -1281,13 +1281,14 @@ func writeBuiltinPackLoadTestCity(dir string) error {
 func TestRequiredBuiltinIncludePaths_DefaultProvider(t *testing.T) {
 	dir := t.TempDir()
 
-	// Default provider (empty) → core and bd are required.
+	// Default provider (empty) -> core, bd, and the default Dolt backend are required.
 	t.Setenv("GC_BEADS", "")
 	includes := requiredBuiltinIncludePaths(dir)
 
 	want := []string{
 		citylayout.SystemPacksRoot + "/core",
 		citylayout.SystemPacksRoot + "/bd",
+		citylayout.SystemPacksRoot + "/dolt",
 	}
 	if len(includes) != len(want) {
 		t.Fatalf("requiredBuiltinIncludePaths() = %v, want %v", includes, want)
@@ -1295,6 +1296,58 @@ func TestRequiredBuiltinIncludePaths_DefaultProvider(t *testing.T) {
 	for i := range want {
 		if includes[i] != want[i] {
 			t.Errorf("includes[%d] = %q, want %q", i, includes[i], want[i])
+		}
+	}
+}
+
+func TestRequiredBuiltinIncludePaths_DoltliteBackend(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "city.toml"), []byte("[beads]\nprovider = \"bd\"\nbackend = \"doltlite\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GC_BEADS", "")
+	t.Setenv("GC_BEADS_BACKEND", "")
+	includes := requiredBuiltinIncludePaths(dir)
+
+	want := []string{
+		citylayout.SystemPacksRoot + "/core",
+		citylayout.SystemPacksRoot + "/bd",
+		citylayout.SystemPacksRoot + "/beads-doltlite",
+	}
+	if len(includes) != len(want) {
+		t.Fatalf("requiredBuiltinIncludePaths() = %v, want %v", includes, want)
+	}
+	for i := range want {
+		if includes[i] != want[i] {
+			t.Errorf("includes[%d] = %q, want %q", i, includes[i], want[i])
+		}
+	}
+}
+
+func TestBeadsDoltlitePackUsesPackCommandNamespace(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := MaterializeBuiltinPacks(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, rel := range []string{
+		filepath.Join("formulas", "mol-doltlite-maintenance.toml"),
+		filepath.Join("orders", "doltlite-health.toml"),
+		filepath.Join("orders", "doltlite-maintenance.toml"),
+	} {
+		path := filepath.Join(dir, citylayout.SystemPacksRoot, "beads-doltlite", rel)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", rel, err)
+		}
+		text := string(data)
+		if strings.Contains(text, "gc doltlite ") {
+			t.Fatalf("%s references nonexistent command namespace:\n%s", rel, text)
+		}
+		if !strings.Contains(text, "gc beads-doltlite ") {
+			t.Fatalf("%s missing beads-doltlite command namespace:\n%s", rel, text)
 		}
 	}
 }
