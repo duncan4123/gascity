@@ -306,6 +306,13 @@ func ValidateAncestorWorktreesNotStale(path string) error {
 	// inspected.
 	cur := filepath.Dir(filepath.Clean(path))
 	for {
+		// If the ancestor is a jj workspace (.jj/repo exists), the stale
+		// git worktree pointer check does not apply. Stop walking.
+		jjRepo := filepath.Join(cur, ".jj", "repo")
+		if _, jjErr := os.Stat(jjRepo); jjErr == nil {
+			return nil
+		}
+
 		gitPath := filepath.Join(cur, ".git")
 		info, err := os.Lstat(gitPath)
 		if err == nil {

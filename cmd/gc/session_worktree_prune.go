@@ -11,6 +11,7 @@ import (
 	"github.com/gastownhall/gascity/internal/beads/contract"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/git"
+	"github.com/gastownhall/gascity/internal/jj"
 	"github.com/gastownhall/gascity/internal/pathutil"
 )
 
@@ -24,31 +25,46 @@ type gitProbe interface {
 	HasStashesResult() (bool, error)
 	WorktreeRemove(path string, force bool) error
 }
-
 // newGitProbe returns a gitProbe scoped to the given directory. Indirected
 // through a package-level var so tests can stub the git invocations.
 var newGitProbe = func(workDir string) gitProbe { return git.New(workDir) }
 
-// pruneAgentHomeWorktreeIfSafe removes the worktree at the closed session's
+// newJjProbe returns a gitProbe backed by jj for the given directory.
+var newJjProbe = func(workDir string) gitProbe { return jj.New(workDir) }
+
+// isJjWorkspace reports whether the directory is a jj workspace.
+func isJjWorkspace(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".jj", "repo"))
+	return err == nil
+}
+
+
+// newProbe returns a gitProbe backed by git or jj depending on useJj.
+// Delegates through package-level vars so tests can stub invocations.
+var newProbe = func(workDir string, useJj bool) gitProbe {
+	if useJj {
+		return newJjProbe(workDir)
+	}
+	return newGitProbe(workDir)
+}
+// pruneAgentHomeWorktreeIfSafe removes the workspace at the closed session's
 // worker_dir, after applying the same safety gates as doctor's
-// NestedWorktreePruneCheck. Returns true when the removal actually
-// happened.
+// NestedWorktreePruneCheck. Returns true when the removal actually happened.
 //
 // The decision is mechanical, never role-coupled: any pool-managed agent
-// worktree that lives under the city's .gc/worktrees/ tree, is a git
-// worktree, and probes clean is safe to reclaim. Pool sessions are
-// transient by design — their worktrees were never meant to outlive the
-// session bead.
+// workspace that lives under the city's .gc/worktrees/ tree and probes
+// clean is safe to reclaim. Pool sessions are transient by design — their
+// workspaces were never meant to outlive the session bead.
 //
 // No-op when:
 //   - cfg.Daemon.AutoPruneWorkerDir is false
 //   - the session bead has no worker_dir metadata
 //   - the worker_dir does not live under cityPath/.gc/worktrees/
-//   - the worker_dir is missing on disk or has no .git pointer
-//   - the worktree has uncommitted changes, unpushed commits, or stashes
+//   - the worker_dir is missing on disk or has no .git/.jj
+//   - the workspace has uncommitted changes, unpushed commits, or stashes
 //   - the rig that owns the session cannot be resolved to a filesystem path
 //
-// Removal failures are logged but never surfaced — an orphaned worktree
+// Removal failures are logged but never surfaced — an orphaned workspace
 // still shows up via `gc doctor` later, which is the operator's existing
 // reclaim path.
 func pruneAgentHomeWorktreeIfSafe(session beads.Bead, cityPath string, cfg *config.City, stderr io.Writer) bool {
@@ -68,12 +84,16 @@ func pruneAgentHomeWorktreeIfSafe(session beads.Bead, cityPath string, cfg *conf
 		return false
 	}
 
-	if _, err := os.Stat(filepath.Join(workerDir, ".git")); err != nil {
-		// Already gone, or never a worktree — nothing to do.
-		return false
+	// Detect workspace type: jj workspace (has .jj/repo) or git worktree (has .git).
+	useJj := isJjWorkspace(workerDir)
+	if !useJj {
+		if _, err := os.Stat(filepath.Join(workerDir, ".git")); err != nil {
+			// Already gone, or never a worktree — nothing to do.
+			return false
+		}
 	}
 
-	gp := newGitProbe(workerDir)
+	gp := newProbe(workerDir, useJj)
 	if !gp.IsRepo() {
 		return false
 	}
@@ -100,16 +120,13 @@ func pruneAgentHomeWorktreeIfSafe(session beads.Bead, cityPath string, cfg *conf
 		return false
 	}
 
-	// Run `git worktree remove` from the rig root rather than from the
-	// worktree being removed: git refuses to remove a worktree whose path
-	// equals cwd in some configurations, and operating from cwd of a
-	// directory we are about to delete is fragile in general.
+	// Run removal from the rig root (jj workspace forget or git worktree remove).
 	rigRoot := lookupRigRootForSession(session, cfg)
 	if rigRoot == "" {
 		fmt.Fprintf(stderr, "session reconciler: not pruning worker_dir %s: rig path unresolved\n", workerDir) //nolint:errcheck
 		return false
 	}
-	if err := newGitProbe(rigRoot).WorktreeRemove(workerDir, true); err != nil {
+	if err := newProbe(rigRoot, useJj).WorktreeRemove(workerDir, true); err != nil {
 		fmt.Fprintf(stderr, "session reconciler: pruning worker_dir %s: %v\n", workerDir, err) //nolint:errcheck
 		return false
 	}
