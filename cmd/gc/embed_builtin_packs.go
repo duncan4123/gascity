@@ -54,13 +54,21 @@ type builtinPackFile struct {
 // Operator edits are preserved only for non-required packs: a regular,
 // correct-mode file in a non-required pack is left untouched even when its
 // content differs from the embedded bytes (see gastownhall/gascity#2429).
-// Required packs (core, maintenance, and the provider-dependent bd/dolt) are
+// Required packs (core, maintenance, and the provider-dependent bd) are
 // always refreshed and validated, so a stale or corrupt required pack on disk
 // is repaired rather than silently accepted.
+// The dolt pack is conditionally skipped when the backend is doltlite.
 // Idempotent: safe to call on every gc start and gc init.
 func MaterializeBuiltinPacks(cityPath string) error {
 	required := requiredBuiltinPackSet(cityPath)
+	backend := strings.ToLower(beadsBackend(cityPath))
 	for _, bp := range builtinPacks {
+		// The dolt pack manages a Dolt SQL server for the MySQL-compatible
+		// Dolt backend. Skip it when the city uses the doltlite backend,
+		// which is an embedded prolly-tree engine with no server process.
+		if bp.Name == "dolt" && backend == "doltlite" {
+			continue
+		}
 		dst := filepath.Join(cityPath, citylayout.SystemPacksRoot, bp.Name)
 		_, isRequired := required[bp.Name]
 		desired, err := materializeFS(bp.FS, dst, !isRequired)

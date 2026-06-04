@@ -6,5 +6,9 @@ import (
 )
 
 func gcDoltSkip() bool {
-	return strings.TrimSpace(os.Getenv("GC_DOLT")) == "skip"
+	if strings.TrimSpace(os.Getenv("GC_DOLT")) == "skip" {
+		return true
+	}
+	// doltlite backend has no dolt server, no managed dolt, no dolt ops.
+	return isDoltliteCity()
 }
