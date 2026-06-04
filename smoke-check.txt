@@ -1,0 +1,1 @@
+smoke check: 2026-06-04T14:54:51Z — polecat gastown-jj.furiosa, bead gc-dkn, workspace initialized and toolchain functional
