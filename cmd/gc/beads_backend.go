@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gastownhall/gascity/internal/beads/contract"
 	"github.com/gastownhall/gascity/internal/fsys"
 )
 
@@ -76,7 +77,13 @@ func resolveBeadsBackendString(cityPath string) string {
 	if v := strings.TrimSpace(os.Getenv("GC_BEADS_BACKEND")); v != "" {
 		return v
 	}
-	return strings.TrimSpace(peekBeadsBackend(filepath.Join(cityPath, "city.toml")))
+	if backend := strings.TrimSpace(peekBeadsBackend(filepath.Join(cityPath, "city.toml"))); backend != "" {
+		return backend
+	}
+	if meta, ok, err := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(cityPath)); err == nil && ok {
+		return strings.TrimSpace(meta.Backend)
+	}
+	return ""
 }
 
 // isDoltliteCity reports whether the current city uses the doltlite backend.

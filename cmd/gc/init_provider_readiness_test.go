@@ -787,7 +787,7 @@ func TestCmdInitSkipProviderReadinessBypassesBlockedProvider(t *testing.T) {
 	t.Cleanup(func() { registerCityWithSupervisorTestHook = oldRegister })
 
 	var stdout, stderr bytes.Buffer
-	code = cmdInitWithOptions([]string{cityPath}, "", "", "", "", &stdout, &stderr, true, false)
+	code = cmdInitWithOptions([]string{cityPath}, "", "", "", &stdout, &stderr, true, false)
 	if code != 0 {
 		t.Fatalf("cmdInitWithOptions = %d, want 0: %s", code, stderr.String())
 	}
@@ -1025,6 +1025,42 @@ func TestCheckHardDependenciesRejectsBdBelowExplicitIDSupport(t *testing.T) {
 		if !strings.Contains(missing[0].name, want) {
 			t.Fatalf("missing dep = %#v, want %q", missing[0], want)
 		}
+	}
+}
+
+func TestCheckHardDependenciesUsesDoltliteMetadataVersionFloor(t *testing.T) {
+	cityDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cityDir, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityDir, ".beads", "metadata.json"), []byte(`{"backend":"doltlite","database":"doltlite"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldLookPath := initLookPath
+	initLookPath = func(name string) (string, error) {
+		if name == "dolt" {
+			return "", os.ErrNotExist
+		}
+		return "/usr/bin/" + name, nil
+	}
+	t.Cleanup(func() { initLookPath = oldLookPath })
+
+	oldRunVersion := initRunVersion
+	initRunVersion = func(binary string) (string, error) {
+		switch binary {
+		case "bd":
+			return "bd version 1.0.3", nil
+		case "flock", "tmux", "jq", "git", "pgrep", "lsof":
+			return binary + " version", nil
+		default:
+			return binary + " version " + doltMinVersion, nil
+		}
+	}
+	t.Cleanup(func() { initRunVersion = oldRunVersion })
+
+	if missing := checkHardDependencies(cityDir); len(missing) != 0 {
+		t.Fatalf("missing deps = %#v, want doltlite metadata to accept bd 1.0.3 and skip dolt", missing)
 	}
 }
 
