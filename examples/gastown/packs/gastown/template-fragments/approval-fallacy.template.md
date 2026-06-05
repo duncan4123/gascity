@@ -23,22 +23,23 @@ pool slot.
 # Explicit opt-out gate: respect mol-pr-from-issue auto_push=false (halt-at-branch-ready).
 AUTO_PUSH=$(gc bd show <work-bead> --json | jq -r '.[0].metadata | if has("auto_push") then (.auto_push | tostring) else "" end')
 if [ "$AUTO_PUSH" = "false" ]; then
-  echo "auto_push=false: halting at branch-ready (no push, no refinery handoff)"
-  BRANCH=$(git branch --show-current)
+  echo "auto_push=false: halting at bookmark-ready (no push, no refinery handoff)"
+  BOOKMARK=$(gc bd show <work-bead> --json | jq -r '.[0].metadata.branch // empty')
   gc bd update <work-bead> \
     --status=open --assignee="" \
-    --set-metadata branch="$BRANCH" \
+    --set-metadata branch="$BOOKMARK" \
     --set-metadata target={{ .DefaultBranch }} \
     --set-metadata branch_ready=true \
     --set-metadata halt_reason=auto_push_false \
     --set-metadata gc.routed_to="" \
-    --notes "Branch ready: auto_push=false (no push, no refinery handoff)"
+    --notes "Bookmark ready: auto_push=false (no push, no refinery handoff)"
   gc runtime drain-ack
   exit 0
 fi
-git push origin HEAD
+BOOKMARK=$(gc bd show <work-bead> --json | jq -r '.[0].metadata.branch // empty')
+jj git push --bookmark "$BOOKMARK"
 gc bd update <work-bead> \
-  --set-metadata branch=$(git branch --show-current) \
+  --set-metadata branch="$BOOKMARK" \
   --set-metadata target={{ .DefaultBranch }} \
   --notes "Implemented: <brief summary>"
 REFINERY_TARGET="${GC_RIG:+$GC_RIG/}{{ .BindingPrefix }}refinery"
@@ -47,7 +48,7 @@ gc runtime drain-ack
 exit
 ```
 
-This pushes your branch, sets metadata so the Refinery knows what to merge,
+This pushes your bookmark, sets metadata so the Refinery knows what to merge,
 reassigns the work bead to the Refinery, and signals the reconciler to kill
 this session. `gc runtime drain-ack` makes the shutdown immediate. Polecats
 do not push to main, close beads, create MR beads, or wait around.

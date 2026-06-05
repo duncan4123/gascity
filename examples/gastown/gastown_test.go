@@ -659,19 +659,20 @@ func TestPolecatFormulaTreatsMetadataBranchAsAuthoritative(t *testing.T) {
 	}
 	body := string(data)
 	for _, want := range []string{
-		`git fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"`,
-		`Could not fetch metadata.branch=$BRANCH from origin`,
-		`git merge --ff-only "origin/$BRANCH"`,
-		`metadata.branch=$BRANCH was set but no local or origin branch exists`,
-		`STOP. Do not create a different branch.`,
+		`jj git fetch --remote origin --branch "$BOOKMARK"`,
+		`Could not fetch metadata.branch=$BOOKMARK from origin`,
+		`jj bookmark move "$BOOKMARK" --to "origin/$BOOKMARK"`,
+		`metadata.branch=$BOOKMARK was set but no local or origin bookmark exists`,
+		`STOP. Do not create a different bookmark.`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("polecat formula missing metadata.branch authority guidance %q", want)
 		}
 	}
 	assertContainsInOrder(t, body,
-		`if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then`,
-		`if git show-ref --verify --quiet "refs/heads/$BRANCH"; then`,
+		`jj git fetch --remote origin --branch "$BOOKMARK" || \`,
+		`if [ -n "$(jj bookmark list --remote origin "$BOOKMARK" 2>/dev/null || true)" ]; then`,
+		`jj bookmark move "$BOOKMARK" --to "origin/$BOOKMARK" || {`,
 	)
 }
 
@@ -737,9 +738,9 @@ func TestPolecatFormulaSignalsRefineryAfterReassign(t *testing.T) {
 // TestPolecatFormulaSubmitHasBranchShapeGate is the regression test
 // for gastownhall/gascity#2082: the submit-and-exit step must include
 // a fail-closed gate that refuses to reassign to refinery when the
-// current branch isn't `polecat/<bead-id>`. Without this gate, a
+// current bookmark isn't `polecat/<bead-id>`. Without this gate, a
 // provider that skipped workspace-setup (observed with codex)
-// silently strands work on its agent home branch — metadata.branch
+// silently strands work on its agent home bookmark — metadata.branch
 // never points at a valid polecat/<bead-id> merge target, so the
 // refinery's bead-driven handoff finds nothing to merge.
 func TestPolecatFormulaSubmitHasBranchShapeGate(t *testing.T) {
@@ -752,18 +753,18 @@ func TestPolecatFormulaSubmitHasBranchShapeGate(t *testing.T) {
 	body := string(data)
 
 	// The gate body must appear before the push (so a divergent
-	// branch never reaches origin) and before the refinery reassign
+	// bookmark never reaches origin) and before the refinery reassign
 	// (so a divergent branch never advances the bead state).
 	assertContainsInOrder(t, body,
-		"**1. Branch-shape gate (fails closed",
-		`CURRENT_BRANCH=$(git branch --show-current)`,
-		`EXPECTED_BRANCH="polecat/$WORK_BEAD_ID"`,
-		`if [ "$CURRENT_BRANCH" != "$EXPECTED_BRANCH" ]; then`,
-		`BRANCH SHAPE GATE FAILED`,
+		"**1. Bookmark-shape gate (fails closed",
+		`CURRENT_BOOKMARK=$(jj bookmark list -r @ | awk -F: 'NR==1 {print $1}')`,
+		`EXPECTED_BOOKMARK="polecat/$WORK_BEAD_ID"`,
+		`if [ "$CURRENT_BOOKMARK" != "$EXPECTED_BOOKMARK" ]; then`,
+		`BOOKMARK SHAPE GATE FAILED`,
 		`gc runtime drain-ack`,
 		`exit 1`,
 		"**2. Final clean-state verification (safeguard):**",
-		"**3. Push your branch:**",
+		"**3. Push your bookmark:**",
 		"**6. Reassign to refinery:**",
 	)
 
@@ -771,8 +772,8 @@ func TestPolecatFormulaSubmitHasBranchShapeGate(t *testing.T) {
 	// workspace-setup step that ran but failed to record the branch
 	// is repaired before refinery handoff.
 	assertContainsInOrder(t, body,
-		`METADATA_BRANCH=$(gc bd show "$WORK_BEAD_ID" --json | jq -r '.[0].metadata.branch // empty')`,
-		`gc bd update "$WORK_BEAD_ID" --set-metadata branch="$EXPECTED_BRANCH"`,
+		`METADATA_BOOKMARK=$(gc bd show "$WORK_BEAD_ID" --json | jq -r '.[0].metadata.branch // empty')`,
+		`gc bd update "$WORK_BEAD_ID" --set-metadata branch="$EXPECTED_BOOKMARK"`,
 	)
 }
 
@@ -790,7 +791,8 @@ func TestPolecatPromptInlinesBranchConvention(t *testing.T) {
 	body := string(data)
 
 	assertContainsInOrder(t, body,
-		"## CRITICAL: Branch Convention",
+		"## CRITICAL: Bookmark Convention",
+		"per-bead bookmark named",
 		"`polecat/<bead-id>`",
 		"`metadata.branch`",
 		"handoff contract is broken",
@@ -877,8 +879,8 @@ func TestPolecatPromptDoneSequenceSignalsRefinery(t *testing.T) {
 }
 
 // TestPolecatPromptHaltsOnAutoPushFalse asserts the done sequence respects
-// mol-pr-from-issue's auto_push=false halt-at-branch-ready contract. The
-// gate must run BEFORE `git push origin HEAD` so a false signal prevents
+// mol-pr-from-issue's auto_push=false halt-at-bookmark-ready contract. The
+// gate must run BEFORE `jj git push --bookmark` so a false signal prevents
 // the push and refinery handoff entirely. Regression for gco-ded / gc-m3j:
 // prompt's done sequence was structurally overriding the formula's
 // auto_push gate (BYPASS rate hit 75%).
@@ -895,10 +897,10 @@ func TestPolecatPromptHaltsOnAutoPushFalse(t *testing.T) {
 		"## FINAL REMINDER: RUN THE DONE SEQUENCE",
 		`AUTO_PUSH=$(gc bd show <work-bead> --json | jq -r '.[0].metadata | if has("auto_push") then (.auto_push | tostring) else "" end')`,
 		`if [ "$AUTO_PUSH" = "false" ]; then`,
-		`BRANCH=$(git branch --show-current)`,
+		`BOOKMARK=$(gc bd show <work-bead> --json | jq -r '.[0].metadata.branch // empty')`,
 		`gc bd update <work-bead> \`,
 		`--status=open --assignee=""`,
-		`--set-metadata branch="$BRANCH"`,
+		`--set-metadata branch="$BOOKMARK"`,
 		`--set-metadata target={{ .DefaultBranch }}`,
 		`--set-metadata branch_ready=true`,
 		`--set-metadata halt_reason=auto_push_false`,
@@ -906,7 +908,8 @@ func TestPolecatPromptHaltsOnAutoPushFalse(t *testing.T) {
 		`gc runtime drain-ack`,
 		"exit 0",
 		"fi",
-		"git push origin HEAD",
+		`BOOKMARK=$(gc bd show <work-bead> --json | jq -r '.[0].metadata.branch // empty')`,
+		`jj git push --bookmark "$BOOKMARK"`,
 	)
 }
 
@@ -919,15 +922,15 @@ func TestPolecatRenderedApprovalFallacyHaltsOnAutoPushFalse(t *testing.T) {
 		"gastown",
 		"gastown.",
 	)
-	doneSequence := sectionBetween(t, body, "### The Done Sequence", "This pushes your branch")
+	doneSequence := sectionBetween(t, body, "### The Done Sequence", "This pushes your bookmark")
 
 	assertContainsInOrder(t, doneSequence,
 		`AUTO_PUSH=$(gc bd show <work-bead> --json | jq -r '.[0].metadata | if has("auto_push") then (.auto_push | tostring) else "" end')`,
 		`if [ "$AUTO_PUSH" = "false" ]; then`,
-		`BRANCH=$(git branch --show-current)`,
+		`BOOKMARK=$(gc bd show <work-bead> --json | jq -r '.[0].metadata.branch // empty')`,
 		`gc bd update <work-bead> \`,
 		`--status=open --assignee=""`,
-		`--set-metadata branch="$BRANCH"`,
+		`--set-metadata branch="$BOOKMARK"`,
 		`--set-metadata target=main`,
 		`--set-metadata branch_ready=true`,
 		`--set-metadata halt_reason=auto_push_false`,
@@ -935,7 +938,8 @@ func TestPolecatRenderedApprovalFallacyHaltsOnAutoPushFalse(t *testing.T) {
 		`gc runtime drain-ack`,
 		"exit 0",
 		"fi",
-		"git push origin HEAD",
+		`BOOKMARK=$(gc bd show <work-bead> --json | jq -r '.[0].metadata.branch // empty')`,
+		`jj git push --bookmark "$BOOKMARK"`,
 	)
 }
 
@@ -950,13 +954,13 @@ func TestPolecatFormulaHaltsOnAutoPushFalse(t *testing.T) {
 	submit := sectionBetween(t, body, `id = "submit-and-exit"`, "The refinery will pick this up")
 
 	assertContainsInOrder(t, submit,
-		"Push your branch:",
+		"Push your bookmark:",
 		`AUTO_PUSH=$(gc bd show "$WORK_BEAD_ID" --json | jq -r '.[0].metadata | if has("auto_push") then (.auto_push | tostring) else "" end')`,
 		`if [ "$AUTO_PUSH" = "false" ]; then`,
-		`BRANCH=$(git branch --show-current)`,
+		`BOOKMARK=$(gc bd show "$WORK_BEAD_ID" --json | jq -r '.[0].metadata.branch // empty')`,
 		`gc bd update "$WORK_BEAD_ID" \`,
 		`--status=open --assignee=""`,
-		`--set-metadata branch="$BRANCH"`,
+		`--set-metadata branch="$BOOKMARK"`,
 		`--set-metadata target={{base_branch}}`,
 		`--set-metadata branch_ready=true`,
 		`--set-metadata halt_reason=auto_push_false`,
@@ -964,7 +968,8 @@ func TestPolecatFormulaHaltsOnAutoPushFalse(t *testing.T) {
 		`gc runtime drain-ack`,
 		"exit 0",
 		"fi",
-		"git push origin HEAD",
+		`BOOKMARK=$(gc bd show "$WORK_BEAD_ID" --json | jq -r '.[0].metadata.branch // empty')`,
+		`jj git push --bookmark "$BOOKMARK"`,
 	)
 }
 
