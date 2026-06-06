@@ -684,14 +684,14 @@ func TestEnsureBuiltinRuntimeAssetsSkipsShimForNonBdCity(t *testing.T) {
 	}
 }
 
-func TestBeadsDoltlitePackIncludesLibdoltliteGCBuildCommand(t *testing.T) {
+func TestBeadsDoltlitePackIncludesLibdoltliteBuildCommand(t *testing.T) {
 	packDir := bundledPackDirForTest(t, "beads-doltlite")
 	manifestPath := filepath.Join(packDir, "commands", "build", "command.toml")
 	manifest, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatalf("ReadFile(%s): %v", manifestPath, err)
 	}
-	if !strings.Contains(string(manifest), "Build the gc binary against libdoltlite") {
+	if !strings.Contains(string(manifest), "Build gc or bd against libdoltlite") {
 		t.Fatalf("build command manifest missing libdoltlite description:\n%s", manifest)
 	}
 
@@ -702,8 +702,17 @@ func TestBeadsDoltlitePackIncludesLibdoltliteGCBuildCommand(t *testing.T) {
 	}
 	text := string(script)
 	for _, want := range []string{
+		"usage: gc beads-doltlite build [gc|bd|all]",
+		"--gc-source",
+		"--bd-source",
+		"--gc-output",
+		"--bd-output",
 		"CGO_ENABLED=1",
-		"-tags=gascity_doltlite_lib,libsqlite3",
+		"-tags=${tags}",
+		"gascity_doltlite_lib,libsqlite3",
+		"common_env_prefix \"libsqlite3\"",
+		"./cmd/gc",
+		"./cmd/bd",
 		"CGO_LDFLAGS",
 		"-ldoltlite",
 		"libdoltlite",
