@@ -1,0 +1,84 @@
+description = """
+Patrol SPR review workflow state for a rig.
+"""
+formula = "mol-spr-witness-patrol"
+
+[vars]
+[vars.binding_prefix]
+description = "Import binding prefix for agent identities, including trailing dot when bound."
+default = ""
+
+[[steps]]
+id = "check-setup"
+title = "Check SPR tooling"
+description = """
+Check local setup:
+
+```bash
+command -v jj
+command -v gh || true
+command -v jj-spr || true
+jj st
+```
+
+If GitHub backend is used by any open SPR bead, `jj-spr` must be installed and
+`jj spr list` must run. If it fails, record or file a setup bead and nudge the
+mayor. For local-only backend, `jj-spr` is optional.
+"""
+
+[[steps]]
+id = "scan-metadata"
+title = "Scan SPR work and review beads"
+needs = ["check-setup"]
+description = """
+Find inconsistent SPR state:
+
+```bash
+gc bd list --status=open --json | jq '.[] | select(.metadata.merge_strategy=="spr" or .issue_type=="spr-pr") | {id,title,metadata}'
+```
+
+Flag:
+- work beads missing `spr_backend`, `spr_mode`, or `spr_change_id`
+- GitHub backend missing `pr_url`
+- local backend missing `spr_pr_bead`
+- local `spr-pr` beads missing `source_work`
+- stacked beads missing `spr_stack_id` or `spr_stack_index`
+"""
+
+[[steps]]
+id = "scan-readiness"
+title = "Scan readiness and stuck reviews"
+needs = ["scan-metadata"]
+description = """
+For GitHub PRs, use `gh pr view` to check open state, review decision, checks,
+and mergeability. For local PR beads, inspect `review_status`, `ci_status`,
+`mergeable`, and `spr_status`.
+
+Nudge `spr-lander` for ready reviews:
+
+```bash
+gc session nudge {{binding_prefix}}spr-lander "SPR reviews are ready to land; run gc hook."
+```
+
+For blocked reviews, update durable metadata on the work bead:
+
+```bash
+gc bd update <work> --set-metadata spr_blocked_reason="<reason>"
+```
+"""
+
+[[steps]]
+id = "drain"
+title = "Close patrol wisp and drain"
+needs = ["scan-readiness"]
+description = """
+Close this patrol step and drain:
+
+```bash
+if [ -n "${GC_BEAD_ID:-}" ]; then
+  gc bd update "$GC_BEAD_ID" --status=closed --set-metadata gc.outcome=pass --notes "SPR witness patrol complete."
+fi
+gc runtime drain-ack
+```
+"""
+

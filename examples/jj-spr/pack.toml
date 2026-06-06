@@ -1,0 +1,37 @@
+[pack]
+name = "jj-spr"
+version = "0.1.0"
+schema = 2
+description = "SPR workflow pack for Jujutsu-backed pull request review, with GitHub and local beads backends."
+
+[providers.codex-spark]
+base = "builtin:codex"
+ready_delay_ms = 0
+options_schema_merge = "by_key"
+option_defaults = { model = "GPT-5.3-Codex-Spark", effort = "medium" }
+
+[[providers.codex-spark.options_schema]]
+key = "model"
+label = "Model"
+type = "select"
+
+[[providers.codex-spark.options_schema.choices]]
+value = "GPT-5.3-Codex-Spark"
+label = "GPT-5.3 Codex Spark"
+flag_args = ["--model", "GPT-5.3-Codex-Spark"]
+flag_aliases = [["-m", "GPT-5.3-Codex-Spark"]]
+
+[[named_session]]
+template = "spr-polecat"
+scope = "rig"
+mode = "on_demand"
+
+[[named_session]]
+template = "spr-lander"
+scope = "rig"
+mode = "on_demand"
+
+[[named_session]]
+template = "spr-witness"
+scope = "rig"
+mode = "always"

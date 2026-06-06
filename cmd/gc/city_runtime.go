@@ -96,11 +96,12 @@ type CityRuntime struct {
 	standaloneRigStores map[string]beads.Store
 
 	// Bead-driven reconciler state (Phase 2f).
-	sessionDrains     *drainTracker // in-memory drain tracker; nil when bead reconciler disabled
-	asyncStartLimiter *asyncStartLimiter
-	asyncStarts       asyncStartTracker
-	asyncStops        asyncStartTracker
-	demandSnapshot    *runtimeDemandSnapshot
+	sessionDrains      *drainTracker       // in-memory drain tracker; nil when bead reconciler disabled
+	providerHealthGate *providerHealthGate // ADR-0013 A1 M3a; nil until bead reconciler initialized
+	asyncStartLimiter  *asyncStartLimiter
+	asyncStarts        asyncStartTracker
+	asyncStops         asyncStartTracker
+	demandSnapshot     *runtimeDemandSnapshot
 
 	fsPressureConsecutiveSkips int
 	fsPressureEpisodeLogged    bool
@@ -175,6 +176,16 @@ type CityRuntimeParams struct {
 var (
 	cityRuntimeStartBeadsLifecycle       = startBeadsLifecycle
 	cityRuntimeReloadLifecycleRetryDelay = time.Second
+	// reloadActiveTTL bounds how long a single accepted reload may occupy
+	// the activeReload slot. If a reconciler tick wedges in something that
+	// does not panic (so the tick's defer never runs), activeReload stays
+	// set and every subsequent gc reload returns busy. When a fresh
+	// request arrives and the existing activeReload has been resident for
+	// longer than this TTL, handleReloadRequest force-clears the stuck
+	// slot (replying timeout on the old request's doneCh) and accepts the
+	// new request. Set well above legitimate reload duration so a slow
+	// but progressing reload is not killed in flight. Test-overridable.
+	reloadActiveTTL = 10 * time.Minute
 )
 
 const cityRuntimeReloadLifecycleRetryLimit = 2
@@ -372,9 +383,10 @@ func (cr *CityRuntime) run(ctx context.Context) {
 	// Record bead store health metric.
 	telemetry.RecordBeadStoreHealth(context.Background(), cr.cityName, cr.cityBeadStore() != nil)
 
-	// Initialize bead-driven drain tracker when bead store is available.
+	// Initialize bead-driven drain tracker and provider-health gate when bead store is available.
 	if cr.cityBeadStore() != nil && cr.tomlPath != "" {
 		cr.sessionDrains = newDrainTracker()
+		cr.providerHealthGate = newProviderHealthGate()
 	}
 	if ctx.Err() != nil {
 		return
@@ -945,9 +957,7 @@ func (cr *CityRuntime) tick(
 		}
 		cr.sendReloadReply(manualReload.doneCh, manualReply)
 		manualReloadReplied = true
-		cr.reloadMu.Lock()
-		cr.activeReload = nil
-		cr.reloadMu.Unlock()
+		cr.clearActiveReloadIf(manualReload)
 	}
 	defer func() {
 		if dirtyCleared && !tickCompleted && manualReload == nil {
@@ -964,9 +974,7 @@ func (cr *CityRuntime) tick(
 			reply = manualReply
 		}
 		cr.sendReloadReply(manualReload.doneCh, reply)
-		cr.reloadMu.Lock()
-		cr.activeReload = nil
-		cr.reloadMu.Unlock()
+		cr.clearActiveReloadIf(manualReload)
 	}()
 	configChanged := dirty.Swap(false)
 	if configChanged {
@@ -1366,14 +1374,22 @@ func (cr *CityRuntime) handleReloadRequest(req *reloadRequest) {
 	if req == nil {
 		return
 	}
+	req.started = time.Now()
+	var stale *reloadRequest
 	cr.reloadMu.Lock()
-	if cr.activeReload != nil {
-		cr.reloadMu.Unlock()
-		req.acceptedCh <- reloadControlReply{
-			Outcome: reloadOutcomeBusy,
-			Message: "Reload request could not be accepted because another reload is already in progress.",
+	if existing := cr.activeReload; existing != nil {
+		if reloadActiveTTL > 0 && !existing.started.IsZero() &&
+			time.Since(existing.started) >= reloadActiveTTL {
+			stale = existing
+			cr.activeReload = nil
+		} else {
+			cr.reloadMu.Unlock()
+			req.acceptedCh <- reloadControlReply{
+				Outcome: reloadOutcomeBusy,
+				Message: "Reload request could not be accepted because another reload is already in progress.",
+			}
+			return
 		}
-		return
 	}
 	cr.activeReload = req
 	if cr.configDirty == nil {
@@ -1381,6 +1397,15 @@ func (cr *CityRuntime) handleReloadRequest(req *reloadRequest) {
 	}
 	cr.configDirty.Store(true)
 	cr.reloadMu.Unlock()
+	if stale != nil {
+		cr.sendReloadReply(stale.doneCh, reloadControlReply{
+			Outcome: reloadOutcomeTimeout,
+			Error: fmt.Sprintf(
+				"Previous reload exceeded the %s active-reload TTL without completing; controller force-cleared the stuck reload slot.",
+				reloadActiveTTL,
+			),
+		})
+	}
 	select {
 	case cr.pokeCh <- struct{}{}:
 	default:
@@ -1389,6 +1414,24 @@ func (cr *CityRuntime) handleReloadRequest(req *reloadRequest) {
 		Outcome: reloadOutcomeAccepted,
 		Message: "Reload requested.",
 	}
+}
+
+// clearActiveReloadIf clears cr.activeReload only when it still points
+// to req. Used by the reconciler tick when it finishes (or panics
+// through) a reload it was handling: if handleReloadRequest already
+// force-cleared the slot via the activeReload TTL and accepted a newer
+// request, this tick must not stomp on the newer request's pointer.
+func (cr *CityRuntime) clearActiveReloadIf(req *reloadRequest) bool {
+	if req == nil {
+		return false
+	}
+	cr.reloadMu.Lock()
+	defer cr.reloadMu.Unlock()
+	if cr.activeReload != req {
+		return false
+	}
+	cr.activeReload = nil
+	return true
 }
 
 func (cr *CityRuntime) failActiveReload(message string) {
@@ -1746,9 +1789,10 @@ func (cr *CityRuntime) reloadConfigTraced(
 		cr.standaloneRigStores = buildStandaloneRigStores(nextCfg, cr.cityPath, cr.stderr)
 	}
 
-	// Ensure drain tracker is initialized when bead store becomes available.
+	// Ensure drain tracker and provider-health gate are initialized when bead store becomes available.
 	if cr.cityBeadStore() != nil && cr.tomlPath != "" && cr.sessionDrains == nil {
 		cr.sessionDrains = newDrainTracker()
+		cr.providerHealthGate = newProviderHealthGate()
 	}
 	cr.configRev = result.Revision
 	cr.watchTargets = config.WatchTargets(result.Prov, nextCfg, cityRoot)
@@ -2057,7 +2101,8 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 	reconcileSessionBeadsTracedWithNamedDemand(
 		ctx, cr.cityPath, open, desiredState, cfgNames, cr.cfg, cr.sp, store,
 		cr.dops,
-		awakeAssignedWorkBeads, rigStores, readyWaitSet, cr.sessionDrains, poolDesired,
+		awakeAssignedWorkBeads, rigStores, readyWaitSet, cr.sessionDrains, cr.providerHealthGate,
+		poolDesired,
 		result.NamedSessionDemand,
 		result.snapshotQueryPartial(),
 		workSet, cityName,
@@ -2517,6 +2562,7 @@ func (cr *CityRuntime) controlDispatcherTick(ctx context.Context) {
 		cr.rigBeadStores(),
 		nil, // control-dispatcher ticks only need ownership continuity, not main-tick assigned/ready snapshots
 		cr.sessionDrains,
+		cr.providerHealthGate,
 		poolDesired,
 		wfcResult.NamedSessionDemand,
 		false, // storeQueryPartial: config-change path doesn't query work beads
