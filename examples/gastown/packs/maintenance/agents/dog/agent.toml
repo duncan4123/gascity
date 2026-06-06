@@ -1,4 +1,5 @@
 scope = "city"
+provider = "codex-mini"
 fallback = true
 nudge = "Check your hook for work assignments."
 idle_timeout = "2h"

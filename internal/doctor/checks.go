@@ -1577,6 +1577,7 @@ func (c *WorktreeCheck) Fix(_ *CheckContext) error {
 	return nil
 }
 
+
 // isWorktreeValid reads a worktree's .git file and checks whether the
 // gitdir target exists. Returns true if no .git file exists (not a
 // worktree) or if the target is valid.
@@ -1584,19 +1585,16 @@ func isWorktreeValid(wtPath string) bool {
 	gitFile := filepath.Join(wtPath, ".git")
 	data, err := os.ReadFile(gitFile)
 	if err != nil {
-		// No .git file — not a git worktree, skip.
 		return true
 	}
 	content := strings.TrimSpace(string(data))
 	if !strings.HasPrefix(content, "gitdir: ") {
-		// Not a worktree .git file — skip.
 		return true
 	}
 	target := strings.TrimPrefix(content, "gitdir: ")
 	_, err = os.Stat(target)
 	return err == nil
 }
-
 // --- Managed Dolt ops checks (PR 3) ---
 
 // Thresholds for the managed Dolt data directory footprint (bytes).
