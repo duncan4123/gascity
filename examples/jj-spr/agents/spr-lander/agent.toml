@@ -1,0 +1,10 @@
+scope = "rig"
+provider = "codex-mini"
+wake_mode = "fresh"
+work_dir = ".gc/workspaces/{{.Rig}}/spr-lander"
+nudge = "Run gc hook; land approved SPR review objects."
+pre_start = ["{{.ConfigDir}}/assets/scripts/workspace-setup.sh {{.RigRoot}} {{.WorkDir}} {{.AgentBase}} --sync"]
+idle_timeout = "2h"
+min_active_sessions = 0
+max_active_sessions = 1
+default_sling_formula = "mol-spr-independent-land"
