@@ -508,6 +508,9 @@ type Rig struct {
 	// Captured by `gc rig add` from the rig's git config; set manually for
 	// rigs whose mainline isn't reachable via origin/HEAD.
 	DefaultBranch string `toml:"default_branch,omitempty"`
+	// Vcs selects the version control backend for workspace management.
+	// "git" (default) uses git worktrees; "jj" uses jj workspaces.
+	Vcs string `toml:"vcs,omitempty"`
 	// Suspended prevents the reconciler from spawning agents in this rig. Toggle with gc rig suspend/resume.
 	Suspended bool `toml:"suspended,omitempty"`
 	// FormulasDir is a rig-local formula directory (Layer 4). Overrides
@@ -3069,12 +3072,13 @@ func (a *Agent) poolDemandTarget() string {
 }
 
 func standardAssignedWorkQueryScript() string {
-	return `for id in "$GC_SESSION_ID" "$GC_SESSION_NAME" "$GC_ALIAS"; do ` +
+	return `for id in "$GC_SESSION_ID" "$GC_SESSION_NAME" "$GC_ALIAS" "$1"; do ` +
 		`[ -z "$id" ] && continue; ` +
-		`r=$(bd list --include-ephemeral --status in_progress --assignee="$id" --json --limit=1 2>/dev/null); ` +
+		`r=$(bd list --status in_progress --assignee="$id" --json --limit=1 2>/dev/null); ` +
 		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
+		ephemeralAssignedInProgressProbeScript("id") +
 		`done; ` +
-		`for id in "$GC_SESSION_ID" "$GC_SESSION_NAME" "$GC_ALIAS"; do ` +
+		`for id in "$GC_SESSION_ID" "$GC_SESSION_NAME" "$GC_ALIAS" "$1"; do ` +
 		`[ -z "$id" ] && continue; ` +
 		`r=$(bd ready --include-ephemeral --assignee="$id" --json --limit=1 2>/dev/null); ` +
 		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
@@ -3087,8 +3091,9 @@ func legacyControlAssignedWorkQueryScript() string {
 		`legacy=""; case "$id" in *control-dispatcher) legacy="${id%control-dispatcher}workflow-control";; esac; ` +
 		`for cand in "$id" "$legacy"; do ` +
 		`[ -z "$cand" ] && continue; ` +
-		`r=$(bd list --include-ephemeral --status in_progress --assignee="$cand" --json --limit=1 2>/dev/null); ` +
+		`r=$(bd list --status in_progress --assignee="$cand" --json --limit=1 2>/dev/null); ` +
 		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
+		ephemeralAssignedInProgressProbeScript("cand") +
 		`done; ` +
 		`done; ` +
 		`for id in "$GC_SESSION_ID" "$GC_SESSION_NAME" "$GC_ALIAS"; do ` +
@@ -3100,6 +3105,20 @@ func legacyControlAssignedWorkQueryScript() string {
 		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
 		`done; ` +
 		`done; `
+}
+
+func bdQueryEphemeralStatusShell(status string) string {
+	return `bd query --json ` + shellquote.Quote("ephemeral=true AND status="+status) + ` --limit=0`
+}
+
+func bdQueryEphemeralStatusQuietShell(status string) string {
+	return bdQueryEphemeralStatusShell(status) + ` 2>/dev/null`
+}
+
+func ephemeralAssignedInProgressProbeScript(shellVar string) string {
+	return `r=$(` + bdQueryEphemeralStatusQuietShell("in_progress") + ` | ` +
+		`jq --arg id "$` + shellVar + `" '[.[] | select((.assignee // "") == $id)] | .[:1]' 2>/dev/null); ` +
+		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; `
 }
 
 func poolDemandOriginGateScript() string {
@@ -3137,9 +3156,10 @@ func poolDemandOriginGateScript() string {
 // explicit work_query in their agent config; that custom query is returned
 // unchanged above.
 //
-// When the reconciler runs the query for demand detection (no session
-// context), all identity vars are empty → assignee tiers skip → only
-// the routed_to tier fires to detect new demand.
+// When the reconciler runs the query for demand detection, it has no live
+// session identity vars, but it does pass the agent target as $1. Include
+// that target in the assigned tiers so direct named-session handoffs wake
+// stopped/asleep agents. The routed_to tier still covers pool demand.
 //
 // Tier 3's canonical and migration predicates are shared with
 // EffectivePoolDemandQuery so reconciler spawn decisions and worker claim
@@ -3407,15 +3427,20 @@ func (a *Agent) EffectiveOnDeath() string {
 	if a.PoolName != "" {
 		route = a.PoolName
 	}
+	ephemeralRead := bdQueryEphemeralStatusQuietShell("in_progress") + ` | ` +
+		`jq -r --arg assignee ` + shellquote.Quote(a.QualifiedName()) + ` '.[] | select((.assignee // "") == $assignee) | [.id, (.metadata["gc.run_target"] // ""), (.metadata["gc.routed_to"] // "")] | @tsv' 2>/dev/null; `
 	// Reset both assignee and status: clearing assignee alone leaves the bead
 	// invisible to every work_query tier (Tier 1 needs assignee match, Tiers
 	// 2/3 only match "ready" status). The next worker re-claims via Tier 3.
 	// If routed metadata is missing entirely, backfill the canonical
 	// gc.run_target route so reopened direct-assigned work does not stay
 	// invisible.
-	return `bd list --include-ephemeral --assignee=` + a.QualifiedName() +
+	return `{ ` +
+		`bd list --assignee=` + a.QualifiedName() +
 		` --status=in_progress --json 2>/dev/null | ` +
-		`jq -r '.[] | [.id, (.metadata["gc.run_target"] // ""), (.metadata["gc.routed_to"] // "")] | @tsv' 2>/dev/null | ` +
+		`jq -r '.[] | [.id, (.metadata["gc.run_target"] // ""), (.metadata["gc.routed_to"] // "")] | @tsv' 2>/dev/null; ` +
+		ephemeralRead +
+		`} | ` +
 		`while IFS="$(printf '\t')" read -r id run_target routed_to; do ` +
 		`[ -z "$id" ] && continue; ` +
 		`if [ -n "$run_target" ] || [ -n "$routed_to" ]; then ` +
@@ -3436,12 +3461,15 @@ func (a *Agent) EffectiveOnBoot() string {
 	if a.PoolName != "" {
 		template = a.PoolName
 	}
+	ephemeralRead := bdQueryEphemeralStatusQuietShell("in_progress") + ` | ` +
+		`jq -r --arg template "$template" '.[] | select((.assignee // "") == "") | select(((.metadata["gc.routed_to"] // "") == $template) or (((.metadata["gc.routed_to"] // "") == "") and ((.metadata["gc.run_target"] // "") == $template) and ((.metadata["gc.kind"] // "") == "workflow"))) | .id' 2>/dev/null; `
 	return `template=` + shellquote.Quote(template) + `; ` +
 		`{ ` +
-		`bd list --include-ephemeral --metadata-field "gc.routed_to=$template" --status=in_progress --no-assignee --json 2>/dev/null | ` +
+		`bd list --metadata-field "gc.routed_to=$template" --status=in_progress --no-assignee --json 2>/dev/null | ` +
 		`jq -r '.[].id' 2>/dev/null; ` +
-		`bd list --include-ephemeral --metadata-field "gc.run_target=$template" --metadata-field "gc.kind=workflow" --status=in_progress --no-assignee --json 2>/dev/null | ` +
+		`bd list --metadata-field "gc.run_target=$template" --metadata-field "gc.kind=workflow" --status=in_progress --no-assignee --json 2>/dev/null | ` +
 		`jq -r '.[] | select((.metadata["gc.routed_to"] // "") == "") | .id' 2>/dev/null; ` +
+		ephemeralRead +
 		`} | awk 'NF && !seen[$0]++' | ` +
 		`xargs -rI{} bd update {} --status open 2>/dev/null`
 }

@@ -1,0 +1,74 @@
+# Gas Town — domain-specific coding workflow pack.
+#
+# Gastown roles: mayor (coordinator), deacon (patrol), boot (watchdog),
+# plus rig-scoped agents (witness, refinery, polecat).
+# Dog (utility pool) is defined here with tmux theming; maintenance provides
+# the fallback (unthemed) dog. Mechanical housekeeping lives in maintenance.
+#
+# Referenced by both workspace.pack and rigs[].pack:
+#   workspace.pack → expands city-scoped agents only (mayor, deacon, boot)
+#   rigs[].pack    → expands rig agents only (witness, refinery, polecat)
+#
+# Crew members are individually named directory agents (agents/<name>/) plus a
+# named session; see the worked example in examples/gastown/city.toml.
+
+[pack]
+name = "gastown-jj"
+schema = 2
+
+
+[providers.codex-mini]
+base = "builtin:codex"
+ready_delay_ms = 0
+options_schema_merge = "by_key"
+option_defaults = { model = "gpt-5.4-mini", effort = "medium" }
+
+[[providers.codex-mini.options_schema]]
+key = "model"
+label = "Model"
+type = "select"
+
+[[providers.codex-mini.options_schema.choices]]
+value = "gpt-5.4-mini"
+label = "GPT-5.4 mini"
+flag_args = ["--model", "gpt-5.4-mini"]
+flag_aliases = [["-m", "gpt-5.4-mini"]]
+
+
+[global]
+session_live = [
+    "{{.ConfigDir}}/assets/scripts/tmux-theme.sh {{.Session}} {{.Agent}} {{.ConfigDir}}",
+    "{{.ConfigDir}}/assets/scripts/tmux-keybindings.sh {{.ConfigDir}}",
+]
+
+
+
+[[named_session]]
+template = "jj-mayor"
+scope = "city"
+mode = "always"
+
+[[named_session]]
+template = "jj-deacon"
+scope = "city"
+mode = "always"
+
+[[named_session]]
+template = "jj-boot"
+scope = "city"
+mode = "always"
+
+[[named_session]]
+template = "jj-witness"
+scope = "rig"
+mode = "always"
+
+[[named_session]]
+template = "jj-refinery"
+scope = "rig"
+mode = "on_demand"
+
+[[named_session]]
+template = "jj-polecat"
+scope = "rig"
+mode = "on_demand"
