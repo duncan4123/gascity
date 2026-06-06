@@ -508,6 +508,9 @@ type Rig struct {
 	// Captured by `gc rig add` from the rig's git config; set manually for
 	// rigs whose mainline isn't reachable via origin/HEAD.
 	DefaultBranch string `toml:"default_branch,omitempty"`
+	// Vcs selects the version control backend for workspace management.
+	// "git" (default) uses git worktrees; "jj" uses jj workspaces.
+	Vcs string `toml:"vcs,omitempty"`
 	// Suspended prevents the reconciler from spawning agents in this rig. Toggle with gc rig suspend/resume.
 	Suspended bool `toml:"suspended,omitempty"`
 	// FormulasDir is a rig-local formula directory (Layer 4). Overrides

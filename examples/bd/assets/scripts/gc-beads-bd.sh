@@ -2222,10 +2222,10 @@ doltlite_bd_schema_ready() {
 run_bd_doltlite_init() {
     local dir="$1" prefix="$2" database="$3" reinit="${4:-false}"
     if [ "$reinit" = true ]; then
-        run_bd_doltlite "$dir" init --reinit-local --quiet -p "$prefix" --database "$database" --skip-hooks --skip-agents || die "bd doltlite init failed for $dir"
+        run_bd_doltlite "$dir" init --backend doltlite --reinit-local --quiet -p "$prefix" --database "$database" --skip-hooks --skip-agents || die "bd doltlite init failed for $dir"
         return 0
     fi
-    run_bd_doltlite "$dir" init --quiet -p "$prefix" --database "$database" --skip-hooks --skip-agents || die "bd doltlite init failed for $dir"
+    run_bd_doltlite "$dir" init --backend doltlite --quiet -p "$prefix" --database "$database" --skip-hooks --skip-agents || die "bd doltlite init failed for $dir"
 }
 
 ensure_doltlite_bd_schema() {
@@ -2841,6 +2841,13 @@ fi
 
 # Resolve DOLT_PORT now that STATE_FILE is set.
 DOLT_PORT=$(allocate_port)
+
+if is_doltlite_backend; then
+    case "$op" in
+        init|create|get|update|close|reopen|list|ready|children|list-by-label|set-metadata|delete|dep-add|dep-remove|dep-list) ;;
+        *) exit 2 ;;
+    esac
+fi
 
 case "$op" in
     start)        op_start ;;
