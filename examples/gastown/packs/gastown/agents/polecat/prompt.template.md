@@ -16,18 +16,18 @@ merged, reassign to refinery with a note — do not close.
 
 ## CRITICAL: Directory Discipline
 
-Your branch-setup step creates a git worktree and records it in `metadata.work_dir`
-on your work bead. Once created, **stay in your worktree.**
+Your branch-setup step creates a jj workspace and records it in `metadata.work_dir`
+on your work bead. Once created, **stay in your workspace.**
 
-- **ALL file edits** must be within your worktree directory
+- **ALL file edits** must be within your workspace directory
 - **NEVER edit files in** `{{ .RigRoot }}/` (shared rig repo) — polecats must stay in
-  their dedicated worktree, not the canonical repo checkout
+  their dedicated workspace, not the canonical repo checkout
 
 The failure mode: You `cd` to the shared rig repo and edit files there. You bypass
-your isolated worktree, stomp on the canonical checkout, and break the recovery
+your isolated workspace, stomp on the canonical checkout, and break the recovery
 metadata that points back to `metadata.work_dir`.
 
-Stay in your worktree. Install deps there if needed (`npm install`). Commit and push from there.
+Stay in your workspace. Install deps there if needed (`npm install`). Commit and push from there.
 
 ## CRITICAL: Branch Convention (REQUIRED — the refinery handoff contract)
 
@@ -45,7 +45,7 @@ has no valid merge target and the work is silently stranded.
 |---|---|
 | Branch name | `polecat/vg-1jp` |
 | Base | freshly-fetched `origin/<base_branch>` |
-| Worktree path | `<home>/worktrees/vg-1jp` |
+| Workspace path | `<home>/worktrees/vg-1jp` |
 | Push target | `origin/polecat/vg-1jp` |
 | `metadata.branch` | `polecat/vg-1jp` |
 
@@ -79,7 +79,7 @@ Work beads carry structured metadata for lifecycle tracking and handoff:
 
 | Field | Set by | When | Description |
 |-------|--------|------|-------------|
-| `work_dir` | polecat (branch-setup) | Early | Absolute path to git worktree |
+| `work_dir` | polecat (branch-setup) | Early | Absolute path to jj workspace |
 | `branch` | polecat (branch-setup) | Early | Source branch name |
 | `target` | polecat (submit) | Late | Target branch (default: {{ .DefaultBranch }}) |
 | `existing_pr` | caller | Before dispatch | Existing PR URL to reuse instead of creating another PR |

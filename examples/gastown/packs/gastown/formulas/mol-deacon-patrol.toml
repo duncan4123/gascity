@@ -283,94 +283,71 @@ escalate to mayor.
 Close this step after assessment."""
 
 [[steps]]
-id = "dolt-health"
-title = "Run Dolt data-plane health check"
+id = "doltlite-health"
+title = "Run doltlite store health check"
 needs = ["utility-agent-health"]
 description = """
-Run `gc dolt health --json` to inspect the Dolt data plane and flag anomalies.
+Run `gc beads-doltlite health` to inspect the doltlite store (in-process
+SQLite engine with prolly tree storage) and flag anomalies.
 
 This step surfaces problems that individual patrol steps won't catch:
-commit bloat (compactor dog may have failed), stale backups (backup dog
-may have failed), orphan databases, and zombie Dolt server processes.
+commit bloat, schema integrity issues, storage bloat, and provider
+reachability problems.
 
-**Step 1: Run the health check**
+**Step 1: Run the health checks**
 ```bash
-gc dolt health --json
+gc beads-doltlite health
 ```
 
-Parse the JSON output (HealthReport schema):
-- `server`: running, reachable, pid, port, latency_ms
-- `databases[]`: name, commits, open_beads
-- `backups`: dolt_freshness, dolt_age_seconds, dolt_stale
-- `processes`: zombie_count, zombie_pids
-- `orphans[]`: name, size
-
-Note: `--json` always exits 0 when the payload is well-formed; health
-state is signalled in-band. Key decisions off `server.reachable`, not
-`server.running` — a process can hold the port while its goroutines
-are wedged (the latter is what first prompted this check to exist).
-
-**Step 2: Evaluate thresholds**
-
-| Signal | Threshold | Meaning |
-|--------|-----------|---------|
-| `server.reachable == false` | — | Dolt server is down or unresponsive (CRITICAL) |
-| `server.latency_ms > 5000` | 5 s | Server may be overloaded |
-| `databases[].commits > 50000` | 50 k | Compactor dog may have stalled |
-| `backups.dolt_stale == true` | >30 min | Backup dog may have failed |
-| `processes.zombie_count > 0` | any | Zombie Dolt servers detected |
-| `orphans` non-empty | any | Orphan databases accumulating |
-
-**Step 3: React to alerts**
-
-**Server down (CRITICAL):** `server.reachable == false` — either no
-process is listening on the port, or a process is listening but not
-answering SQL (wedged goroutines, migration lock, saturated pool).
 ```bash
-gc mail send mayor/ -s "ESCALATION: Dolt server unreachable [CRITICAL]" \\
-  -m "gc dolt health reports server.reachable=false"
+gc beads health
 ```
 
-**Commit bloat (commits > 50k in any DB):**
-The compactor dog (`mol-dog-compactor`) may have failed. Log for awareness.
-If the compactor order is configured, it will self-dispatch. Otherwise
-nudge the dog pool:
+Parse output for:
+- Schema integrity failures
+- Storage bloat (excessive commit count or WAL size)
+- Provider reachability (beads health exit code)
+- Disk space issues (check `df` on the city directory)
+
+**Step 2: Evaluate**
+
+| Signal | Meaning |
+|--------|---------|
+| `gc beads-doltlite health` fails | Schema corruption or store damage (CRITICAL) |
+| `gc beads health` fails | Provider unreachable (CRITICAL) |
+| Excessive commit count (>50k) | Compactor may have stalled — run `gc beads-doltlite flatten` |
+| Database file too large | Run `gc beads-doltlite gc` to reclaim deleted rows |
+| Disk space low | Escalate to mayor immediately |
+
+**Step 3: React**
+
+**Store failure (CRITICAL):** Either health check returns non-zero.
 ```bash
-gc session nudge dog/ "Compactor needed: <db_name> has <count> commits"
+gc mail send mayor/ -s "ESCALATION: doltlite store failure [CRITICAL]" \\
+  -m "gc beads-doltlite health or gc beads health returned non-zero"
 ```
 
-**Stale backups:**
-The backup dog (`mol-dog-backup`) may have failed. Same pattern — log and
-nudge if order hasn't self-healed:
+**Commit bloat:** Run compactor manually:
 ```bash
-gc session nudge dog/ "Backup needed: dolt backup is <age> old"
+gc beads-doltlite flatten
 ```
 
-**Zombie processes:**
-Kill zombie Dolt servers not on the expected port:
+**Storage bloat:** Reclaim space:
 ```bash
-kill <zombie_pid>
+gc beads-doltlite gc
 ```
-
-**Orphan DBs:**
-Run cleanup:
-```bash
-gc dolt cleanup
-```
-If orphan count exceeds safety limit, escalate to mayor.
 
 **If everything is healthy:**
-Log `Dolt health: OK` and move on.
+Log `Doltlite health: OK` and move on.
 
-**Exit criteria:** Health check run, alerts handled or escalated."""
+**Exit criteria:** Health checks run, alerts handled or escalated."""
 
 [[steps]]
 id = "system-health"
 title = "Run system diagnostics"
-needs = ["dolt-health"]
+needs = ["doltlite-health"]
 description = """
 Run `gc doctor` for a quick workspace health check.
-
 ```bash
 gc doctor
 ```
