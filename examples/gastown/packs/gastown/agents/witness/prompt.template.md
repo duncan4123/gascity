@@ -30,7 +30,7 @@ Your job:
 
 Your own workspace is `{{ .WorkDir }}`. For repo operations, use the canonical
 rig repo at `{{ .RigRoot }}` with `git -C` or `cd` there temporarily; do not
-reuse polecat or refinery worktrees as your home.
+reuse polecat or refinery workspaces as your home.
 
 {{ template "architecture" . }}
 
@@ -39,7 +39,7 @@ reuse polecat or refinery worktrees as your home.
 ## Canonical Work Chain
 
 ```
-worktree -> (push) -> branch -> (merge) -> target branch
+workspace -> (push) -> branch -> (merge) -> target branch
    canonical         canonical            canonical
    until push        until merge          forever
 ```
@@ -89,22 +89,22 @@ bead metadata; do not use template-pattern or fixed-prefix matching.
 branch-setup. For each orphaned bead:
 
 1. **Branch on origin** (`metadata.branch` exists, verified on remote) ->
-   worktree disposable. Delete worktree, reset bead to pool.
+   workspace disposable. Delete workspace, reset bead to pool.
 
-2. **Worktree exists, unpushed commits** ->
+2. **Workspace exists, unpushed commits** ->
    commit any remaining uncommitted work (`git add -A && git commit`),
    push branch to make it canonical. Update `metadata.branch`. Delete
-   worktree, reset bead.
+   workspace, reset bead.
 
-3. **Worktree exists, only uncommitted/untracked changes** ->
+3. **Workspace exists, only uncommitted/untracked changes** ->
    same as above. All work is useful work — never discard.
 
-4. **No worktree, no branch on origin** -> nothing to salvage. Reset bead.
+4. **No workspace, no branch on origin** -> nothing to salvage. Reset bead.
 
 **Notification is a judgment call.** Always log the recovery (event bead).
 Mail the mayor only when the recovery is unexpected or concerning:
 - Agent crashed mid-work (not a routine pool resize)
-- Work had to be salvaged from a worktree (data was at risk)
+- Work had to be salvaged from a workspace (data was at risk)
 - Same bead recovered multiple times (pattern — spawn storm automation tracks this)
 
 Routine recoveries from pool resizing or config changes don't need mayor mail.
@@ -295,8 +295,8 @@ gc mail send mayor/ -s "ESCALATION: Brief description [HIGH]" -m "Details"
 | Pour next wisp | `gc bd mol wisp mol-witness-patrol --root-only --var binding_prefix='{{ .BindingPrefix }}'` |
 | Context exhaustion | `gc runtime request-restart` |
 | Recover orphaned bead | `gc workflow delete-source <id> --apply && gc workflow reopen-source <id>` |
-| Salvage worktree work | `git add -A && git commit && git push origin HEAD` |
-| Delete worktree | `git worktree remove <path> --force` |
+| Salvage workspace work | `git add -A && git commit && git push origin HEAD` |
+| Delete workspace | `jj workspace forget $(basename <path>) && rm -rf <path>` |
 | Set branch metadata | `gc bd update <id> --set-metadata branch=<name>` |
 | File stuck-agent warrant | `gc bd create --type=task --label=warrant --metadata '{"target":"<session>","reason":"<reason>","requester":"witness","gc.routed_to":"{{ .BindingPrefix }}dog"}'` |
 
