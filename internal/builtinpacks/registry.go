@@ -16,7 +16,7 @@ import (
 	"github.com/gastownhall/gascity/examples/bd"
 	beadsdoltlite "github.com/gastownhall/gascity/examples/beads-doltlite"
 	"github.com/gastownhall/gascity/examples/dolt"
-	"github.com/gastownhall/gascity/examples/gastown/packs/gastown"
+	gastown "github.com/gastownhall/gascity/examples/gastown/packs/gastown-jj"
 	"github.com/gastownhall/gascity/examples/gastown/packs/maintenance"
 	"github.com/gastownhall/gascity/internal/bootstrap/packs/core"
 	"github.com/gastownhall/gascity/internal/fsys"

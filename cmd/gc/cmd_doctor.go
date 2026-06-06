@@ -293,6 +293,17 @@ func buildDoctorChecks(cityPath string, cfg *config.City, cfgErr error, opts bui
 	register(doctor.NewDoltNomsSizeCheckForConfig(cityPath, opts.SkipManagedDoltCheck, cfg, cfgErr))
 	register(doctor.NewDoltConfigCheckForConfig(cityPath, opts.SkipManagedDoltCheck, cfg, cfgErr))
 	register(doctor.NewScopedDoltVersionCheckForConfig(cityPath, opts.SkipManagedDoltCheck, cfg, cfgErr))
+
+	// Doltlite backend checks — run when the city uses doltlite instead of Dolt.
+	// These replace the dolt-server/dolt-noms/dolt-config/dolt-version checks
+	// which are skipped via gcDoltSkip() for doltlite backends.
+	if isDoltliteCity() {
+		register(doctor.NewDoltliteBackendCheck(cityPath))
+		register(doctor.NewDoltliteLibraryCheck(cityPath))
+		register(doctor.NewDoltliteStoreSizeCheck(cityPath, false))
+		register(doctor.NewDoltliteStaleLockCheck(cityPath))
+	}
+
 	register(&doctor.EventsLogCheck{})
 	register(doctor.NewEventLogSizeCheck())
 	// bd auto-backup growth canary. bd's auto-backup pipeline (upstream of
