@@ -1,0 +1,237 @@
+description = """
+Create or update a stacked SPR review object for a work bead.
+
+This formula supports two review backends:
+- github: real jj-spr and GitHub PRs.
+- local: beads-backed PR-like review objects.
+
+Stacked reviews land parent to child. Use mol-spr-independent-work for work
+that can land in any order.
+"""
+formula = "mol-spr-stack-work"
+
+[vars]
+[vars.issue]
+description = "The work bead ID assigned to this SPR polecat"
+required = true
+
+[vars.target]
+description = "Target bookmark/base branch"
+default = ""
+
+[vars.binding_prefix]
+description = "Import binding prefix for agent identities, including trailing dot when bound."
+default = ""
+
+[[steps]]
+id = "read-assignment"
+title = "Read assignment and confirm stack metadata"
+description = """
+Read the work bead and determine the backend, target, and stack position:
+
+```bash
+WORK="{{issue}}"
+META=$(gc bd show "$WORK" --json | jq '.[0].metadata')
+BACKEND=$(printf '%s\n' "$META" | jq -r '.spr_backend // "local"')
+MODE=$(printf '%s\n' "$META" | jq -r '.spr_mode // "stacked"')
+TARGET=$(printf '%s\n' "$META" | jq -r '.spr_target // .target // "{{target}}" // empty')
+STACK_ID=$(printf '%s\n' "$META" | jq -r '.spr_stack_id // empty')
+STACK_INDEX=$(printf '%s\n' "$META" | jq -r '.spr_stack_index // empty')
+STACK_PARENT=$(printf '%s\n' "$META" | jq -r '.spr_stack_parent // empty')
+if [ -z "$TARGET" ]; then
+  TARGET=$(jj log -r 'trunk()@origin' --no-graph -T 'bookmarks' 2>/dev/null | sed 's/@origin.*//' | awk '{print $1}' | head -1)
+fi
+if [ -z "$TARGET" ] || [ -z "$STACK_ID" ] || [ -z "$STACK_INDEX" ] || [ "$MODE" != "stacked" ]; then
+  gc bd update "$WORK" --set-metadata spr_blocked_reason="missing stacked SPR metadata; use mol-spr-independent-work for independent work"
+  exit 1
+fi
+if [ "$STACK_INDEX" != "1" ] && [ -z "$STACK_PARENT" ]; then
+  gc bd update "$WORK" --set-metadata spr_blocked_reason="missing spr_stack_parent for non-root stack entry"
+  exit 1
+fi
+```
+
+Valid values:
+- `spr_backend`: `local` or `github`
+- `spr_mode`: `stacked`
+- `spr_stack_id`: shared stack id
+- `spr_stack_index`: 1-based landing order
+- `spr_stack_parent`: parent change id, empty only for the root entry
+
+Record the normalized workflow metadata if it is missing:
+
+```bash
+gc bd update "$WORK" \
+  --set-metadata merge_strategy=spr \
+  --set-metadata spr_backend="$BACKEND" \
+  --set-metadata spr_mode=stacked \
+  --set-metadata spr_target="$TARGET" \
+  --set-metadata spr_stack_id="$STACK_ID" \
+  --set-metadata spr_stack_index="$STACK_INDEX" \
+  --set-metadata spr_stack_parent="$STACK_PARENT"
+```
+"""
+
+[[steps]]
+id = "implement"
+title = "Implement stacked work in a jj change"
+needs = ["read-assignment"]
+description = """
+Work in this agent's jj workspace. Keep this stack entry focused.
+
+```bash
+jj st
+jj git fetch
+BASE="$TARGET@origin"
+if [ -n "$STACK_PARENT" ]; then
+  BASE="$STACK_PARENT"
+fi
+jj new "$BASE" -m "spr stack $STACK_ID entry $STACK_INDEX"
+jj describe -m "$(cat <<EOF
+<imperative title for {{issue}}>
+
+Summary:
+- <what changed in this stack entry>
+- <why this entry is separate>
+
+Stack:
+- Entry ${STACK_INDEX}: this PR
+- Parent: ${STACK_PARENT:-none}
+
+Test Plan:
+- <command run, or not run with reason>
+EOF
+)"
+```
+
+Make the requested code/docs/test changes. Use normal project instructions and
+the quality gates from the repo. Keep the jj description current as the review
+evolves; `jj-spr` uses the description body as the GitHub PR body. Stacked
+reviews must describe their stack position locally before publishing. When done,
+move to an empty working copy:
+
+```bash
+jj new -m "empty after stack entry {{issue}}"
+```
+
+Exit criteria: the review change is at `@-`, and `@` is empty or contains no
+intentional work.
+"""
+
+[[steps]]
+id = "verify"
+title = "Run quality gates"
+needs = ["implement"]
+description = """
+Run this repo's configured quality gates. If the work bead or repo instructions
+provide specific commands, use those. At minimum inspect the stack entry diff:
+
+```bash
+jj diff --git -r @-
+jj log -r "::@- & ~::trunk()" --no-graph
+jj st
+```
+
+All relevant gates must pass before publishing. If a gate fails because of this
+change, fix it. If the failure is pre-existing, file or update a bead and record
+the evidence on {{issue}} before continuing.
+"""
+
+[[steps]]
+id = "publish"
+title = "Publish stacked SPR review object"
+needs = ["verify"]
+description = """
+Capture the change id:
+
+```bash
+SPR_CHANGE_ID=$(jj log -r @- --no-graph -T 'change_id.short()')
+TITLE=$(jj log -r @- --no-graph -T 'description.first_line()')
+DESC=$(jj log -r "$SPR_CHANGE_ID" --no-graph -T 'description')
+printf '%s\n' "$DESC" | awk '
+  /^Summary:$/ { in_summary=1; next }
+  /^Stack:$/ { in_stack=1; in_summary=0; next }
+  /^[[:alpha:] ][[:alpha:] ]*:$/ && in_summary { exit summary ? 0 : 1 }
+  in_summary && NF { summary=1 }
+  in_stack && NF { stack=1 }
+  END { exit (summary && stack) ? 0 : 1 }
+' || { echo "stacked review description must contain non-empty Summary and Stack sections before publishing"; exit 1; }
+```
+
+For GitHub backend:
+
+```bash
+jj spr diff -r "$SPR_CHANGE_ID"
+PR_URL=$(jj show -r "$SPR_CHANGE_ID" --no-patch | sed -n 's/^Pull Request: //p' | tail -1)
+PR_NUMBER=$(printf '%s\n' "$PR_URL" | sed -n 's#.*/pull/##p')
+test -n "$PR_URL" || { echo "jj spr diff did not record a Pull Request footer"; exit 1; }
+```
+
+For multi-entry stack publishing, do a second local description pass after all
+stack entries have `Pull Request:` footers. Update each change's `Stack:`
+section with the known parent/child PR URLs, then refresh GitHub bodies from jj:
+
+```bash
+jj spr diff --update-message --message "update stack descriptions" -r "<stack revset>"
+```
+
+Then record metadata:
+
+```bash
+gc bd update "$WORK" \
+  --set-metadata merge_strategy=spr \
+  --set-metadata spr_backend=github \
+  --set-metadata spr_mode=stacked \
+  --set-metadata spr_target="$TARGET" \
+  --set-metadata spr_change_id="$SPR_CHANGE_ID" \
+  --set-metadata spr_stack_id="$STACK_ID" \
+  --set-metadata spr_stack_index="$STACK_INDEX" \
+  --set-metadata spr_stack_parent="$STACK_PARENT" \
+  --set-metadata pr_url="$PR_URL" \
+  --set-metadata pr_number="$PR_NUMBER"
+```
+
+For local backend:
+
+```bash
+SPR_META=$(jq -nc \
+  --arg target "$TARGET" \
+  --arg change "$SPR_CHANGE_ID" \
+  --arg work "$WORK" \
+  --arg stack_id "$STACK_ID" \
+  --arg stack_index "$STACK_INDEX" \
+  --arg stack_parent "$STACK_PARENT" \
+  '{spr_backend:"local", spr_status:"open", review_status:"pending", ci_status:"pending", mergeable:"unknown", spr_mode:"stacked", spr_target:$target, spr_change_id:$change, source_work:$work, spr_stack_id:$stack_id, spr_stack_index:$stack_index, spr_stack_parent:$stack_parent}')
+SPR_PR=$(gc bd create "SPR: $TITLE" --type=spr-pr --metadata "$SPR_META" --json | jq -r '.id // .[0].id')
+test -n "$SPR_PR" || { echo "failed to create local spr-pr bead"; exit 1; }
+gc bd update "$WORK" \
+  --set-metadata merge_strategy=spr \
+  --set-metadata spr_backend=local \
+  --set-metadata spr_mode=stacked \
+  --set-metadata spr_target="$TARGET" \
+  --set-metadata spr_change_id="$SPR_CHANGE_ID" \
+  --set-metadata spr_stack_id="$STACK_ID" \
+  --set-metadata spr_stack_index="$STACK_INDEX" \
+  --set-metadata spr_stack_parent="$STACK_PARENT" \
+  --set-metadata spr_pr_bead="$SPR_PR"
+```
+"""
+
+[[steps]]
+id = "handoff"
+title = "Assign work to SPR lander and drain"
+needs = ["publish"]
+description = """
+Assign the work bead to the rig SPR lander:
+
+```bash
+LANDER="${GC_RIG:+$GC_RIG/}{{binding_prefix}}spr-lander"
+gc bd update "$WORK" --assignee="$LANDER" --set-metadata gc.routed_to="{{binding_prefix}}spr-lander"
+if [ -n "${GC_BEAD_ID:-}" ] && [ "$GC_BEAD_ID" != "$WORK" ]; then
+  gc bd update "$GC_BEAD_ID" --status=closed --set-metadata gc.outcome=pass --notes "Published stacked SPR review for $WORK."
+fi
+gc runtime drain-ack
+```
+
+Do not close the work bead. The lander closes it after landing.
+"""

@@ -1,0 +1,120 @@
+description = """
+Land an approved independent SPR review object.
+
+Independent reviews can land in any order. Use mol-spr-stack-land for
+parent-to-child stacks.
+"""
+formula = "mol-spr-independent-land"
+
+[vars]
+[vars.issue]
+description = "The work bead ID assigned to this SPR lander"
+required = true
+
+[[steps]]
+id = "validate"
+title = "Validate independent SPR metadata"
+description = """
+Read required metadata:
+
+```bash
+WORK="{{issue}}"
+META=$(gc bd show "$WORK" --json | jq '.[0].metadata')
+BACKEND=$(printf '%s\n' "$META" | jq -r '.spr_backend // empty')
+MODE=$(printf '%s\n' "$META" | jq -r '.spr_mode // "independent"')
+SPR_CHANGE_ID=$(printf '%s\n' "$META" | jq -r '.spr_change_id // empty')
+TARGET=$(printf '%s\n' "$META" | jq -r '.spr_target // .target // empty')
+```
+
+Stop if any required field is missing, or if `spr_mode` is not independent:
+
+```bash
+if [ -z "$BACKEND" ] || [ -z "$SPR_CHANGE_ID" ] || [ -z "$TARGET" ] || [ "$MODE" != "independent" ]; then
+  gc bd update "$WORK" --set-metadata spr_blocked_reason="missing independent SPR metadata; use mol-spr-stack-land for stacked work"
+  exit 1
+fi
+```
+"""
+
+[[steps]]
+id = "check-readiness"
+title = "Check approval, CI, and mergeability"
+needs = ["validate"]
+description = """
+For GitHub backend:
+
+```bash
+PR_URL=$(printf '%s\n' "$META" | jq -r '.pr_url // empty')
+gh pr view "$PR_URL" --json state,reviewDecision,mergeable,statusCheckRollup
+```
+
+Require open state, approval, green required checks, and mergeable status.
+
+For local backend:
+
+```bash
+SPR_PR=$(printf '%s\n' "$META" | jq -r '.spr_pr_bead // empty')
+gc bd show "$SPR_PR" --json | jq '.[0].metadata'
+```
+
+Require:
+
+```text
+review_status=approved
+ci_status=success
+mergeable=true
+spr_status=open
+```
+"""
+
+[[steps]]
+id = "land"
+title = "Land independent SPR review"
+needs = ["check-readiness"]
+description = """
+For GitHub backend:
+
+```bash
+jj spr land --cherry-pick -r "$SPR_CHANGE_ID"
+jj git fetch
+jj rebase -r @ -d "$TARGET@origin"
+```
+
+For local backend:
+
+```bash
+jj git fetch
+jj rebase -r "$SPR_CHANGE_ID" -d "$TARGET@origin"
+jj bookmark move "$TARGET" --to "$SPR_CHANGE_ID"
+jj git push --bookmark "$TARGET"
+jj git fetch
+jj new "$TARGET@origin" -m "empty after landing $WORK"
+gc bd update "$SPR_PR" --set-metadata spr_status=landed --status=closed --notes "Landed $SPR_CHANGE_ID to $TARGET."
+```
+
+If landing fails, stop and update the work bead:
+
+```bash
+gc bd update "$WORK" --set-metadata spr_blocked_reason="land failed: <reason>"
+```
+"""
+
+[[steps]]
+id = "close"
+title = "Close landed work"
+needs = ["land"]
+description = """
+Close the work bead after the target branch/bookmark is updated:
+
+```bash
+gc bd update "$WORK" \
+  --unset-metadata spr_blocked_reason \
+  --set-metadata gc.outcome=landed \
+  --status=closed \
+  --notes "Landed independent SPR backend=$BACKEND change=$SPR_CHANGE_ID target=$TARGET."
+if [ -n "${GC_BEAD_ID:-}" ] && [ "$GC_BEAD_ID" != "$WORK" ]; then
+  gc bd update "$GC_BEAD_ID" --status=closed --set-metadata gc.outcome=pass --notes "Landed $WORK."
+fi
+gc runtime drain-ack
+```
+"""
