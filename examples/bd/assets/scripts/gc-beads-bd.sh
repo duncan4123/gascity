@@ -2377,6 +2377,7 @@ op_init() {
         fi
         validate_bd_runtime_config_value "types.custom" "$custom_types"
         ensure_beads_dir_permissions "$dir"
+        mkdir -p "$dir/.beads/doltlite"
         already_ready=false
         if doltlite_bd_schema_ready "$dir" "$prefix"; then
             already_ready=true
