@@ -1541,7 +1541,7 @@ func (c *WorktreeCheck) Run(ctx *CheckContext) *CheckResult {
 			}
 			total++
 			wtPath := filepath.Join(wtRoot, rigEntry.Name(), agentEntry.Name())
-			if !isWorktreeValid(wtPath) {
+			if !isWorkspaceValid(wtPath) {
 				c.broken = append(c.broken, wtPath)
 			}
 		}
@@ -1577,26 +1577,30 @@ func (c *WorktreeCheck) Fix(_ *CheckContext) error {
 	return nil
 }
 
-// isWorktreeValid reads a worktree's .git file and checks whether the
-// gitdir target exists. Returns true if no .git file exists (not a
-// worktree) or if the target is valid.
-func isWorktreeValid(wtPath string) bool {
+// isWorkspaceValid reports whether path is a valid git worktree or jj workspace.
+// For git worktrees, checks that the .git file's gitdir target exists.
+// For jj workspaces, checks that .jj/repo exists.
+// Returns true for non-VCS directories (nothing to validate).
+func isWorkspaceValid(wtPath string) bool {
+	// Check jj workspace first (.jj/repo dir or pointer file).
+	jjRepo := filepath.Join(wtPath, ".jj", "repo")
+	if _, err := os.Stat(jjRepo); err == nil {
+		return true
+	}
+	// Fall back to git worktree validation.
 	gitFile := filepath.Join(wtPath, ".git")
 	data, err := os.ReadFile(gitFile)
 	if err != nil {
-		// No .git file — not a git worktree, skip.
-		return true
+		return true // No VCS marker — nothing to validate.
 	}
 	content := strings.TrimSpace(string(data))
 	if !strings.HasPrefix(content, "gitdir: ") {
-		// Not a worktree .git file — skip.
-		return true
+		return true // Not a worktree .git file — skip.
 	}
 	target := strings.TrimPrefix(content, "gitdir: ")
 	_, err = os.Stat(target)
 	return err == nil
 }
-
 // --- Managed Dolt ops checks (PR 3) ---
 
 // Thresholds for the managed Dolt data directory footprint (bytes).

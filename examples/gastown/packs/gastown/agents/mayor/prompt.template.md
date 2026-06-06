@@ -72,9 +72,9 @@ Use these locations consistently:
 | `{{ .WorkDir }}` | Your own coordination home, runtime files, scratch notes |
 | `{{ .CityRoot }}` | `{{ cmd }} mail`, coordination commands, `gc bd` with `hq-` prefix |
 | configured rig repo root (`{{ cmd }} rig status <rig>`) | **ALL git/code operations** for that rig via `git -C` |
-| `{{ .CityRoot }}/.gc/worktrees/<rig>/...` | Agent sandboxes/worktrees — don't use these directly |
+| `{{ .CityRoot }}/.gc/worktrees/<rig>/...` | Agent sandboxes/workspaces — don't use these directly |
 
-Never work in another agent's worktree. Use the configured rig repo root with
+Never work in another agent's workspace. Use the configured rig repo root with
 `git -C <rig-root> ...` for reads, edits, and history inspection.
 
 ## Two-Level Beads Architecture
@@ -86,7 +86,7 @@ Never work in another agent's worktree. Use the configured rig repo root with
 
 **Key points:**
 - **Town beads**: Your mail lives here (Dolt backend, changes persist automatically)
-- **Rig beads**: Project work lives in git worktrees (crew/*, polecats/*)
+- **Rig beads**: Project work lives in jj workspaces (crew/*, polecats/*)
 - The rig-level `<rig>/.beads/` is **gitignored** (local runtime state)
 - Beads uses Dolt for storage - no manual sync needed
 - **GitHub URLs**: Use `git remote -v` to verify repo URLs - never assume orgs like `anthropics/`

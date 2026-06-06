@@ -35,17 +35,17 @@ the deacon, not the per-rig witness.
 ## Canonical Work Chain
 
 ```
-worktree → (push) → branch → (merge) → target branch
+workspace → (push) → branch → (merge) → target branch
 ```
 
 Each transition moves the canonical location of the work. Once moved,
 the previous location is disposable:
-- After push: worktree disposable (branch is canonical)
+- After push: workspace disposable (branch is canonical)
 - After merge: branch disposable (target is canonical)
 
 The witness's core recovery job: when a bead is orphaned (agent won't
 come back), ensure the work reaches the branch (push), then clean up
-the worktree. This makes the work schedulable again.
+the workspace. This makes the work schedulable again.
 
 ## What the witness does NOT do
 
@@ -135,7 +135,7 @@ description = """
 **This is the witness's core job.**
 
 Find beads assigned to agents that will never process them, salvage any
-unpublished work from the worktree, and return beads to the pool.
+unpublished work from the workspace, and return beads to the pool.
 
 This happens when:
 - Pool max was reduced (agents that won't spawn anymore)
@@ -153,7 +153,7 @@ gc bd list --status=open --json --limit=0
 Filter for beads with an assignee (skip unassigned beads). This pass does not
 solve the controller race where orphaned work may already have been released to
 open/unassigned before witness observes it; that requires a separate
-worktree-salvage scan keyed by `metadata.work_dir`. Bound Gastown polecat
+workspace-salvage scan keyed by `metadata.work_dir`. Bound Gastown polecat
 assignees use the shape `<rig>/{{binding_prefix}}<polecat-suffix>`.
 
 Get the full session roster for liveness checks:
@@ -252,28 +252,28 @@ infrastructure agents (not pool instances) should be skipped — those
 agents have persistent identity and the controller manages their
 lifecycle directly.
 
-**Step 2: For each orphaned bead, salvage work from the worktree.**
+**Step 2: For each orphaned bead, salvage work from the workspace.**
 
-The canonical work chain: `worktree → (push) → branch → (merge) → target`.
+The canonical work chain: `workspace → (push) → branch → (merge) → target`.
 Our job is to ensure work reaches the branch so it's schedulable.
 
-Read the bead metadata to find the worktree and branch:
+Read the bead metadata to find the workspace and branch:
 ```bash
 META=$(gc bd show <bead> --json | jq '.[0].metadata')
 WORKTREE=$(echo "$META" | jq -r '.worktree // empty')
 BRANCH=$(echo "$META" | jq -r '.branch // empty')
 ```
 
-Check the bead and worktree state, then act:
+Check the bead and workspace state, then act:
 
 **Case A: Branch exists on origin (work already published).**
-Worktree is disposable — canonical work is on the branch.
+Workspace is disposable — canonical work is on the branch.
 ```bash
 git ls-remote --heads origin $BRANCH  # Verify branch exists on remote
 ```
 If branch exists on origin → skip to Step 3 (cleanup).
 
-**Case B: Worktree exists, branch pushed but not on origin yet.**
+**Case B: Workspace exists, branch pushed but not on origin yet.**
 Branch is recorded in metadata but polecat may have crashed before push.
 ```bash
 cd "$WORKTREE"
@@ -282,7 +282,7 @@ git ls-remote --heads origin $BRANCH
 If branch IS on origin → skip to Step 3.
 If branch is NOT on origin → fall through to Case C.
 
-**Case C: Worktree exists with unpushed commits.**
+**Case C: Workspace exists with unpushed commits.**
 Work is committed locally but never pushed. Branch is not yet canonical.
 ```bash
 cd "$WORKTREE"
@@ -303,7 +303,7 @@ gc bd update <bead> --set-metadata branch=$BRANCH
 ```
 Skip to Step 3 (cleanup).
 
-**Case D: Worktree exists with ONLY uncommitted/untracked changes (no commits).**
+**Case D: Workspace exists with ONLY uncommitted/untracked changes (no commits).**
 Same resolution as Case C. All work is useful work — never discard.
 ```bash
 cd "$WORKTREE"
@@ -315,7 +315,7 @@ gc bd update <bead> --set-metadata branch=$BRANCH
 ```
 Skip to Step 3 (cleanup).
 
-**Case E: No worktree exists (`metadata.work_dir` missing or directory gone),
+**Case E: No workspace exists (`metadata.work_dir` missing or directory gone),
 no branch on origin.**
 Nothing to salvage. The bead goes back to pool and a new polecat
 starts fresh.
@@ -337,19 +337,18 @@ gc bd close <bead>
 gc mail send mayor/ -s "ORPHAN_CLOSED: <bead> already merged" \
   -m "Branch $BRANCH already on main. Closed instead of resetting."
 ```
-- Clean up worktree and skip to Step 4.
+- Clean up workspace and skip to Step 4.
 
 If the work is NOT on main, proceed with reset:
 
-**Step 3b: Clean up worktree and return bead to pool.**
+**Step 3b: Clean up workspace and return bead to pool.**
 
-Once the branch is canonical (on origin), the worktree is disposable:
+Once the branch is canonical (on origin), the workspace is disposable:
 ```bash
-# Delete worktree if it exists
-cd <rig-root>
-git worktree remove <worktree-path> --force 2>/dev/null
-rm -rf <worktree-path> 2>/dev/null  # Fallback
-git worktree prune
+# Forget the jj workspace, then remove the directory
+WS_NAME=$(basename <workspace-path>)
+jj -R <rig-root> workspace forget "$WS_NAME" 2>/dev/null
+rm -rf <workspace-path> 2>/dev/null
 ```
 
 Close any orphaned workflow subtree, then return the bead to pool:
@@ -366,7 +365,7 @@ recovery is unexpected or concerning — use your judgment:
 |-----------|--------|
 | Pool resize / config change removed agent | Log only. Routine. |
 | Agent crashed mid-work, branch already on origin | Log + nudge mayor. Low urgency. |
-| Work salvaged from worktree (data was at risk) | Log + mail mayor. Work was nearly lost. |
+| Work salvaged from workspace (data was at risk) | Log + mail mayor. Work was nearly lost. |
 | Same bead recovered before (check `metadata.recovered`) | Log + mail mayor. Possible crash loop. |
 
 When you do mail:
@@ -384,7 +383,7 @@ Mark recovered beads so spawn storm detection can track patterns:
 gc bd update <bead> --set-metadata recovered=true
 ```
 
-**Exit criteria:** All orphaned beads recovered, worktrees cleaned.
+**Exit criteria:** All orphaned beads recovered, workspaces cleaned.
 Or no orphans found. Continue to `check-refinery` — do NOT exit the
 wisp here. The `next-iteration` step is the only place that pours the
 next wisp and burns this one."""
