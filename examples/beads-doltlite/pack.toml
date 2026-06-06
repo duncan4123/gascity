@@ -12,7 +12,8 @@
 # This pack imports the bd pack (which supplies the gc-beads-bd.sh provider
 # script with doltlite backend support) and adds doltlite-specific
 # maintenance operations: flatten (compact the SQLite WAL), gc (remove
-# deleted beads), and health (schema integrity check).
+# deleted beads), health (schema integrity check), and build (rebuild gc
+# against libdoltlite).
 #
 # The doltlite backend in gc-beads-bd.sh uses sqlite3 CLI for schema
 # initialization and bd CLI for bead operations. Both must be in PATH.
