@@ -1322,6 +1322,30 @@ func TestOpenNativeDoltStoreAtProjectsScopedEnvDuringOpen(t *testing.T) {
 	}
 }
 
+func TestOpenNativeDoltStoreAtFallsBackToEnvIssuePrefix(t *testing.T) {
+	oldOpen := nativeDoltOpenBestAvailable
+	t.Cleanup(func() {
+		nativeDoltOpenBestAvailable = oldOpen
+	})
+	nativeDoltOpenBestAvailable = func(context.Context, string) (beadslib.Storage, error) {
+		return &nativeDoltStorageSpy{
+			getConfig: func(context.Context, string) (string, error) {
+				return "", nil
+			},
+		}, nil
+	}
+
+	store, err := OpenNativeDoltStoreAt(context.Background(), filepath.Join(t.TempDir(), "scope"), map[string]string{
+		"GC_BEADS_PREFIX": "dg",
+	})
+	if err != nil {
+		t.Fatalf("OpenNativeDoltStoreAt: %v", err)
+	}
+	if got := store.IDPrefix(); got != "dg" {
+		t.Fatalf("IDPrefix = %q, want env prefix dg", got)
+	}
+}
+
 func TestProcessEnvSnapshotWaitsForNativeDoltOpenEnvRestore(t *testing.T) {
 	t.Setenv("BEADS_DOLT_SERVER_HOST", "ambient.example.com")
 	restoreEnv, err := withNativeDoltOpenEnv(map[string]string{

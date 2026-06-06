@@ -2122,6 +2122,28 @@ dolt.port: 4407
 	if got := env["BEADS_DIR"]; got != filepath.Join(rigDir, ".beads") {
 		t.Fatalf("BEADS_DIR = %q, want rig scoped beads dir", got)
 	}
+	if got := env["GC_BEADS_PREFIX"]; got != "myrig" {
+		t.Fatalf("GC_BEADS_PREFIX = %q, want rig scoped prefix", got)
+	}
+}
+
+func TestNativeDoltOpenEnvForScopeStampsCityPrefix(t *testing.T) {
+	cityDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cityDir, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.City{Workspace: config.Workspace{Name: "demo", Prefix: "dg"}}
+
+	env, err := nativeDoltOpenEnvForScope(cityDir, cfg, cityDir)
+	if err != nil {
+		t.Fatalf("nativeDoltOpenEnvForScope: %v", err)
+	}
+	if got := env["BEADS_DIR"]; got != filepath.Join(cityDir, ".beads") {
+		t.Fatalf("BEADS_DIR = %q, want city scoped beads dir", got)
+	}
+	if got := env["GC_BEADS_PREFIX"]; got != "dg" {
+		t.Fatalf("GC_BEADS_PREFIX = %q, want city prefix", got)
+	}
 }
 
 func TestBdRuntimeEnvForRigUsesCanonicalManagedRigTarget(t *testing.T) {
