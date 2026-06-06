@@ -206,7 +206,7 @@ func buildDoctorChecks(cityPath string, cfg *config.City, cfgErr error, opts bui
 	// fails, the core config check above reports the parse error.
 	if cfgErr == nil && cfg != nil {
 		resolveRigPaths(cityPath, cfg.Rigs)
-		if workspaceUsesManagedBdStoreContract(cityPath, cfg.Rigs) {
+		if workspaceUsesManagedBdStoreContract(cityPath, cfg.Rigs) && scopeNeedsDoltDoctorChecks(cityPath, cityPath) {
 			register(newDoltTopologyCheck(cityPath, cfg))
 			register(newDoltDriftCheck(cityPath, cfg))
 		}
@@ -282,7 +282,10 @@ func buildDoctorChecks(cityPath string, cfg *config.City, cfgErr error, opts bui
 		register(newBacklogDepthCheck(cityPath, storeFactory))
 		register(&sessionModelDoctorCheck{cfg: cfg, cityPath: cityPath, newStore: storeFactory})
 	}
-	register(newDoctorDoltServerCheck(cityPath, opts.SkipCityDoltCheck))
+	cityNeedsDoltDoctorChecks := scopeNeedsDoltDoctorChecks(cityPath, cityPath)
+	if cityNeedsDoltDoctorChecks {
+		register(newDoctorDoltServerCheck(cityPath, opts.SkipCityDoltCheck))
+	}
 	if cfgErr == nil && doctorWorkspaceHasPostgresScope(cityPath, cfg) {
 		register(doctor.NewPostgresAuthCheck(cityPath, cfg))
 	}
@@ -291,9 +294,11 @@ func buildDoctorChecks(cityPath string, cfg *config.City, cfgErr error, opts bui
 	// can inherit the city-managed server even when the city itself is not a
 	// managed bd scope. The version check follows the same gate so file-backed
 	// and external Dolt workspaces do not get irrelevant local-binary warnings.
-	register(doctor.NewDoltNomsSizeCheckForConfig(cityPath, opts.SkipManagedDoltCheck, cfg, cfgErr))
-	register(doctor.NewDoltConfigCheckForConfig(cityPath, opts.SkipManagedDoltCheck, cfg, cfgErr))
-	register(doctor.NewScopedDoltVersionCheckForConfig(cityPath, opts.SkipManagedDoltCheck, cfg, cfgErr))
+	if cityNeedsDoltDoctorChecks {
+		register(doctor.NewDoltNomsSizeCheckForConfig(cityPath, opts.SkipManagedDoltCheck, cfg, cfgErr))
+		register(doctor.NewDoltConfigCheckForConfig(cityPath, opts.SkipManagedDoltCheck, cfg, cfgErr))
+		register(doctor.NewScopedDoltVersionCheckForConfig(cityPath, opts.SkipManagedDoltCheck, cfg, cfgErr))
+	}
 
 	register(&doctor.EventsLogCheck{})
 	register(doctor.NewEventLogSizeCheck())
@@ -330,14 +335,17 @@ func buildDoctorChecks(cityPath string, cfg *config.City, cfgErr error, opts bui
 			register(doctor.NewRigGitCheck(rig))
 			register(doctor.NewRigBDSplitStoreCheck(cityPath, rig))
 			register(doctor.NewRigBeadsCheck(cityPath, rig, storeFactory))
-			register(newDoctorRigDoltServerCheck(cityPath, rig, !rigUsesManagedBdStoreContract(cityPath, rig) || gcDoltSkip()))
+			rigNeedsDoltDoctorChecks := scopeNeedsDoltDoctorChecks(cityPath, rig.Path)
+			if rigNeedsDoltDoctorChecks {
+				register(newDoctorRigDoltServerCheck(cityPath, rig, !rigUsesManagedBdStoreContract(cityPath, rig) || gcDoltSkip()))
+			}
 			// Custom types check — rig store.
 			register(doctor.NewCustomTypesCheck(rig.Path, rig.Name))
 			// Dolt-backup registration catches the silent gap left by
 			// `gc rig add` before the rig is eligible for mol-dog backup
 			// automation. Gated to match the sibling dolt-server check:
 			// skip non-managed-bdstore rigs and GC_DOLT=skip environments.
-			if rigUsesManagedBdStoreContract(cityPath, rig) && !gcDoltSkip() {
+			if rigNeedsDoltDoctorChecks && rigUsesManagedBdStoreContract(cityPath, rig) && !gcDoltSkip() {
 				register(newDoctorDoltBackupCheck(cityPath, rig, managedDoltDataDir))
 				register(newDoctorDoltLocalOnlyCheck(cityPath, rig, managedDoltDataDir))
 			}
