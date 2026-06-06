@@ -811,6 +811,14 @@ func expandCityPacks(cfg *City, fs fsys.FS, cityRoot string, opts LoadOptions) (
 	// Resolve fallback agents before collision detection.
 	allAgents = resolveFallbackAgents(allAgents)
 
+	// Deduplicate agents that appear with the same qualified name and
+	// source directory. This can happen when a pack is loaded via both
+	// the V1 includes path and the V2 imports path — the shared load
+	// cache prevents re-parsing pack.toml, but both paths append the
+	// agents. Later ValidateAgents catches these as "duplicate name"
+	// (same SourceDir twice). Dedup here keeps the first occurrence.
+	allAgents = dedupAgentsBySourceDirAndQN(allAgents)
+
 	// Check for duplicate agent names across city packs.
 	if err := checkPackAgentCollisions(allAgents, ""); err != nil {
 		return nil, nil, nil, err
@@ -2444,6 +2452,29 @@ func filterNamedSessionsByScope(sessions []NamedSession, cityExpansion bool) []N
 		default:
 			result = append(result, s)
 		}
+	}
+	return result
+}
+
+// dedupAgentsBySourceDirAndQN removes agents that share the same SourceDir
+// and QualifiedName, keeping the first occurrence. This handles the case
+// where a pack is loaded via both the V1 includes path and the V2 imports
+// path — the shared load cache prevents re-parsing pack.toml, but both
+// paths append the agents, causing duplicate-registration errors.
+func dedupAgentsBySourceDirAndQN(agents []Agent) []Agent {
+	seen := make(map[string]map[string]bool) // SourceDir → QN → seen
+	result := make([]Agent, 0, len(agents))
+	for _, a := range agents {
+		src := a.SourceDir
+		qn := a.QualifiedName()
+		if seen[src] == nil {
+			seen[src] = make(map[string]bool)
+		}
+		if seen[src][qn] {
+			continue
+		}
+		seen[src][qn] = true
+		result = append(result, a)
 	}
 	return result
 }

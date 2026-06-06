@@ -3072,12 +3072,12 @@ func (a *Agent) poolDemandTarget() string {
 }
 
 func standardAssignedWorkQueryScript() string {
-	return `for id in "$GC_SESSION_ID" "$GC_SESSION_NAME" "$GC_ALIAS"; do ` +
+	return `for id in "$GC_SESSION_ID" "$GC_SESSION_NAME" "$GC_ALIAS" "$1"; do ` +
 		`[ -z "$id" ] && continue; ` +
 		`r=$(bd list --include-ephemeral --status in_progress --assignee="$id" --json --limit=1 2>/dev/null); ` +
 		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
 		`done; ` +
-		`for id in "$GC_SESSION_ID" "$GC_SESSION_NAME" "$GC_ALIAS"; do ` +
+		`for id in "$GC_SESSION_ID" "$GC_SESSION_NAME" "$GC_ALIAS" "$1"; do ` +
 		`[ -z "$id" ] && continue; ` +
 		`r=$(bd ready --include-ephemeral --assignee="$id" --json --limit=1 2>/dev/null); ` +
 		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
@@ -3140,9 +3140,10 @@ func poolDemandOriginGateScript() string {
 // explicit work_query in their agent config; that custom query is returned
 // unchanged above.
 //
-// When the reconciler runs the query for demand detection (no session
-// context), all identity vars are empty → assignee tiers skip → only
-// the routed_to tier fires to detect new demand.
+// When the reconciler runs the query for demand detection, it has no live
+// session identity vars, but it does pass the agent target as $1. Include
+// that target in the assigned tiers so direct named-session handoffs wake
+// stopped/asleep agents. The routed_to tier still covers pool demand.
 //
 // Tier 3's canonical and migration predicates are shared with
 // EffectivePoolDemandQuery so reconciler spawn decisions and worker claim
