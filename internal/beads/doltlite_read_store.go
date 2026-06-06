@@ -1,4 +1,4 @@
-//go:build gascity_native_beads
+//go:build gascity_native_beads || gascity_doltlite_lib
 
 package beads
 
@@ -13,8 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	_ "modernc.org/sqlite" // pure-Go SQLite driver, CGO_ENABLED=0 safe
 )
 
 // DoltliteReadStore serves hot read paths in-process for bd/doltlite stores.
@@ -136,7 +134,7 @@ func NewDoltliteReadStore(dir string, backing *BdStore) (*DoltliteReadStore, err
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_busy_timeout=10000")
+	db, err := sql.Open(doltliteSQLDriverName, "file:"+dbPath+"?mode=ro&_busy_timeout=10000")
 	if err != nil {
 		return nil, err
 	}

@@ -29,21 +29,27 @@ Manual edits to runtime files (`.gc/system/packs/`, wrapper scripts, installed b
 ### Build Pipeline
 
 ```
-doltlite C source              beads-doltlite Go source
-  ../configure && make            GOFLAGS=-tags=libsqlite3
-  doltlite-lib                    CGO_LDFLAGS=-ldoltlite
-  → libdoltlite.so ──────────→  go build ./cmd/bd → bd binary
+doltlite C source              beads-doltlite Go source          gascity Go source
+  ../configure && make            GOFLAGS=-tags=libsqlite3          gc beads-doltlite build
+  doltlite-lib                    CGO_LDFLAGS=-ldoltlite           CGO_ENABLED=1
+                                                                    GOFLAGS=-tags=gascity_doltlite_lib,libsqlite3
+  → libdoltlite.so ──────────→  go build ./cmd/bd → bd binary      → bin/gc
+          └──────────────────────────────────────────────────────→  libdoltlite-linked gc
 ```
 
 1. Build `libdoltlite.so` from `dolthub/doltlite` with `make doltlite-lib`
 2. Build `bd` from `duncan4123/beads-doltlite` with `GOFLAGS=-tags=libsqlite3` linking to `libdoltlite.so`
-3. `bd` binary provides beads CLI; Gas Town's `gc bd` commands shell out to it
-4. Gas Town's `gc` binary embeds pack definitions (including the bd pack with `gc-beads-bd.sh` wrapper)
+3. Build `gc` from `gastownhall/gascity` with `gc beads-doltlite build` when direct libdoltlite-linked Gas City behavior is needed
+4. `bd` binary provides beads CLI; Gas Town's `gc bd` commands shell out to it
+5. Gas Town's `gc` binary embeds pack definitions (including the bd pack with `gc-beads-bd.sh` wrapper)
+
+The `gc beads-doltlite build` command is pack-managed. It still requires an existing `gc` binary to run the city and dispatch pack commands, then it builds and installs the libdoltlite-linked replacement to `<gascity>/bin/gc` by default. Use `--output` to install the binary somewhere else.
 
 ### Backend Architecture
 
 - **Storage**: `libdoltlite.so` — embedded prolly-tree engine. Single `.db` file per database, no server process.
 - **Beads CLI**: `bd` binary — links dynamically to `libdoltlite.so` via `go-sqlite3` with `libsqlite3` build tag.
+- **Gas City binary**: `gc beads-doltlite build` rebuilds `gc` with `CGO_ENABLED=1`, `GOFLAGS=-tags=gascity_doltlite_lib,libsqlite3`, and `CGO_LDFLAGS=-ldoltlite`. Do not use `gascity_native_beads` for this; upstream uses that tag for its pure-Go native beads path.
 - **Gas Town integration**: `gc bd` commands delegate to `bd` via `gc-beads-bd.sh` wrapper script. The wrapper detects `BEADS_BACKEND=doltlite` and routes init/operations through doltlite-specific code paths.
 - **No Dolt server**: No MySQL protocol, no port, no `dolt sql-server` process. The dolt pack is conditionally skipped when backend is doltlite (see `embed_builtin_packs.go`).
 
