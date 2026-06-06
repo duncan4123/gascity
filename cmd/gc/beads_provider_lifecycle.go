@@ -217,7 +217,11 @@ func startBeadsLifecycle(cityPath, _ string, cfg *config.City, stderr io.Writer)
 		}
 		prefix := cfg.Rigs[i].EffectivePrefix()
 		if err := initAndHookDir(cityPath, cfg.Rigs[i].Path, prefix); err != nil {
-			return fmt.Errorf("init rig %q beads: %w", cfg.Rigs[i].Name, err)
+			cfg.Rigs[i].Suspended = true
+			if stderr != nil {
+				fmt.Fprintf(stderr, "gc supervisor: rig %q beads init failed; suspending rig for this run: %v\n", cfg.Rigs[i].Name, err) //nolint:errcheck // best-effort stderr
+			}
+			continue
 		}
 	}
 	if err := normalizeCanonicalBdScopeFiles(cityPath, cfg, stderr); err != nil {
