@@ -24,6 +24,7 @@ func TestAllAndSourceAreDeterministic(t *testing.T) {
 		"bd=examples/bd",
 		"dolt=examples/dolt",
 		"beads-doltlite=examples/beads-doltlite",
+		"jj-spr=examples/jj-spr",
 		"maintenance=examples/gastown/packs/maintenance",
 		"gastown=examples/gastown/packs/gastown",
 	}

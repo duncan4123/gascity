@@ -18,6 +18,7 @@ import (
 	"github.com/gastownhall/gascity/examples/dolt"
 	gastown "github.com/gastownhall/gascity/examples/gastown/packs/gastown"
 	"github.com/gastownhall/gascity/examples/gastown/packs/maintenance"
+	jjspr "github.com/gastownhall/gascity/examples/jj-spr"
 	"github.com/gastownhall/gascity/internal/bootstrap/packs/core"
 	"github.com/gastownhall/gascity/internal/fsys"
 	gitutil "github.com/gastownhall/gascity/internal/git"
@@ -55,6 +56,7 @@ func All() []Pack {
 		{Name: "bd", Subpath: "examples/bd", FS: bd.PackFS},
 		{Name: "dolt", Subpath: "examples/dolt", FS: dolt.PackFS},
 		{Name: "beads-doltlite", Subpath: "examples/beads-doltlite", FS: beadsdoltlite.PackFS},
+		{Name: "jj-spr", Subpath: "examples/jj-spr", FS: jjspr.PackFS},
 		{Name: "maintenance", Subpath: "examples/gastown/packs/maintenance", FS: maintenance.PackFS},
 		{Name: "gastown", Subpath: "examples/gastown/packs/gastown", FS: gastown.PackFS},
 	}
