@@ -1190,7 +1190,13 @@ func TestRigAnywhere_WriteBeadsEnvGTRoot(t *testing.T) {
 
 func TestRigAnywhere_ResolveRigToContext(t *testing.T) {
 	t.Run("rig_not_registered_anywhere", func(t *testing.T) {
+		resetFlags(t)
 		t.Setenv("GC_HOME", t.TempDir())
+		t.Setenv("GC_CITY", "")
+		t.Setenv("GC_CITY_PATH", "")
+		t.Setenv("GC_CITY_ROOT", "")
+		t.Setenv("GC_DIR", "")
+		setCwd(t, t.TempDir())
 
 		_, err := resolveRigToContext("nonexistent-rig")
 		if err == nil {
@@ -1275,8 +1281,14 @@ func TestRigAnywhere_ResolveRigToContext(t *testing.T) {
 	})
 
 	t.Run("legacy_city_toml_path_is_not_registered_binding", func(t *testing.T) {
+		resetFlags(t)
 		gcHome := t.TempDir()
 		t.Setenv("GC_HOME", gcHome)
+		t.Setenv("GC_CITY", "")
+		t.Setenv("GC_CITY_PATH", "")
+		t.Setenv("GC_CITY_ROOT", "")
+		t.Setenv("GC_DIR", "")
+		setCwd(t, t.TempDir())
 
 		cityPath := setupCity(t, "legacy-city")
 		rigDir := filepath.Join(t.TempDir(), "legacy-rig")
