@@ -1,4 +1,4 @@
-//go:build cgo && gascity_native_beads
+//go:build cgo
 
 package beads
 
@@ -212,6 +212,49 @@ func TestDoltliteReadStoreReadyBlocksMissingTargets(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Fatalf("Ready included beads with missing blockers: %#v", rows)
+	}
+}
+
+func TestDoltliteReadStoreReadyHandlesDependencyTablesWithoutExternalColumn(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStore(t)
+	defer closeStore()
+	writer := openTestDoltliteWriter(t, store.db)
+	defer writer.Close() //nolint:errcheck // test cleanup
+
+	for _, table := range []string{"dependencies", "wisp_dependencies"} {
+		for _, column := range []string{"depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"} {
+			if _, err := writer.Exec(`ALTER TABLE ` + table + ` DROP COLUMN ` + column); err != nil {
+				t.Fatalf("drop %s from %s: %v", column, table, err)
+			}
+		}
+	}
+	insertTestDoltliteIssue(t, writer, "issues", "labels", "dependencies", testDoltliteIssue{
+		ID:        "gc-no-external-blocker",
+		Title:     "open blocker",
+		Status:    "open",
+		IssueType: "task",
+		CreatedAt: time.Now().UTC().Add(time.Minute),
+	})
+	insertTestDoltliteIssue(t, writer, "issues", "labels", "dependencies", testDoltliteIssue{
+		ID:        "gc-no-external-child",
+		Title:     "blocked without external column",
+		Status:    "open",
+		IssueType: "task",
+		CreatedAt: time.Now().UTC().Add(2 * time.Minute),
+		Assignee:  "rig/no-external",
+	})
+	if _, err := writer.Exec(`INSERT INTO dependencies (
+		issue_id, depends_on_id, type
+	) VALUES (?, ?, ?)`, "gc-no-external-child", "gc-no-external-blocker", "blocks"); err != nil {
+		t.Fatalf("insert dependency with old dependency schema: %v", err)
+	}
+
+	rows, err := store.Ready(ReadyQuery{Assignee: "rig/no-external"})
+	if err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	if hasTestBead(rows, "gc-no-external-child") {
+		t.Fatalf("Ready included child blocked via schema without depends_on_external: %#v", rows)
 	}
 }
 
@@ -722,6 +765,156 @@ func TestDoltliteReadStoreTierModesIncludeWisps(t *testing.T) {
 	}
 	if got := testBeadIDs(both); !slices.Equal(got, []string{"gc-tier-issue", "gc-tier-wisp"}) {
 		t.Fatalf("both tier ids = %v, want [gc-tier-issue gc-tier-wisp]; rows=%#v", got, both)
+	}
+}
+
+func TestDoltliteReadStoreSupportsOrderDispatcherQueries(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStore(t)
+	defer closeStore()
+
+	writer := openTestDoltliteWriter(t, store.db)
+	defer writer.Close() //nolint:errcheck // test cleanup
+
+	base := time.Now().UTC().Add(10 * time.Second)
+	insertTestDoltliteIssue(t, writer, "wisps", "wisp_labels", "wisp_dependencies", testDoltliteIssue{
+		ID:        "gc-order-wisp",
+		Title:     "order:rig/wisp",
+		Status:    "open",
+		IssueType: "task",
+		CreatedAt: base,
+		Labels:    []string{"order-run:rig/wisp"},
+		Metadata:  map[string]string{"gc.kind": "workflow"},
+	})
+	insertTestDoltliteIssue(t, writer, "wisps", "wisp_labels", "wisp_dependencies", testDoltliteIssue{
+		ID:        "gc-order-wisp-step-closed",
+		Title:     "closed wisp child",
+		Status:    "closed",
+		IssueType: "task",
+		CreatedAt: base.Add(time.Second),
+		Dependencies: []testDoltliteDependency{{
+			DependsOnID: "gc-order-wisp",
+			Type:        "parent-child",
+		}},
+	})
+	insertTestDoltliteIssue(t, writer, "wisps", "wisp_labels", "wisp_dependencies", testDoltliteIssue{
+		ID:        "gc-order-wisp-step-open",
+		Title:     "open wisp child",
+		Status:    "open",
+		IssueType: "task",
+		CreatedAt: base.Add(2 * time.Second),
+		Dependencies: []testDoltliteDependency{{
+			DependsOnID: "gc-order-wisp",
+			Type:        "parent-child",
+		}},
+	})
+	insertTestDoltliteIssue(t, writer, "wisps", "wisp_labels", "wisp_dependencies", testDoltliteIssue{
+		ID:        "gc-order-event-wisp",
+		Title:     "order cursor event",
+		Status:    "closed",
+		IssueType: "task",
+		CreatedAt: base.Add(3 * time.Second),
+		Labels:    []string{"order:rig/event", "seq:42"},
+	})
+
+	lastRun, err := store.List(ListQuery{
+		Label:         "order-run:rig/sweep",
+		Limit:         1,
+		IncludeClosed: true,
+		Sort:          SortCreatedDesc,
+		TierMode:      TierBoth,
+	})
+	if err != nil {
+		t.Fatalf("List order-run last history: %v", err)
+	}
+	if got := testBeadIDs(lastRun); !slices.Equal(got, []string{"gc-order-closed"}) {
+		t.Fatalf("last order-run ids = %v, want [gc-order-closed]; rows=%#v", got, lastRun)
+	}
+
+	openRun, err := store.List(ListQuery{
+		Label:    "order-run:rig/active",
+		Sort:     SortCreatedDesc,
+		TierMode: TierBoth,
+	})
+	if err != nil {
+		t.Fatalf("List open order-run tracking: %v", err)
+	}
+	if got := testBeadIDs(openRun); !slices.Equal(got, []string{"gc-order-open"}) {
+		t.Fatalf("open order-run ids = %v, want [gc-order-open]; rows=%#v", got, openRun)
+	}
+
+	staleRoots, err := store.List(ListQuery{
+		Label:         "order-run:rig/wisp",
+		CreatedBefore: base.Add(time.Second),
+		Sort:          SortCreatedDesc,
+		TierMode:      TierBoth,
+	})
+	if err != nil {
+		t.Fatalf("List stale order wisp roots: %v", err)
+	}
+	if got := testBeadIDs(staleRoots); !slices.Equal(got, []string{"gc-order-wisp"}) {
+		t.Fatalf("stale order wisp root ids = %v, want [gc-order-wisp]; rows=%#v", got, staleRoots)
+	}
+
+	history, err := store.List(ListQuery{
+		Label:         "gc:order-tracking",
+		Limit:         10,
+		IncludeClosed: true,
+		Sort:          SortCreatedDesc,
+	})
+	if err != nil {
+		t.Fatalf("List canonical order tracking history: %v", err)
+	}
+	if got := testBeadIDs(history); !slices.Equal(got, []string{"gc-order-open", "gc-order-closed"}) {
+		t.Fatalf("order tracking history ids = %v, want [gc-order-open gc-order-closed]; rows=%#v", got, history)
+	}
+
+	openTracking, err := store.ListByLabel("gc:order-tracking", 0, WithBothTiers)
+	if err != nil {
+		t.Fatalf("ListByLabel open order tracking across tiers: %v", err)
+	}
+	if got := testBeadIDs(openTracking); !slices.Equal(got, []string{"gc-order-open"}) {
+		t.Fatalf("open order tracking ids = %v, want [gc-order-open]; rows=%#v", got, openTracking)
+	}
+
+	children, err := store.List(ListQuery{
+		ParentID:      "gc-order-wisp",
+		IncludeClosed: true,
+		Sort:          SortCreatedAsc,
+		TierMode:      TierBoth,
+	})
+	if err != nil {
+		t.Fatalf("List wisp descendants: %v", err)
+	}
+	if got := testBeadIDs(children); !slices.Equal(got, []string{"gc-order-wisp-step-closed", "gc-order-wisp-step-open"}) {
+		t.Fatalf("wisp child ids = %v, want [gc-order-wisp-step-closed gc-order-wisp-step-open]; rows=%#v", got, children)
+	}
+
+	eventRows, err := store.List(ListQuery{
+		Label:         "order:rig/event",
+		IncludeClosed: true,
+		Sort:          SortCreatedDesc,
+		TierMode:      TierBoth,
+	})
+	if err != nil {
+		t.Fatalf("List order cursor rows: %v", err)
+	}
+	if got := testBeadIDs(eventRows); !slices.Equal(got, []string{"gc-order-event-wisp"}) {
+		t.Fatalf("order cursor ids = %v, want [gc-order-event-wisp]; rows=%#v", got, eventRows)
+	}
+	if !slices.Contains(eventRows[0].Labels, "seq:42") {
+		t.Fatalf("order cursor labels = %v, want seq:42", eventRows[0].Labels)
+	}
+
+	routed, err := store.List(ListQuery{
+		Metadata: map[string]string{"gc.routed_to": "rig/polecat"},
+		Limit:    1,
+		Sort:     SortCreatedDesc,
+	})
+	if err != nil {
+		t.Fatalf("List routed pool demand metadata: %v", err)
+	}
+	if got := testBeadIDs(routed); !slices.Equal(got, []string{"gc-routed"}) {
+		t.Fatalf("routed ids = %v, want [gc-routed]; rows=%#v", got, routed)
 	}
 }
 

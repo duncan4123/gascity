@@ -109,8 +109,8 @@ func selectedPhase2ProviderCases(t *testing.T) []phase2ProviderCase {
 			wantPromptFlag:        "--prompt",
 			wantReadyDelayMs:      8000,
 			wantProcessNames:      []string{"opencode", "node", "bun"},
-			wantModelOverride:     "opencode/deepseek-v4-flash-free",
-			wantModelOverrideArgs: []string{"--model", "opencode/deepseek-v4-flash-free"},
+			wantModelOverride:     "opencode/nemotron-3-super-free",
+			wantModelOverrideArgs: []string{"--model", "opencode/nemotron-3-super-free"},
 		},
 	}
 
@@ -154,6 +154,7 @@ func resolvePhase2Template(t *testing.T, tc phase2ProviderCase) TemplateParams {
 		cityName:   "phase2-city",
 		cityPath:   cityPath,
 		workspace:  &config.Workspace{Provider: tc.family},
+		providers:  builtinProviderAliasesForTest(tc.family),
 		lookPath:   func(name string) (string, error) { return filepath.Join("/usr/bin", name), nil },
 		fs:         fsys.OSFS{},
 		beaconTime: time.Unix(0, 0),

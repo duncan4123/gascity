@@ -265,6 +265,9 @@ func TestFinalizeInitFetchesRemotePacksBeforeProviderReadiness(t *testing.T) {
 		`name = "bright-lights"`,
 		`includes = ["remote-pack"]`,
 		"",
+		"[providers.claude]",
+		`base = "builtin:claude"`,
+		"",
 		"[packs.remote-pack]",
 		`source = "` + remote + `"`,
 		"",
@@ -330,6 +333,9 @@ func TestFinalizeInitChecksRemoteImportProvidersAfterInstall(t *testing.T) {
 		`name = "remote-pack"`,
 		`version = "1.0.0"`,
 		"schema = 1",
+		"",
+		"[providers.claude]",
+		`base = "builtin:claude"`,
 		"",
 		"[[agent]]",
 		`name = "worker"`,
@@ -868,6 +874,9 @@ func initBareProviderPackRepo(t *testing.T, name, provider string) string {
 		`version = "1.0.0"`,
 		"schema = 1",
 		"",
+		"[providers." + provider + "]",
+		`base = "builtin:` + provider + `"`,
+		"",
 		"[[agent]]",
 		`name = "worker"`,
 		`provider = "` + provider + `"`,
@@ -1016,6 +1025,42 @@ func TestCheckHardDependenciesRejectsBdBelowExplicitIDSupport(t *testing.T) {
 		if !strings.Contains(missing[0].name, want) {
 			t.Fatalf("missing dep = %#v, want %q", missing[0], want)
 		}
+	}
+}
+
+func TestCheckHardDependenciesUsesDoltliteMetadataVersionFloor(t *testing.T) {
+	cityDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cityDir, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityDir, ".beads", "metadata.json"), []byte(`{"backend":"doltlite","database":"doltlite"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldLookPath := initLookPath
+	initLookPath = func(name string) (string, error) {
+		if name == "dolt" {
+			return "", os.ErrNotExist
+		}
+		return "/usr/bin/" + name, nil
+	}
+	t.Cleanup(func() { initLookPath = oldLookPath })
+
+	oldRunVersion := initRunVersion
+	initRunVersion = func(binary string) (string, error) {
+		switch binary {
+		case "bd":
+			return "bd version 1.0.3", nil
+		case "flock", "tmux", "jq", "git", "pgrep", "lsof":
+			return binary + " version", nil
+		default:
+			return binary + " version " + doltMinVersion, nil
+		}
+	}
+	t.Cleanup(func() { initRunVersion = oldRunVersion })
+
+	if missing := checkHardDependencies(cityDir); len(missing) != 0 {
+		t.Fatalf("missing deps = %#v, want doltlite metadata to accept bd 1.0.3 and skip dolt", missing)
 	}
 }
 

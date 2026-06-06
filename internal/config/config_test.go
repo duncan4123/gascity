@@ -1775,7 +1775,8 @@ func TestEffectiveWorkQueryControlDispatcherClaimsLegacyAssignedWork(t *testing.
 	a := Agent{Name: ControlDispatcherAgentName, Dir: "gascity"}
 	got := a.EffectiveWorkQuery()
 	for _, want := range []string{
-		`bd list --include-ephemeral --status in_progress --assignee="$cand"`,
+		`bd list --status in_progress --assignee="$cand"`,
+		`bd query --json`,
 		`bd ready --include-ephemeral --assignee="$cand"`,
 	} {
 		if !strings.Contains(got, want) {
@@ -1788,10 +1789,10 @@ func TestEffectiveWorkQueryControlDispatcherClaimsLegacyAssignedWork(t *testing.
 	}, `#!/bin/sh
 set -eu
 case "$*" in
-  "list --include-ephemeral --status in_progress --assignee=gascity--control-dispatcher --json --limit=1"|\
-  "list --include-ephemeral --status in_progress --assignee=gascity/control-dispatcher --json --limit=1"|\
-  "list --include-ephemeral --status in_progress --assignee=gascity--workflow-control --json --limit=1"|\
-  "list --include-ephemeral --status in_progress --assignee=gascity/workflow-control --json --limit=1")
+  "list --status in_progress --assignee=gascity--control-dispatcher --json --limit=1"|\
+  "list --status in_progress --assignee=gascity/control-dispatcher --json --limit=1"|\
+  "list --status in_progress --assignee=gascity--workflow-control --json --limit=1"|\
+  "list --status in_progress --assignee=gascity/workflow-control --json --limit=1")
     printf '[]'
     ;;
   "ready --include-ephemeral --assignee=gascity--workflow-control --json --limit=1"|\
@@ -1833,7 +1834,8 @@ func TestEffectiveWorkQueryRoutedQueueUsesNativeOldestSortAcrossReadyTiers(t *te
 	a := Agent{Name: "worker", Dir: "hello-world"}
 	got := a.EffectiveWorkQuery()
 	for _, want := range []string{
-		`bd list --include-ephemeral --status in_progress --assignee="$id"`,
+		`bd list --status in_progress --assignee="$id"`,
+		`bd query --json`,
 		`bd ready --include-ephemeral --assignee="$id"`,
 	} {
 		if !strings.Contains(got, want) {
@@ -1941,7 +1943,8 @@ func TestEffectiveWorkQueryExcludesEpics(t *testing.T) {
 		// routed/pool tier still excludes epics (gc-udx guard)
 		`bd ready --include-ephemeral --metadata-field "gc.routed_to=$target" --unassigned --exclude-type=epic --json`,
 		// assigned tiers carry NO epic exclusion
-		`bd list --include-ephemeral --status in_progress --assignee="$id" --json`,
+		`bd list --status in_progress --assignee="$id" --json`,
+		`bd query --json`,
 		`bd ready --include-ephemeral --assignee="$id" --json`,
 		`-- hello-world/worker`,
 	}
@@ -1966,7 +1969,8 @@ func TestEffectiveWorkQueryExcludesEpicsControlDispatcher(t *testing.T) {
 	got := a.EffectiveWorkQuery()
 	wantPresent := []string{
 		`bd ready --include-ephemeral --metadata-field "gc.routed_to=$target" --unassigned --exclude-type=epic --json`,
-		`bd list --include-ephemeral --status in_progress --assignee="$cand" --json`,
+		`bd list --status in_progress --assignee="$cand" --json`,
+		`bd query --json`,
 		`bd ready --include-ephemeral --assignee="$cand" --json`,
 		`-- gascity/control-dispatcher gascity/workflow-control`,
 	}
@@ -5299,7 +5303,7 @@ func TestEffectiveOnDeathDefault(t *testing.T) {
 		MinActiveSessions: ptrInt(0), MaxActiveSessions: ptrInt(5),
 	}
 	got := a.EffectiveOnDeath()
-	for _, want := range []string{"bd list --include-ephemeral --assignee=myrig/dog", "--status=in_progress", `--assignee "" --status open`, "--set-metadata 'gc.run_target=myrig/dog'"} {
+	for _, want := range []string{"bd list --assignee=myrig/dog", "--status=in_progress", `--assignee "" --status open`, "--set-metadata 'gc.run_target=myrig/dog'"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("EffectiveOnDeath() = %q, want %q", got, want)
 		}
@@ -5320,7 +5324,7 @@ func TestEffectiveOnDeathCustom(t *testing.T) {
 func TestEffectiveOnDeathFixedAgent(t *testing.T) {
 	a := Agent{Name: "mayor"}
 	got := a.EffectiveOnDeath()
-	for _, want := range []string{"bd list --include-ephemeral --assignee=mayor", "--status=in_progress", `--assignee "" --status open`, "--set-metadata 'gc.run_target=mayor'"} {
+	for _, want := range []string{"bd list --assignee=mayor", "--status=in_progress", `--assignee "" --status open`, "--set-metadata 'gc.run_target=mayor'"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("EffectiveOnDeath() = %q, want %q", got, want)
 		}
@@ -5350,7 +5354,7 @@ case "$1" in
     ;;
 esac
 `)
-	if !strings.Contains(log, "list --include-ephemeral --assignee=hello-world/dog-1 --status=in_progress --json") {
+	if !strings.Contains(log, "list --assignee=hello-world/dog-1 --status=in_progress --json") {
 		t.Fatalf("hook log = %q, want ephemeral-aware list query", log)
 	}
 	if !strings.Contains(log, "--status open") {
@@ -5384,7 +5388,7 @@ case "$1" in
     ;;
 esac
 `)
-	if !strings.Contains(log, "list --include-ephemeral --assignee=hello-world/dog-1 --status=in_progress --json") {
+	if !strings.Contains(log, "list --assignee=hello-world/dog-1 --status=in_progress --json") {
 		t.Fatalf("hook log = %q, want ephemeral-aware list query", log)
 	}
 	if !strings.Contains(log, "--status open") {
@@ -5489,7 +5493,7 @@ case "$1" in
     ;;
 esac
 `)
-	if !strings.Contains(log, "list --include-ephemeral --metadata-field gc.routed_to=hello-world/dog --status=in_progress --no-assignee --json") {
+	if !strings.Contains(log, "list --metadata-field gc.routed_to=hello-world/dog --status=in_progress --no-assignee --json") {
 		t.Fatalf("hook log = %q, want ephemeral-aware routed list query", log)
 	}
 	if !strings.Contains(log, "update ga-wisp --status open") {
@@ -5523,7 +5527,7 @@ case "$1" in
     ;;
 esac
 `)
-	if !strings.Contains(log, "list --include-ephemeral --metadata-field gc.run_target=hello-world/dog --metadata-field gc.kind=workflow --status=in_progress --no-assignee --json") {
+	if !strings.Contains(log, "list --metadata-field gc.run_target=hello-world/dog --metadata-field gc.kind=workflow --status=in_progress --no-assignee --json") {
 		t.Fatalf("hook log = %q, want ephemeral-aware run_target list query", log)
 	}
 	if !strings.Contains(log, "update ga-run-target --status open") {
@@ -5685,10 +5689,14 @@ func TestInjectImplicitAgents_NoProviders(t *testing.T) {
 }
 
 func TestInjectImplicitAgents_WorkspaceProvider(t *testing.T) {
-	// workspace.provider alone is enough — no [providers.claude] section needed.
+	// workspace.provider selects a default but the provider catalog creates
+	// implicit agents.
 	cfg := &City{
 		Daemon:    DaemonConfig{FormulaV2: true},
 		Workspace: Workspace{Provider: "claude"},
+		Providers: map[string]ProviderSpec{
+			"claude": BuiltinProviderAlias("claude"),
+		},
 	}
 	InjectImplicitAgents(cfg)
 
@@ -5708,12 +5716,13 @@ func TestInjectImplicitAgents_WorkspaceProvider(t *testing.T) {
 }
 
 func TestInjectImplicitAgents_WorkspaceProviderPlusExplicit(t *testing.T) {
-	// workspace.provider = "claude" + [providers.codex] → both get implicit agents.
+	// [providers.claude] + [providers.codex] → both get implicit agents.
 	cfg := &City{
 		Daemon:    DaemonConfig{FormulaV2: true},
 		Workspace: Workspace{Provider: "claude"},
 		Providers: map[string]ProviderSpec{
-			"codex": {},
+			"claude": BuiltinProviderAlias("claude"),
+			"codex":  BuiltinProviderAlias("codex"),
 		},
 	}
 	InjectImplicitAgents(cfg)
@@ -6052,6 +6061,9 @@ func TestAgentDefaultsProvider_ExplicitOverrideWins(t *testing.T) {
 
 func TestAgentDefaultsProvider_InjectImplicitAgents(t *testing.T) {
 	cfg := &City{
+		Providers: map[string]ProviderSpec{
+			"codex": BuiltinProviderAlias("codex"),
+		},
 		AgentDefaults: AgentDefaults{
 			Provider: "codex",
 		},
@@ -6097,6 +6109,12 @@ func TestAgentDefaultsProvider_BeatsWorkspaceProviderForExplicitAgent(t *testing
 [workspace]
 name = "demo"
 provider = "claude"
+
+[providers.claude]
+base = "builtin:claude"
+
+[providers.codex]
+base = "builtin:codex"
 
 [agent_defaults]
 provider = "codex"
