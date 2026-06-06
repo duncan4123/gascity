@@ -538,7 +538,7 @@ func beadsBackend(cityPath string) string {
 }
 
 func cityUsesDoltliteBeadsBackend(cityPath string) bool {
-	return beadsBackend(cityPath) == "doltlite"
+	return resolveBeadsBackend(cityPath).Name() == "doltlite"
 }
 
 func providerUsesBdStoreContract(provider string) bool {
@@ -550,7 +550,7 @@ func cityUsesBdStoreContract(cityPath string) bool {
 }
 
 func cityUsesManagedDoltBeadsLifecycle(cityPath string) bool {
-	return cityUsesBdStoreContract(cityPath) && !cityUsesDoltliteBeadsBackend(cityPath)
+	return cityUsesBdStoreContract(cityPath) && resolveBeadsBackend(cityPath).NeedsManagedServer()
 }
 
 func rawBeadsProviderForScope(scopeRoot, cityPath string) string {
