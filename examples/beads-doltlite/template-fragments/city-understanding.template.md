@@ -51,9 +51,10 @@ Installing a rebuilt `bd` affects new `gc bd` calls as soon as that `bd` path is
 ### Backend Architecture
 
 - **Storage**: `libdoltlite.so` — embedded prolly-tree engine. Single `.db` file per database, no server process.
+- **Pack layering**: `beads-doltlite` is not a replacement for the `bd` pack. It imports and exports `bd`, so normal beads provider operations still use the materialized `bd` pack's `gc-beads-bd.sh` wrapper.
 - **Beads CLI**: `gc beads-doltlite build bd` rebuilds `bd` with `CGO_ENABLED=1`, `GOFLAGS=-tags=libsqlite3`, and `CGO_LDFLAGS=-ldoltlite`.
-- **Gas City binary**: `gc beads-doltlite build` rebuilds `gc` with `CGO_ENABLED=1`, `GOFLAGS=-tags=gascity_doltlite_lib,libsqlite3`, and `CGO_LDFLAGS=-ldoltlite`. Do not use `gascity_native_beads` for this; upstream uses that tag for its pure-Go native beads path.
-- **Gas Town integration**: `gc bd` commands delegate to `bd` via `gc-beads-bd.sh` wrapper script. The wrapper detects `BEADS_BACKEND=doltlite` and routes init/operations through doltlite-specific code paths.
+- **Gas City binary**: `gc beads-doltlite build gc` rebuilds `gc` with `CGO_ENABLED=1`, `GOFLAGS=-tags=gascity_doltlite_lib,libsqlite3`, and `CGO_LDFLAGS=-ldoltlite`. Do not use `gascity_native_beads` for this; upstream uses that tag for its pure-Go native beads path.
+- **Gas Town integration**: `gc bd` commands delegate to `bd` via `gc-beads-bd.sh` wrapper script. The wrapper detects `BEADS_BACKEND=doltlite` and routes init/operations through doltlite-specific code paths. Optional native `gc` reads can bypass the CLI for selected hot paths, but writes and general `gc bd` behavior still go through `bd`.
 - **No Dolt server**: No MySQL protocol, no port, no `dolt sql-server` process. The dolt pack is conditionally skipped when backend is doltlite (see `embed_builtin_packs.go`).
 
 ### Key Differences from Dolt-Backed Cities
