@@ -65,22 +65,24 @@ You work from: {{ .WorkDir }}
 This is a full git clone of the project repository. You have complete autonomy
 over this workspace.
 
-## Cross-Rig Worktrees
+## Cross-Rig Workspaces
 
 When you need to work on a different rig (e.g., fix a beads bug while assigned
-to gastown), you can create a worktree in the target rig:
+to gastown), you can create a jj workspace in the target rig:
 
 ```bash
-# Create a worktree in another rig (look up the target rig's root first)
+# Create a jj workspace in another rig (look up the target rig's root first)
 TARGET_RIG=beads
 TARGET_ROOT=<from `gc rig status $TARGET_RIG`>
-git -C "$TARGET_ROOT" worktree add {{ .CityRoot }}/.gc/worktrees/$TARGET_RIG/crew/{{ basename .AgentName }}-from-{{ .RigName }} -b $TARGET_RIG-{{ basename .AgentName }}
+WS_PATH={{ .CityRoot }}/.gc/worktrees/$TARGET_RIG/crew/{{ basename .AgentName }}-from-{{ .RigName }}
+jj -R "$TARGET_ROOT" workspace add "$WS_PATH" -r main --sparse-patterns full
 
-# List your worktrees
-git worktree list
+# List your workspaces
+jj -R "$TARGET_ROOT" workspace list
 
 # Remove when done
-git worktree remove {{ .CityRoot }}/.gc/worktrees/$TARGET_RIG/crew/{{ basename .AgentName }}-from-{{ .RigName }}
+jj -R "$TARGET_ROOT" workspace forget $(basename "$WS_PATH")
+rm -rf "$WS_PATH"
 ```
 
 **Directory structure:**
@@ -90,22 +92,22 @@ git worktree remove {{ .CityRoot }}/.gc/worktrees/$TARGET_RIG/crew/{{ basename .
 ```
 
 **Key principles:**
-- **Identity preserved**: Your `BD_ACTOR` stays `{{ .RigName }}/crew/{{ basename .AgentName }}` even in the beads worktree
-- **No conflicts**: Each crew member gets their own worktree in the target rig
-- **Persistent**: Worktrees survive sessions (matches your crew lifecycle)
+- **Identity preserved**: Your `BD_ACTOR` stays `{{ .RigName }}/crew/{{ basename .AgentName }}` even in the beads workspace
+- **No conflicts**: Each crew member gets their own workspace in the target rig
+- **Persistent**: Workspaces survive sessions (matches your crew lifecycle)
 - **Direct work**: You work directly in the target rig, no delegation
 
-**When to use worktrees vs dispatch:**
+**When to use workspaces vs dispatch:**
 | Scenario | Approach |
 |----------|----------|
-| Quick fix in another rig | Use `git worktree add` |
-| Substantial work in another rig | Use `git worktree add` |
+| Quick fix in another rig | Use `jj workspace add` |
+| Substantial work in another rig | Use `jj workspace add` |
 | Work should be done by target rig's workers | `{{ cmd }} convoy create` + `gc sling <rig>/<binding>.polecat <bead>` |
 | Infrastructure task | Leave it to the Deacon's dogs |
 
-**Note**: Dogs are utility agents that handle infrastructure tasks (warrants,
+**Note:** Dogs are for automated maintenance chores (backups, compactions,
 shutdown dances). They're NOT for user-facing work. If you need to fix
-something in another rig, use worktrees, not dogs.
+something in another rig, use workspaces, not dogs.
 
 ## Where to File Beads
 
@@ -184,9 +186,9 @@ git push                    # Direct to main
 
 If push fails (someone else pushed): `git pull --rebase && git push`
 
-### Cross-Rig Work (git worktree)
+### Cross-Rig Work (jj workspace)
 
-`git worktree add` creates a branch for working in another rig's codebase. This is the
+`jj workspace add` creates an isolated working copy of another rig's codebase. This is the
 ONE exception where branches are created. But the rule still applies:
 
 - Complete the work in one session if possible

@@ -438,7 +438,7 @@ func (c *NestedWorktreePruneCheck) Run(ctx *CheckContext) *CheckResult {
 				continue
 			}
 			home := filepath.Join(rigDir, agentEntry.Name())
-			if isGitWorktreePath(home) {
+			if isWorkspacePath(home) {
 				homes = append(homes, pathutil.NormalizePathForCompare(home))
 			}
 		}
@@ -652,6 +652,16 @@ func isGitWorktreePath(path string) bool {
 	return err == nil
 }
 
+// isJjWorkspacePath reports whether path holds .jj/repo, indicating a jj workspace.
+func isJjWorkspacePath(path string) bool {
+	_, err := os.Stat(filepath.Join(path, ".jj", "repo"))
+	return err == nil
+}
+
+// isWorkspacePath reports whether path is a git worktree or jj workspace.
+func isWorkspacePath(path string) bool {
+	return isGitWorktreePath(path) || isJjWorkspacePath(path)
+}
 // readGitAdminDir returns the shared git admin directory that backs the
 // worktree at home. For a worktree, .git is a file containing
 // "gitdir: <repo>/.git/worktrees/<name>"; the admin root is the prefix
