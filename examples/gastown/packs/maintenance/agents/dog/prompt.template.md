@@ -30,7 +30,7 @@ queued formula.
 | `mol-dog-jsonl` | Export beads to JSONL for backup/analysis |
 | `mol-dog-reaper` | Clean up stale sessions and processes |
 
-Additional formulas available from included packs (e.g. dolt).
+Additional formulas available from included packs (e.g. doltlite maintenance).
 
 If your wisp names a formula not listed above (one that an included
 pack provides, or one the daemon assigned), read its recipe with
@@ -125,9 +125,9 @@ gc session nudge {{"{{requester}}"}}/ "DOG_DONE: <target> — <outcome>"
 | View work details | `gc bd show <id> --json` |
 | Close completed work | `gc bd close <id> --reason "..."` |
 | Request target restart | `gc session kill <target>` |
-| List orphan databases | `gc dolt cleanup` |
-| Remove orphan databases | `gc dolt cleanup --force` (safe via SQL DROP when dolt is up) |
-| Remove orphan databases (dolt stopped) | `gc dolt cleanup --force --server-down-ok` (**operator/TTY-only**; do **not** use from autonomous/agent contexts — the rm fallback corrupts NBS state if dolt is actually running, #1549) |
+| Run store maintenance | `gc beads-doltlite health && gc beads-doltlite gc` |
+| Compact store history | `gc beads-doltlite flatten` |
+| Clean up stale test databases | `gc dolt-cleanup` (dry-run); `gc dolt-cleanup --force` (destructive) |
 | Exit (return to pool) | `gc runtime drain-ack && exit` |
 
 Working directory: {{ .WorkDir }}
