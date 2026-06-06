@@ -1,0 +1,9 @@
+scope = "rig"
+provider = "codex-spark"
+wake_mode = "fresh"
+work_dir = ".gc/workspaces/{{.Rig}}/spr-witness"
+nudge = "Run gc prime; patrol SPR review and landing state."
+pre_start = ["{{.ConfigDir}}/assets/scripts/workspace-setup.sh {{.RigRoot}} {{.WorkDir}} {{.AgentBase}} --sync"]
+idle_timeout = "2h"
+max_active_sessions = 1
+default_sling_formula = "mol-spr-witness-patrol"
