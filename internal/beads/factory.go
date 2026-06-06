@@ -100,6 +100,16 @@ func OpenStoreAtForCity(ctx context.Context, opts StoreOpenOptions) (StoreOpenRe
 		return opts.openBdFallback(provider, diag)
 	}
 
+	if scopeBackendIsDoltlite(opts.ScopeRoot) {
+		diag := BeadsDiagnostic{
+			Store:               storeNameBdStore,
+			NativeStoreEligible: false,
+			PreflightGate:       "doltlite_fallback",
+			PreflightReason:     "doltlite backend uses bd CLI shell-out",
+		}
+		return opts.openBdFallback(provider, diag)
+	}
+
 	result, err := opts.PreflightChecker.Check(opts.ScopeRoot)
 	if err != nil {
 		diag := BeadsDiagnostic{
@@ -125,16 +135,6 @@ func OpenStoreAtForCity(ctx context.Context, opts StoreOpenOptions) (StoreOpenRe
 			PreflightReason:     "bd hooks are installed; remove .beads/hooks/on_create,on_update,on_close after confirming controller cache events cover this deployment",
 		}
 		logNativeUnavailable(opts.Logger, opts.ScopeRoot, diag.PreflightGate, diag.PreflightReason)
-		return opts.openBdFallback(provider, diag)
-	}
-
-	if scopeBackendIsDoltlite(opts.ScopeRoot) {
-		diag := BeadsDiagnostic{
-			Store:               storeNameBdStore,
-			NativeStoreEligible: false,
-			PreflightGate:       "doltlite_fallback",
-			PreflightReason:     "doltlite backend uses bd CLI shell-out",
-		}
 		return opts.openBdFallback(provider, diag)
 	}
 
