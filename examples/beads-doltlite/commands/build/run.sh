@@ -14,9 +14,14 @@ Options:
   --gc-source DIR    Gas City source checkout. Default: ./gascity, current dir, or script checkout.
   --bd-source DIR    beads-doltlite source checkout. Default: ./beads-doltlite or adjacent checkout.
   --lib DIR          Directory containing libdoltlite.so. Default: ./doltlite-work/build or ./doltlite/build.
-  --output FILE      Output/install path for the selected single target.
-  --gc-output FILE   Output/install path for gc. Default: <gc-source>/bin/gc.
-  --bd-output FILE   Output/install path for bd. Default: <bd-source>/bin/bd.
+  --output FILE      Build output path for the selected single target.
+  --gc-output FILE   Build output path for gc. Default: <gc-source>/bin/gc.
+  --bd-output FILE   Build output path for bd. Default: <bd-source>/bin/bd.
+  --install          Install built binaries after link verification.
+  --install-dir DIR  Install directory for both binaries.
+                     Default: active binary under $HOME, else $HOME/.local/bin.
+  --gc-install FILE  Install path for gc.
+  --bd-install FILE  Install path for bd.
   --version VALUE    Version string embedded in gc. Default: dev.
   --bd-build VALUE   Build string embedded in bd. Default: dev.
 
@@ -25,6 +30,8 @@ Environment overrides:
   BD_SRC, BEADS_DOLTLITE_SRC, GC_BEADS_DOLTLITE_SRC
   DOLTLITE_LIB, GC_DOLTLITE_LIB
   OUTPUT, GC_DOLTLITE_GC_OUTPUT, BD_OUTPUT, GC_DOLTLITE_BD_OUTPUT
+  GC_DOLTLITE_INSTALL, GC_DOLTLITE_INSTALL_DIR
+  GC_DOLTLITE_GC_INSTALL, GC_DOLTLITE_BD_INSTALL
   GC_VERSION, GC_COMMIT, GC_BUILD_DATE
   BD_BUILD, BD_COMMIT, BD_BRANCH
 EOF
@@ -144,6 +151,55 @@ verify_linked_binary() {
   fi
 }
 
+default_install_path() {
+  local name="$1"
+  local current=""
+  if [ -n "$INSTALL_DIR" ]; then
+    echo "$INSTALL_DIR/$name"
+    return 0
+  fi
+  current="$(command -v "$name" 2>/dev/null || true)"
+  if [ -n "$current" ] && [ -n "${HOME:-}" ]; then
+    case "$current" in
+      "$HOME"/*)
+        echo "$current"
+        return 0
+        ;;
+    esac
+  fi
+  if [ -n "${HOME:-}" ]; then
+    echo "$HOME/.local/bin/$name"
+    return 0
+  fi
+  die "could not choose install path for $name; set --install-dir or --${name}-install"
+}
+
+install_binary() {
+  local source="$1"
+  local dest="$2"
+  local name="$3"
+  local dest_dir tmp current
+
+  dest_dir="$(dirname "$dest")"
+  mkdir -p "$dest_dir"
+  tmp="$dest_dir/.${name}.tmp.$$"
+  rm -f "$tmp"
+  if ! install -m 0755 "$source" "$tmp"; then
+    rm -f "$tmp"
+    die "installing $name to temporary path failed: $tmp"
+  fi
+  if ! mv -f "$tmp" "$dest"; then
+    rm -f "$tmp"
+    die "installing $name failed: $dest"
+  fi
+  echo "installed $name: $dest"
+
+  current="$(command -v "$name" 2>/dev/null || true)"
+  if [ -n "$current" ] && [ "$current" != "$dest" ]; then
+    echo "note: current $name resolves to $current; ensure $dest is earlier on PATH"
+  fi
+}
+
 build_gc() {
   if [ -z "$GASCITY_SRC" ]; then
     GASCITY_SRC="$(find_gascity_source || true)"
@@ -181,6 +237,13 @@ build_gc() {
 
   verify_linked_binary "$GC_OUTPUT" "gc"
   echo "built libdoltlite-linked gc: $GC_OUTPUT"
+
+  if [ "$INSTALL_BUILT" = "1" ]; then
+    if [ -z "$GC_INSTALL" ]; then
+      GC_INSTALL="$(default_install_path gc)"
+    fi
+    install_binary "$GC_OUTPUT" "$GC_INSTALL" "gc"
+  fi
 }
 
 build_bd() {
@@ -227,6 +290,13 @@ build_bd() {
 
   verify_linked_binary "$BD_OUTPUT" "bd"
   echo "built libdoltlite-linked bd: $BD_OUTPUT"
+
+  if [ "$INSTALL_BUILT" = "1" ]; then
+    if [ -z "$BD_INSTALL" ]; then
+      BD_INSTALL="$(default_install_path bd)"
+    fi
+    install_binary "$BD_OUTPUT" "$BD_INSTALL" "bd"
+  fi
 }
 
 CITY_ROOT="${GC_CITY_PATH:-$(pwd)}"
@@ -244,6 +314,10 @@ BD_SRC="${BD_SRC:-${BEADS_DOLTLITE_SRC:-${GC_BEADS_DOLTLITE_SRC:-}}}"
 DOLTLITE_LIB="${DOLTLITE_LIB:-${GC_DOLTLITE_LIB:-}}"
 GC_OUTPUT="${GC_DOLTLITE_GC_OUTPUT:-}"
 BD_OUTPUT="${BD_OUTPUT:-${GC_DOLTLITE_BD_OUTPUT:-}}"
+INSTALL_BUILT="${GC_DOLTLITE_INSTALL:-0}"
+INSTALL_DIR="${GC_DOLTLITE_INSTALL_DIR:-}"
+GC_INSTALL="${GC_DOLTLITE_GC_INSTALL:-}"
+BD_INSTALL="${GC_DOLTLITE_BD_INSTALL:-}"
 VERSION="${GC_VERSION:-dev}"
 BD_BUILD_VALUE="${BD_BUILD:-dev}"
 
@@ -325,6 +399,43 @@ while [ "$#" -gt 0 ]; do
       BD_OUTPUT="${1#*=}"
       shift
       ;;
+    --install)
+      INSTALL_BUILT=1
+      shift
+      ;;
+    --install-dir)
+      require_value "$1" "${2:-}"
+      INSTALL_DIR="$2"
+      INSTALL_BUILT=1
+      shift 2
+      ;;
+    --install-dir=*)
+      INSTALL_DIR="${1#*=}"
+      INSTALL_BUILT=1
+      shift
+      ;;
+    --gc-install)
+      require_value "$1" "${2:-}"
+      GC_INSTALL="$2"
+      INSTALL_BUILT=1
+      shift 2
+      ;;
+    --gc-install=*)
+      GC_INSTALL="${1#*=}"
+      INSTALL_BUILT=1
+      shift
+      ;;
+    --bd-install)
+      require_value "$1" "${2:-}"
+      BD_INSTALL="$2"
+      INSTALL_BUILT=1
+      shift 2
+      ;;
+    --bd-install=*)
+      BD_INSTALL="${1#*=}"
+      INSTALL_BUILT=1
+      shift
+      ;;
     --version)
       require_value "$1" "${2:-}"
       VERSION="$2"
@@ -373,6 +484,12 @@ if [ -n "$COMMON_OUTPUT" ]; then
     all) usage_error "--output is ambiguous with target all; use --gc-output and --bd-output" ;;
   esac
 fi
+
+case "${INSTALL_BUILT,,}" in
+  1|true|yes|on) INSTALL_BUILT=1 ;;
+  ""|0|false|no|off) INSTALL_BUILT=0 ;;
+  *) usage_error "GC_DOLTLITE_INSTALL must be true or false" ;;
+esac
 
 if [ -z "$DOLTLITE_LIB" ]; then
   DOLTLITE_LIB="$(find_doltlite_lib || true)"
