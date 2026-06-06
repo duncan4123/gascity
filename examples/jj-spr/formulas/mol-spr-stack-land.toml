@@ -1,0 +1,132 @@
+description = """
+Land an approved stacked SPR review object.
+
+Stacked reviews land parent to child. Use mol-spr-independent-land for work
+that can land in any order.
+"""
+formula = "mol-spr-stack-land"
+
+[vars]
+[vars.issue]
+description = "The work bead ID assigned to this SPR lander"
+required = true
+
+[[steps]]
+id = "validate"
+title = "Validate stacked SPR metadata"
+description = """
+Read required metadata:
+
+```bash
+WORK="{{issue}}"
+META=$(gc bd show "$WORK" --json | jq '.[0].metadata')
+BACKEND=$(printf '%s\n' "$META" | jq -r '.spr_backend // empty')
+MODE=$(printf '%s\n' "$META" | jq -r '.spr_mode // empty')
+SPR_CHANGE_ID=$(printf '%s\n' "$META" | jq -r '.spr_change_id // empty')
+TARGET=$(printf '%s\n' "$META" | jq -r '.spr_target // .target // empty')
+STACK_ID=$(printf '%s\n' "$META" | jq -r '.spr_stack_id // empty')
+STACK_INDEX=$(printf '%s\n' "$META" | jq -r '.spr_stack_index // empty')
+STACK_PARENT=$(printf '%s\n' "$META" | jq -r '.spr_stack_parent // empty')
+```
+
+Stop if any required field is missing, or if `spr_mode` is not stacked:
+
+```bash
+if [ -z "$BACKEND" ] || [ -z "$SPR_CHANGE_ID" ] || [ -z "$TARGET" ] || [ -z "$STACK_ID" ] || [ -z "$STACK_INDEX" ] || [ "$MODE" != "stacked" ]; then
+  gc bd update "$WORK" --set-metadata spr_blocked_reason="missing stacked SPR metadata; use mol-spr-independent-land for independent work"
+  exit 1
+fi
+if [ "$STACK_INDEX" != "1" ] && [ -z "$STACK_PARENT" ]; then
+  gc bd update "$WORK" --set-metadata spr_blocked_reason="missing spr_stack_parent for non-root stack entry"
+  exit 1
+fi
+```
+"""
+
+[[steps]]
+id = "check-readiness"
+title = "Check approval, CI, mergeability, and stack order"
+needs = ["validate"]
+description = """
+For GitHub backend:
+
+```bash
+PR_URL=$(printf '%s\n' "$META" | jq -r '.pr_url // empty')
+gh pr view "$PR_URL" --json state,reviewDecision,mergeable,statusCheckRollup
+```
+
+Require open state, approval, green required checks, and mergeable status.
+
+For local backend:
+
+```bash
+SPR_PR=$(printf '%s\n' "$META" | jq -r '.spr_pr_bead // empty')
+gc bd show "$SPR_PR" --json | jq '.[0].metadata'
+```
+
+Require:
+
+```text
+review_status=approved
+ci_status=success
+mergeable=true
+spr_status=open
+```
+
+Then inspect sibling SPR work/review beads with the same `spr_stack_id`. Do not
+land this entry while any lower `spr_stack_index` is still open, unapproved,
+failing CI, or not landed.
+"""
+
+[[steps]]
+id = "land"
+title = "Land stacked SPR review"
+needs = ["check-readiness"]
+description = """
+For GitHub backend:
+
+```bash
+jj spr land -r "$SPR_CHANGE_ID"
+jj git fetch
+jj rebase -r @ -d "$TARGET@origin"
+```
+
+For local backend:
+
+```bash
+jj git fetch
+jj rebase -r "$SPR_CHANGE_ID" -d "$TARGET@origin"
+jj bookmark move "$TARGET" --to "$SPR_CHANGE_ID"
+jj git push --bookmark "$TARGET"
+jj git fetch
+jj new "$TARGET@origin" -m "empty after landing stack entry $WORK"
+gc bd update "$SPR_PR" --set-metadata spr_status=landed --status=closed --notes "Landed stack $STACK_ID entry $STACK_INDEX change $SPR_CHANGE_ID to $TARGET."
+```
+
+If landing fails, stop and update the work bead:
+
+```bash
+gc bd update "$WORK" --set-metadata spr_blocked_reason="land failed: <reason>"
+```
+"""
+
+[[steps]]
+id = "close"
+title = "Close landed stack entry"
+needs = ["land"]
+description = """
+Close the work bead after the target branch/bookmark is updated:
+
+```bash
+gc bd update "$WORK" \
+  --unset-metadata spr_blocked_reason \
+  --set-metadata gc.outcome=landed \
+  --set-metadata spr_stack_landed_index="$STACK_INDEX" \
+  --status=closed \
+  --notes "Landed stacked SPR backend=$BACKEND stack=$STACK_ID index=$STACK_INDEX change=$SPR_CHANGE_ID target=$TARGET."
+if [ -n "${GC_BEAD_ID:-}" ] && [ "$GC_BEAD_ID" != "$WORK" ]; then
+  gc bd update "$GC_BEAD_ID" --status=closed --set-metadata gc.outcome=pass --notes "Landed $WORK."
+fi
+gc runtime drain-ack
+```
+"""

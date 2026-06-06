@@ -1,0 +1,194 @@
+description = """
+Create or update an independent SPR review object for a work bead.
+
+This formula supports two review backends:
+- github: real jj-spr and GitHub PRs.
+- local: beads-backed PR-like review objects.
+
+Independent reviews can land in any order. Use mol-spr-stack-work for
+parent-to-child stacks.
+"""
+formula = "mol-spr-independent-work"
+
+[vars]
+[vars.issue]
+description = "The work bead ID assigned to this SPR polecat"
+required = true
+
+[vars.target]
+description = "Target bookmark/base branch"
+default = ""
+
+[vars.binding_prefix]
+description = "Import binding prefix for agent identities, including trailing dot when bound."
+default = ""
+
+[[steps]]
+id = "read-assignment"
+title = "Read assignment and confirm independent SPR mode"
+description = """
+Read the work bead and determine the backend and target:
+
+```bash
+WORK="{{issue}}"
+META=$(gc bd show "$WORK" --json | jq '.[0].metadata')
+BACKEND=$(printf '%s\n' "$META" | jq -r '.spr_backend // "local"')
+MODE=$(printf '%s\n' "$META" | jq -r '.spr_mode // "independent"')
+TARGET=$(printf '%s\n' "$META" | jq -r '.spr_target // .target // "{{target}}" // empty')
+if [ -z "$TARGET" ]; then
+  TARGET=$(jj log -r 'trunk()@origin' --no-graph -T 'bookmarks' 2>/dev/null | sed 's/@origin.*//' | awk '{print $1}' | head -1)
+fi
+if [ -z "$TARGET" ]; then
+  echo "No target branch/bookmark found; set metadata.target or spr_target."
+  exit 1
+fi
+if [ "$MODE" != "independent" ]; then
+  gc bd update "$WORK" --set-metadata spr_blocked_reason="routed to independent formula with spr_mode=$MODE; use mol-spr-stack-work"
+  exit 1
+fi
+```
+
+Valid values:
+- `spr_backend`: `local` or `github`
+- `spr_mode`: `independent`
+
+Record the normalized workflow metadata if it is missing:
+
+```bash
+gc bd update "$WORK" \
+  --set-metadata merge_strategy=spr \
+  --set-metadata spr_backend="$BACKEND" \
+  --set-metadata spr_mode=independent \
+  --set-metadata spr_target="$TARGET"
+```
+"""
+
+[[steps]]
+id = "implement"
+title = "Implement work in a jj change"
+needs = ["read-assignment"]
+description = """
+Work in this agent's jj workspace. Keep the change focused.
+
+```bash
+jj st
+jj git fetch
+jj new "$TARGET@origin" -m "spr work {{issue}}"
+jj describe -m "$(cat <<'EOF'
+<imperative title for {{issue}}>
+
+Summary:
+- <what changed>
+- <why this belongs in this review>
+
+Test Plan:
+- <command run, or not run with reason>
+EOF
+)"
+```
+
+Make the requested code/docs/test changes. Use normal project instructions and
+the quality gates from the repo. Keep the jj description current as the review
+evolves; `jj-spr` uses the description body as the GitHub PR body. When done,
+move to an empty working copy:
+
+```bash
+jj new -m "empty after {{issue}}"
+```
+
+Exit criteria: the review change is at `@-`, and `@` is empty or contains no
+intentional work.
+"""
+
+[[steps]]
+id = "verify"
+title = "Run quality gates"
+needs = ["implement"]
+description = """
+Run this repo's configured quality gates. If the work bead or repo instructions
+provide specific commands, use those. At minimum inspect the diff:
+
+```bash
+jj diff --git -r @-
+jj st
+```
+
+All relevant gates must pass before publishing. If a gate fails because of this
+change, fix it. If the failure is pre-existing, file or update a bead and record
+the evidence on {{issue}} before continuing.
+"""
+
+[[steps]]
+id = "publish"
+title = "Publish independent SPR review object"
+needs = ["verify"]
+description = """
+Capture the change id:
+
+```bash
+SPR_CHANGE_ID=$(jj log -r @- --no-graph -T 'change_id.short()')
+TITLE=$(jj log -r @- --no-graph -T 'description.first_line()')
+DESC=$(jj log -r "$SPR_CHANGE_ID" --no-graph -T 'description')
+printf '%s\n' "$DESC" | awk '
+  /^Summary:$/ { in_summary=1; next }
+  /^[[:alpha:] ][[:alpha:] ]*:$/ && in_summary { exit found ? 0 : 1 }
+  in_summary && NF { found=1 }
+  END { exit found ? 0 : 1 }
+' || { echo "review description must contain a non-empty Summary section before publishing"; exit 1; }
+```
+
+For GitHub backend:
+
+```bash
+jj spr diff --cherry-pick -r "$SPR_CHANGE_ID"
+PR_URL=$(jj show -r "$SPR_CHANGE_ID" --no-patch | sed -n 's/^Pull Request: //p' | tail -1)
+PR_NUMBER=$(printf '%s\n' "$PR_URL" | sed -n 's#.*/pull/##p')
+test -n "$PR_URL" || { echo "jj spr diff did not record a Pull Request footer"; exit 1; }
+gc bd update "$WORK" \
+  --set-metadata merge_strategy=spr \
+  --set-metadata spr_backend=github \
+  --set-metadata spr_mode=independent \
+  --set-metadata spr_target="$TARGET" \
+  --set-metadata spr_change_id="$SPR_CHANGE_ID" \
+  --set-metadata pr_url="$PR_URL" \
+  --set-metadata pr_number="$PR_NUMBER"
+```
+
+For local backend:
+
+```bash
+SPR_META=$(jq -nc \
+  --arg target "$TARGET" \
+  --arg change "$SPR_CHANGE_ID" \
+  --arg work "$WORK" \
+  '{spr_backend:"local", spr_status:"open", review_status:"pending", ci_status:"pending", mergeable:"unknown", spr_mode:"independent", spr_target:$target, spr_change_id:$change, source_work:$work}')
+SPR_PR=$(gc bd create "SPR: $TITLE" --type=spr-pr --metadata "$SPR_META" --json | jq -r '.id // .[0].id')
+test -n "$SPR_PR" || { echo "failed to create local spr-pr bead"; exit 1; }
+gc bd update "$WORK" \
+  --set-metadata merge_strategy=spr \
+  --set-metadata spr_backend=local \
+  --set-metadata spr_mode=independent \
+  --set-metadata spr_target="$TARGET" \
+  --set-metadata spr_change_id="$SPR_CHANGE_ID" \
+  --set-metadata spr_pr_bead="$SPR_PR"
+```
+"""
+
+[[steps]]
+id = "handoff"
+title = "Assign work to SPR lander and drain"
+needs = ["publish"]
+description = """
+Assign the work bead to the rig SPR lander:
+
+```bash
+LANDER="${GC_RIG:+$GC_RIG/}{{binding_prefix}}spr-lander"
+gc bd update "$WORK" --assignee="$LANDER" --set-metadata gc.routed_to="{{binding_prefix}}spr-lander"
+if [ -n "${GC_BEAD_ID:-}" ] && [ "$GC_BEAD_ID" != "$WORK" ]; then
+  gc bd update "$GC_BEAD_ID" --status=closed --set-metadata gc.outcome=pass --notes "Published independent SPR review for $WORK."
+fi
+gc runtime drain-ack
+```
+
+Do not close the work bead. The lander closes it after landing.
+"""
