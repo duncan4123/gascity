@@ -567,12 +567,9 @@ func checkHardDependencies(cityPath string) []missingDep {
 	}
 
 	needsBd := initNeedsBdTooling(cityPath)
-	needsDolt := needsBd && !cityUsesDoltliteBeadsBackend(cityPath)
+	needsDolt := needsBd && resolveBeadsBackend(cityPath).NeedsDoltBinary()
 
-	bdMin := bdMinVersion
-	if needsBd && cityUsesDoltliteBeadsBackend(cityPath) {
-		bdMin = bdDoltliteMinVersion
-	}
+	bdMin := resolveBeadsBackend(cityPath).MinBDVersion()
 
 	deps := []dep{
 		{
@@ -702,7 +699,7 @@ func initNeedsLocalDoltIdentity(cityPath string) bool {
 	if gcDoltSkip() {
 		return false
 	}
-	if cityUsesDoltliteBeadsBackend(cityPath) {
+	if !resolveBeadsBackend(cityPath).NeedsDoltBinary() {
 		return false
 	}
 

@@ -1,4 +1,4 @@
-//go:build !cgo || !gascity_native_beads
+//go:build !cgo
 
 package main
 
