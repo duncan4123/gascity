@@ -44,7 +44,7 @@ doltlite C source              beads-doltlite Go source          gascity Go sour
 4. `bd` binary provides beads CLI; Gas Town's `gc bd` commands shell out to it
 5. Gas Town's `gc` binary embeds pack definitions (including the bd pack with `gc-beads-bd.sh` wrapper)
 
-The `gc beads-doltlite build` command is pack-managed. It still requires an existing `gc` binary to run the city and dispatch pack commands, then it builds libdoltlite-linked replacements to `<beads-doltlite>/bin/bd` and `<gascity>/bin/gc` by default. Use `gc beads-doltlite build all` for both binaries. Add `--install` to copy verified binaries to the active binary path when it is under `$HOME`, otherwise `$HOME/.local/bin`. Use `--install-dir`, `--bd-install`, and `--gc-install` to choose exact install paths.
+The `gc beads-doltlite build` command is pack-managed. It still requires an existing `gc` binary to run the city and dispatch pack commands, then it builds libdoltlite-linked replacements to `<beads-doltlite>/bin/bd` and `<gascity>/bin/gc` by default. Use `gc beads-doltlite build all` for both binaries. Add `--install` to copy verified binaries to the existing supervisor unit's `gc` path when present, then to the active binary path when it is under `$HOME`, otherwise `$HOME/.local/bin`. Use `--install-dir`, `--bd-install`, and `--gc-install` to choose exact install paths.
 
 Installing a rebuilt `bd` affects new `gc bd` calls as soon as that `bd` path is first on `PATH`. Installing a rebuilt `gc` affects new `gc` invocations immediately, but a running controller still uses the old in-memory binary until it is reloaded or restarted.
 
