@@ -1,0 +1,499 @@
+package config
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+	"github.com/gastownhall/gascity/internal/citylayout"
+	"github.com/gastownhall/gascity/internal/fsys"
+)
+
+const (
+	legacyRigPathSiteBindingWarningFragment = "still declares path in city.toml; move it to .gc/site.toml"
+	unknownRigSiteBindingWarningPrefix      = ".gc/site.toml declares a binding for unknown rig "
+	legacyWorkspaceIdentityWarningFragment  = "workspace identity fields are deprecated in v2; move them to .gc/site.toml"
+	legacyRigPathSurfaceWarningFragment     = "rig.path is deprecated in v2; move it to .gc/site.toml"
+)
+
+// IsNonFatalSiteBindingWarning reports whether warning is migration guidance
+// that should stay non-fatal in strict mode.
+func IsNonFatalSiteBindingWarning(warning string) bool {
+	return strings.Contains(warning, legacyRigPathSiteBindingWarningFragment) ||
+		strings.Contains(warning, legacyWorkspaceIdentityWarningFragment) ||
+		strings.Contains(warning, legacyRigPathSurfaceWarningFragment) ||
+		strings.HasPrefix(warning, unknownRigSiteBindingWarningPrefix)
+}
+
+func legacyRigPathSiteBindingWarning(name string) string {
+	return fmt.Sprintf("rig %q %s (run `gc doctor --fix`)", name, legacyRigPathSiteBindingWarningFragment)
+}
+
+func missingRigSiteBindingWarning(name string) string {
+	return fmt.Sprintf(
+		"rig %q is declared in city.toml but has no path binding in .gc/site.toml; run `gc rig add <dir> --name %s` to bind it",
+		name,
+		name,
+	)
+}
+
+func unknownRigSiteBindingWarning(name string) string {
+	return fmt.Sprintf("%s%q", unknownRigSiteBindingWarningPrefix, name)
+}
+
+// DetectLegacySiteBindingSurfaces returns migration warnings for pre-1.0
+// workspace identity and rig-path declarations. Schema-2 root-city compose
+// paths now promote rig.path to a hard error, but callers that intentionally
+// need advisory-only diagnostics can still use this helper.
+func DetectLegacySiteBindingSurfaces(cfg *City, source string) []string {
+	if cfg == nil {
+		return nil
+	}
+
+	warnings := legacyWorkspaceIdentitySurfaceWarnings(cfg, source)
+	warnings = append(warnings, legacyRigPathSurfaceWarnings(cfg, source)...)
+	return warnings
+}
+
+func legacyWorkspaceIdentitySurfaceWarnings(cfg *City, source string) []string {
+	if cfg == nil {
+		return nil
+	}
+
+	var warnings []string
+	var workspaceFields []string
+	if strings.TrimSpace(cfg.Workspace.Name) != "" {
+		workspaceFields = append(workspaceFields, "workspace.name")
+	}
+	if strings.TrimSpace(cfg.Workspace.Prefix) != "" {
+		workspaceFields = append(workspaceFields, "workspace.prefix")
+	}
+	if len(workspaceFields) > 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"%s: %s (%s); move them to .gc/site.toml (run `gc doctor --fix` if this is the root city.toml; fragments must be updated by hand)",
+			source,
+			legacyWorkspaceIdentityWarningFragment,
+			strings.Join(workspaceFields, ", "),
+		))
+	}
+
+	return warnings
+}
+
+func legacyRigPathSurfaceWarnings(cfg *City, source string) []string {
+	if cfg == nil {
+		return nil
+	}
+
+	var warnings []string
+	for _, rig := range cfg.Rigs {
+		if strings.TrimSpace(rig.Path) == "" {
+			continue
+		}
+		rigName := strings.TrimSpace(rig.Name)
+		if rigName == "" {
+			rigName = "<unnamed>"
+		}
+		warnings = append(warnings, fmt.Sprintf(
+			"%s: %s for rig %q; move it to .gc/site.toml (run `gc doctor --fix` if this is the root city.toml; otherwise add the binding manually and remove rig.path from the fragment)",
+			source,
+			legacyRigPathSurfaceWarningFragment,
+			rigName,
+		))
+	}
+
+	return warnings
+}
+
+// LegacySiteBindingSurfaceErrors returns hard-error diagnostics for pre-1.0
+// workspace identity and rig-path declarations that should now live in
+// .gc/site.toml instead of city config.
+func LegacySiteBindingSurfaceErrors(cfg *City, source string, data ...[]byte) []string {
+	if cfg == nil {
+		return nil
+	}
+
+	locator := optionalConfigDiagnosticLocator(data)
+	var errors []string
+	for _, rig := range cfg.Rigs {
+		if strings.TrimSpace(rig.Path) == "" {
+			continue
+		}
+		rigName := strings.TrimSpace(rig.Name)
+		if rigName == "" {
+			rigName = "<unnamed>"
+		}
+		errors = append(errors, fmt.Sprintf(
+			"%s: unsupported pre-1.0 rig.path for rig %q; move it to .gc/site.toml (run `gc doctor --fix` if this is the root city.toml; otherwise add the binding manually and remove rig.path from the fragment)",
+			sourceWithDiagnosticLine(source, locator.lineForRigPath(rigName)),
+			rigName,
+		))
+	}
+
+	return errors
+}
+
+// LegacySiteBindingSurfaceError aggregates unsupported pre-1.0 site-binding
+// surfaces into one load-time error for schema=2 enforcement paths.
+func LegacySiteBindingSurfaceError(cfg *City, source string, data ...[]byte) error {
+	violations := LegacySiteBindingSurfaceErrors(cfg, source, data...)
+	return configSurfaceError("pre-1.0 site-binding fields are no longer supported", violations)
+}
+
+// SiteBindingPath returns the machine-local site binding file for a city.
+func SiteBindingPath(cityRoot string) string {
+	return filepath.Join(cityRoot, citylayout.RuntimeRoot, "site.toml")
+}
+
+// SiteBinding stores machine-local rig bindings for a city.
+type SiteBinding struct {
+	WorkspaceName   string           `toml:"workspace_name,omitempty"`
+	WorkspacePrefix string           `toml:"workspace_prefix,omitempty"`
+	Rigs            []RigSiteBinding `toml:"rig,omitempty"`
+}
+
+// RigSiteBinding binds a declared rig name to a machine-local path.
+type RigSiteBinding struct {
+	Name string `toml:"name"`
+	Path string `toml:"path,omitempty"`
+}
+
+// LoadSiteBinding reads .gc/site.toml. Missing files return an empty binding.
+func LoadSiteBinding(fs fsys.FS, cityRoot string) (*SiteBinding, error) {
+	path := SiteBindingPath(cityRoot)
+	data, err := fs.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &SiteBinding{}, nil
+		}
+		return nil, fmt.Errorf("loading site binding %q: %w", path, err)
+	}
+	var binding SiteBinding
+	if _, err := toml.Decode(string(data), &binding); err != nil {
+		return nil, fmt.Errorf("parsing site binding %q: %w", path, err)
+	}
+	return &binding, nil
+}
+
+// ApplySiteBindings overlays .gc/site.toml onto cfg. Site bindings take
+// precedence, but legacy city.toml rig paths still flow through as a
+// compatibility fallback until users migrate them into .gc/site.toml.
+func ApplySiteBindings(fs fsys.FS, cityRoot string, cfg *City) ([]string, error) {
+	return applySiteBindings(fs, cityRoot, cfg, false)
+}
+
+// ApplySiteBindingsForEdit overlays .gc/site.toml for config-edit flows but
+// retains raw city.toml paths as a fallback so edit commands can migrate them
+// into .gc/site.toml on write.
+func ApplySiteBindingsForEdit(fs fsys.FS, cityRoot string, cfg *City) ([]string, error) {
+	return applySiteBindings(fs, cityRoot, cfg, true)
+}
+
+func applySiteBindings(fs fsys.FS, cityRoot string, cfg *City, keepLegacy bool) ([]string, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	binding, err := LoadSiteBinding(fs, cityRoot)
+	if err != nil {
+		return nil, err
+	}
+	applyWorkspaceIdentityBinding(cityRoot, binding, cfg)
+	paths := make(map[string]string, len(binding.Rigs))
+	for _, rig := range binding.Rigs {
+		name := strings.TrimSpace(rig.Name)
+		path := strings.TrimSpace(rig.Path)
+		if name == "" || path == "" {
+			continue
+		}
+		paths[name] = path
+	}
+
+	var warnings []string
+	seen := make(map[string]struct{}, len(cfg.Rigs))
+	for i := range cfg.Rigs {
+		name := cfg.Rigs[i].Name
+		seen[name] = struct{}{}
+		legacyPath := strings.TrimSpace(cfg.Rigs[i].Path)
+		if path, ok := paths[name]; ok {
+			cfg.Rigs[i].Path = path
+			continue
+		}
+		if keepLegacy || legacyPath != "" {
+			cfg.Rigs[i].Path = legacyPath
+			if legacyPath != "" && !keepLegacy {
+				warnings = append(warnings, legacyRigPathSiteBindingWarning(name))
+			}
+			continue
+		}
+		cfg.Rigs[i].Path = ""
+		if !keepLegacy {
+			warnings = append(warnings, missingRigSiteBindingWarning(name))
+		}
+	}
+	for name := range paths {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		warnings = append(warnings, unknownRigSiteBindingWarning(name))
+	}
+	sort.Strings(warnings)
+	return warnings, nil
+}
+
+// ResolveWorkspaceIdentity applies workspace identity from site binding when
+// present, otherwise falls back to declared config and finally directory
+// basename. Callers that need the effective city identity without mutating raw
+// workspace fields should use this helper.
+func ResolveWorkspaceIdentity(fs fsys.FS, cityRoot string, cfg *City) error {
+	if cfg == nil {
+		return nil
+	}
+	binding, err := LoadSiteBinding(fs, cityRoot)
+	if err != nil {
+		return err
+	}
+	applyWorkspaceIdentityBinding(cityRoot, binding, cfg)
+	return nil
+}
+
+func applyWorkspaceIdentityBinding(cityRoot string, binding *SiteBinding, cfg *City) {
+	if cfg == nil {
+		return
+	}
+	name := strings.TrimSpace(filepath.Base(filepath.Clean(cityRoot)))
+	if raw := strings.TrimSpace(cfg.Workspace.Name); raw != "" {
+		name = raw
+	}
+	if binding != nil {
+		if site := strings.TrimSpace(binding.WorkspaceName); site != "" {
+			name = site
+		}
+	}
+	cfg.ResolvedWorkspaceName = name
+
+	prefix := strings.TrimSpace(cfg.Workspace.Prefix)
+	if binding != nil {
+		if site := strings.TrimSpace(binding.WorkspacePrefix); site != "" {
+			prefix = site
+		}
+	}
+	cfg.ResolvedWorkspacePrefix = prefix
+}
+
+// PersistRigSiteBindings writes the current machine-local rig bindings to
+// .gc/site.toml. Rigs without paths are left unbound and omitted. Existing
+// bindings for rig names not represented by the current city config are
+// preserved so non-doctor edits do not silently delete orphan bindings.
+func PersistRigSiteBindings(fs fsys.FS, cityRoot string, rigs []Rig) error {
+	return persistRigSiteBindings(fs, cityRoot, rigs, nil)
+}
+
+func persistRigSiteBindings(fs fsys.FS, cityRoot string, rigs []Rig, removedRigNames map[string]struct{}) error {
+	existing, err := LoadSiteBinding(fs, cityRoot)
+	if err != nil {
+		return err
+	}
+	declaredNames := make(map[string]struct{}, len(rigs))
+	binding := SiteBinding{
+		WorkspaceName:   strings.TrimSpace(existing.WorkspaceName),
+		WorkspacePrefix: strings.TrimSpace(existing.WorkspacePrefix),
+		Rigs:            make([]RigSiteBinding, 0, len(rigs)+len(existing.Rigs)),
+	}
+	for _, rig := range rigs {
+		name := strings.TrimSpace(rig.Name)
+		path := strings.TrimSpace(rig.Path)
+		if name == "" {
+			continue
+		}
+		declaredNames[name] = struct{}{}
+		if path == "" {
+			continue
+		}
+		binding.Rigs = append(binding.Rigs, RigSiteBinding{Name: name, Path: path})
+	}
+	for _, rig := range existing.Rigs {
+		name := strings.TrimSpace(rig.Name)
+		path := strings.TrimSpace(rig.Path)
+		if name == "" || path == "" {
+			continue
+		}
+		if _, removed := removedRigNames[name]; removed {
+			continue
+		}
+		if _, ok := declaredNames[name]; ok {
+			continue
+		}
+		binding.Rigs = append(binding.Rigs, RigSiteBinding{Name: name, Path: path})
+	}
+	sort.Slice(binding.Rigs, func(i, j int) bool {
+		if binding.Rigs[i].Name != binding.Rigs[j].Name {
+			return binding.Rigs[i].Name < binding.Rigs[j].Name
+		}
+		return binding.Rigs[i].Path < binding.Rigs[j].Path
+	})
+
+	return persistSiteBinding(fs, cityRoot, binding)
+}
+
+// WriteCityAndRigSiteBindingsForEdit writes the checked-in city.toml form and
+// the matching machine-local rig bindings as a recoverable pair. If the site
+// binding write fails after city.toml is changed, the previous city.toml and
+// .gc/site.toml contents are restored before returning the error.
+func WriteCityAndRigSiteBindingsForEdit(fs fsys.FS, tomlPath string, cfg *City) error {
+	return writeCityAndRigSiteBindingsForEdit(fs, tomlPath, cfg, nil)
+}
+
+// WriteCityAndRigSiteBindingsForEditRemovingRigs writes city.toml and
+// .gc/site.toml while removing bindings for rig names that were intentionally
+// deleted from the city config.
+func WriteCityAndRigSiteBindingsForEditRemovingRigs(fs fsys.FS, tomlPath string, cfg *City, removedRigNames ...string) error {
+	return writeCityAndRigSiteBindingsForEdit(fs, tomlPath, cfg, rigNameSet(removedRigNames))
+}
+
+func writeCityAndRigSiteBindingsForEdit(fs fsys.FS, tomlPath string, cfg *City, removedRigNames map[string]struct{}) error {
+	cityRoot := filepath.Dir(tomlPath)
+	content, err := cfg.MarshalForWrite()
+	if err != nil {
+		return err
+	}
+	snapshot, err := snapshotCityAndSiteFiles(fs, tomlPath, SiteBindingPath(cityRoot))
+	if err != nil {
+		return err
+	}
+	if err := fsys.WriteFileIfChangedAtomic(fs, tomlPath, content, 0o644); err != nil {
+		return err
+	}
+	if err := persistRigSiteBindings(fs, cityRoot, cfg.Rigs, removedRigNames); err != nil {
+		if restoreErr := snapshot.restore(fs); restoreErr != nil {
+			return fmt.Errorf("writing .gc/site.toml failed and restoring city.toml/site binding failed: %w", errors.Join(err, restoreErr))
+		}
+		return fmt.Errorf("writing .gc/site.toml failed; restored city.toml and previous site binding, fix the site binding write error and retry: %w", err)
+	}
+	return nil
+}
+
+func rigNameSet(names []string) map[string]struct{} {
+	if len(names) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		set[name] = struct{}{}
+	}
+	return set
+}
+
+type configFileRestoreSnapshot struct {
+	files map[string]configFileSnapshot
+}
+
+type configFileSnapshot struct {
+	data    []byte
+	mode    os.FileMode
+	existed bool
+}
+
+func snapshotCityAndSiteFiles(fs fsys.FS, paths ...string) (*configFileRestoreSnapshot, error) {
+	snapshot := &configFileRestoreSnapshot{files: make(map[string]configFileSnapshot, len(paths))}
+	for _, path := range paths {
+		fileSnapshot, err := snapshotConfigFile(fs, path)
+		if err != nil {
+			return nil, err
+		}
+		snapshot.files[path] = fileSnapshot
+	}
+	return snapshot, nil
+}
+
+func snapshotConfigFile(fs fsys.FS, path string) (configFileSnapshot, error) {
+	data, err := fs.ReadFile(path)
+	switch {
+	case err == nil:
+		mode := os.FileMode(0o644)
+		if info, statErr := fs.Stat(path); statErr == nil {
+			mode = info.Mode().Perm()
+		}
+		return configFileSnapshot{data: data, mode: mode, existed: true}, nil
+	case os.IsNotExist(err):
+		return configFileSnapshot{}, nil
+	default:
+		return configFileSnapshot{}, fmt.Errorf("snapshotting %s: %w", path, err)
+	}
+}
+
+func (s *configFileRestoreSnapshot) restore(fs fsys.FS) error {
+	var restoreErr error
+	paths := make([]string, 0, len(s.files))
+	for path := range s.files {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		file := s.files[path]
+		if !file.existed {
+			if err := fs.Remove(path); err != nil && !os.IsNotExist(err) {
+				restoreErr = errors.Join(restoreErr, fmt.Errorf("removing %s: %w", path, err))
+			}
+			continue
+		}
+		if err := fs.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("creating %s: %w", filepath.Dir(path), err))
+			continue
+		}
+		if err := fsys.WriteFileAtomic(fs, path, file.data, file.mode); err != nil {
+			restoreErr = errors.Join(restoreErr, fmt.Errorf("restoring %s: %w", path, err))
+		}
+	}
+	return restoreErr
+}
+
+// PersistWorkspaceSiteBinding writes machine-local workspace identity to
+// .gc/site.toml while preserving any existing rig bindings.
+func PersistWorkspaceSiteBinding(fs fsys.FS, cityRoot, name, prefix string) error {
+	existing, err := LoadSiteBinding(fs, cityRoot)
+	if err != nil {
+		return err
+	}
+	binding := SiteBinding{
+		WorkspaceName:   strings.TrimSpace(name),
+		WorkspacePrefix: strings.TrimSpace(prefix),
+		Rigs:            append([]RigSiteBinding(nil), existing.Rigs...),
+	}
+	return persistSiteBinding(fs, cityRoot, binding)
+}
+
+func persistSiteBinding(fs fsys.FS, cityRoot string, binding SiteBinding) error {
+	path := SiteBindingPath(cityRoot)
+	if len(binding.Rigs) == 0 && binding.WorkspaceName == "" && binding.WorkspacePrefix == "" {
+		if err := fs.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing site binding %q: %w", path, err)
+		}
+		return nil
+	}
+
+	var buf bytes.Buffer
+	enc := toml.NewEncoder(&buf)
+	enc.Indent = ""
+	if err := enc.Encode(binding); err != nil {
+		return fmt.Errorf("marshaling site binding: %w", err)
+	}
+	if err := fs.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating runtime dir %q: %w", filepath.Dir(path), err)
+	}
+	// Skip the write when on-disk content already matches. Keeps repeated
+	// rig/suspend/resume/agent commands idempotent instead of churning
+	// .gc/site.toml mtime (and breaking watcher debounce logic).
+	if err := fsys.WriteFileIfChangedAtomic(fs, path, buf.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("writing site binding %q: %w", path, err)
+	}
+	return nil
+}
