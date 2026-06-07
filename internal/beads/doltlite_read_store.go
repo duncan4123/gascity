@@ -294,7 +294,8 @@ func (s *DoltliteReadStore) ListByMetadata(filters map[string]string, limit int,
 
 func (s *DoltliteReadStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 	rq := readyQueryFromArgs(query)
-	cacheKey := fmt.Sprintf("%s\x00%d\x00%d", rq.Assignee, rq.Limit, rq.TierMode)
+	assignees := readyQueryAssignees(rq)
+	cacheKey := fmt.Sprintf("%s\x00%d\x00%d", strings.Join(assignees, "\x1f"), rq.Limit, rq.TierMode)
 	hash, err := s.currentDoltHash()
 	if err != nil {
 		return nil, err
@@ -309,8 +310,12 @@ func (s *DoltliteReadStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 	s.readyMu.Unlock()
 
 	q := ListQuery{Status: "open", AllowScan: true, IncludeClosed: false, Limit: 0, SkipLabels: true}
-	if rq.Assignee != "" {
-		q.Assignee = rq.Assignee
+	switch len(assignees) {
+	case 0:
+	case 1:
+		q.Assignee = assignees[0]
+	default:
+		q.Assignees = assignees
 	}
 	if rq.Limit > 0 {
 		q.Limit = rq.Limit

@@ -1,1 +1,1 @@
-description = "Build gc or bd against libdoltlite"
+description = "Build gc, bd, or the DoltLite client against libdoltlite"

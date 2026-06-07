@@ -691,7 +691,7 @@ func TestBeadsDoltlitePackIncludesLibdoltliteBuildCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(%s): %v", manifestPath, err)
 	}
-	if !strings.Contains(string(manifest), "Build gc or bd against libdoltlite") {
+	if !strings.Contains(string(manifest), "Build gc, bd, or the DoltLite client against libdoltlite") {
 		t.Fatalf("build command manifest missing libdoltlite description:\n%s", manifest)
 	}
 
@@ -702,7 +702,7 @@ func TestBeadsDoltlitePackIncludesLibdoltliteBuildCommand(t *testing.T) {
 	}
 	text := string(script)
 	for _, want := range []string{
-		"usage: gc beads-doltlite build [gc|bd|all]",
+		"usage: gc beads-doltlite build [gc|bd|client|all]",
 		"--gc-source",
 		"--bd-source",
 		"--gc-output",
