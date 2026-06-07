@@ -1191,9 +1191,6 @@ func bdRuntimeEnvForRigWithError(cityPath string, cfg *config.City, rigPath stri
 
 func nativeDoltOpenEnvForScope(cityPath string, cfg *config.City, scopeRoot string) (map[string]string, error) {
 	scopeRoot = resolveStoreScopeRoot(cityPath, scopeRoot)
-	if samePath(scopeRoot, cityPath) {
-		return bdRuntimeEnvWithError(cityPath)
-	}
 	if cfg == nil {
 		loaded, err := loadCityConfig(cityPath, io.Discard)
 		if err != nil {
@@ -1201,7 +1198,24 @@ func nativeDoltOpenEnvForScope(cityPath string, cfg *config.City, scopeRoot stri
 		}
 		cfg = loaded
 	}
-	return bdRuntimeEnvForRigWithError(cityPath, cfg, scopeRoot)
+	withPrefix := func(env map[string]string) map[string]string {
+		if prefix := issuePrefixForScope(scopeRoot, cityPath, cfg); prefix != "" {
+			env["GC_BEADS_PREFIX"] = prefix
+		}
+		return env
+	}
+	if samePath(scopeRoot, cityPath) {
+		env, err := bdRuntimeEnvWithError(cityPath)
+		if err != nil {
+			return nil, err
+		}
+		return withPrefix(env), nil
+	}
+	env, err := bdRuntimeEnvForRigWithError(cityPath, cfg, scopeRoot)
+	if err != nil {
+		return nil, err
+	}
+	return withPrefix(env), nil
 }
 
 func bdRuntimeEnvWithError(cityPath string) (map[string]string, error) {
