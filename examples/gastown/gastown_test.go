@@ -1757,6 +1757,29 @@ func TestPromptGuidanceUsesConfiguredRigRootsAndNamespacedWorktrees(t *testing.T
 	}
 }
 
+func TestPromptRemoteAdviceAnchorsToRigRoot(t *testing.T) {
+	dir := exampleDir()
+	checks := []struct {
+		rel string
+	}{
+		{"packs/gastown/agents/mayor/prompt.template.md"},
+		{"packs/gastown/assets/prompts/crew.template.md"},
+	}
+	for _, check := range checks {
+		data, err := os.ReadFile(filepath.Join(dir, check.rel))
+		if err != nil {
+			t.Fatalf("reading %s: %v", check.rel, err)
+		}
+		body := string(data)
+		if !strings.Contains(body, "git -C <rig-root> remote -v") {
+			t.Errorf("%s missing rig-root-anchored remote guidance", check.rel)
+		}
+		if strings.Contains(body, "git remote -v") {
+			t.Errorf("%s still uses bare git remote -v guidance", check.rel)
+		}
+	}
+}
+
 func TestGastownRoutedToTargetsUseBindingPrefix(t *testing.T) {
 	dir := exampleDir()
 	checks := []struct {
