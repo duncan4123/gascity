@@ -2226,6 +2226,32 @@ func TestBdStoreReadyDoesNotSpecialCaseSyntheticMetadata(t *testing.T) {
 	}
 }
 
+func TestBdStoreReadyWithPluralAssigneesFiltersClientSide(t *testing.T) {
+	runner := fakeRunner(map[string]struct {
+		out []byte
+		err error
+	}{
+		`bd ready --json --include-ephemeral --limit 0`: {
+			out: []byte(`[
+				{"id":"bd-worker-1","title":"ready one","status":"open","issue_type":"task","assignee":"worker-1","created_at":"2025-01-15T10:30:00Z"},
+				{"id":"bd-worker-3","title":"wrong assignee","status":"open","issue_type":"task","assignee":"worker-3","created_at":"2025-01-15T10:31:00Z"},
+				{"id":"bd-worker-2","title":"ready two","status":"open","issue_type":"task","assignee":"worker-2","created_at":"2025-01-15T10:32:00Z","ephemeral":true}
+			]`),
+		},
+	})
+	s := beads.NewBdStore("/city", runner)
+	got, err := s.Ready(beads.ReadyQuery{
+		Assignees: []string{"worker-1", "worker-2"},
+		TierMode:  beads.TierBoth,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := beadIDs(got); !reflect.DeepEqual(ids, []string{"bd-worker-1", "bd-worker-2"}) {
+		t.Fatalf("Ready plural assignees ids = %v, want [bd-worker-1 bd-worker-2]", ids)
+	}
+}
+
 func TestBdStoreReadyFiltersExcludedLabelsBeforeLimit(t *testing.T) {
 	runner := fakeRunner(map[string]struct {
 		out []byte

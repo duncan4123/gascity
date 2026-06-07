@@ -1100,12 +1100,12 @@ func collectAssignedWorkBeadsWithStores(
 					errs = append(errs, fmt.Errorf("Ready(): %w", err))
 				}
 			} else {
-				for _, assignee := range assignees {
-					part, partErr := liveReadyForControllerDemandQuery(source.store, beads.ReadyQuery{Assignee: assignee, Limit: assignedWorkReadyLimit(cfg)})
-					if partErr != nil {
-						errs = append(errs, fmt.Errorf("Ready(assignee=%q): %w", assignee, partErr))
-					}
-					ready = append(ready, part...)
+				ready, err = liveReadyForControllerDemandQuery(source.store, beads.ReadyQuery{
+					Assignees: assignees,
+					Limit:     assignedWorkReadyLimit(cfg),
+				})
+				if err != nil {
+					errs = append(errs, fmt.Errorf("Ready(assignees=%q): %w", strings.Join(assignees, ","), err))
 				}
 			}
 			var readyBeads []beads.Bead

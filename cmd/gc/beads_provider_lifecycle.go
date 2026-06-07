@@ -565,9 +565,6 @@ func initAndHookDir(cityPath, dir, prefix string) error {
 			return fmt.Errorf("verifying canonical scope database after init: %w", err)
 		}
 	}
-	if cityUsesDoltliteBeadsBackend(cityPath) {
-		return nil
-	}
 	// Non-fatal: hooks are convenience (event forwarding), not critical.
 	// Skip for doltlite backends: hooks emit events to the dolt-backed
 	// event log, which doltlite-native stores don't use.
