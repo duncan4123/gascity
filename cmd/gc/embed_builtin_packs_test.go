@@ -813,6 +813,35 @@ func TestMaterializeBuiltinPacks_PrunesStaleGeneratedPackFiles(t *testing.T) {
 	}
 }
 
+func TestMaterializeBuiltinPacks_PreservesBeadsDoltliteBuildDetails(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := MaterializeBuiltinPacks(dir); err != nil {
+		t.Fatalf("MaterializeBuiltinPacks() error: %v", err)
+	}
+
+	packDir := filepath.Join(dir, citylayout.SystemPacksRoot, "beads-doltlite")
+	stampPath := filepath.Join(packDir, "last-build-gc.json")
+	stalePath := filepath.Join(packDir, "removed-generated-file.txt")
+	if err := os.WriteFile(stampPath, []byte(`{"target":"gc"}`), 0o644); err != nil {
+		t.Fatalf("write build stamp: %v", err)
+	}
+	if err := os.WriteFile(stalePath, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("write stale file: %v", err)
+	}
+
+	if err := MaterializeBuiltinPacks(dir); err != nil {
+		t.Fatalf("MaterializeBuiltinPacks() second call error: %v", err)
+	}
+
+	if _, err := os.Stat(stampPath); err != nil {
+		t.Fatalf("build stamp was not preserved: %v", err)
+	}
+	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
+		t.Fatalf("unrelated stale file still exists: %s", stalePath)
+	}
+}
+
 func TestMaterializeBuiltinPacks_PruneIgnoresAtomicTempFilesForDesiredAssets(t *testing.T) {
 	dir := t.TempDir()
 
@@ -1397,12 +1426,32 @@ func TestBeadsDoltlitePackIncludesLibdoltliteBuildCommand(t *testing.T) {
 		"--install-dir",
 		"--gc-install",
 		"--bd-install",
+		"--build-details-dir",
+		"--no-restart",
+		"GC_DOLTLITE_RESTART_AFTER_INSTALL",
+		"GC_DOLTLITE_RESTART_WAIT_SECONDS",
+		"GC_DOLTLITE_GO_CACHE_ROOT",
+		"GOCACHE=\"$GO_CACHE_ROOT/build\"",
+		"GOMODCACHE=\"$GO_CACHE_ROOT/mod\"",
+		"GOTMPDIR=\"$GO_CACHE_ROOT/tmp\"",
+		"--restart",
+		"Stop supervisor/city before building gc, then start after install",
+		"stop_before_gc_build",
+		"start_after_gc_install",
+		"stop_supervisor_if_running",
+		"stop_standalone_controller_if_running",
+		"stop_leftover_controller_if_running",
+		"supervisor stop --wait",
+		"start \"$CITY_ROOT\"",
 		"CGO_ENABLED=1",
 		"-tags=${tags}",
 		"gascity_doltlite_lib,libsqlite3",
 		"common_env_prefix \"libsqlite3\"",
 		"install_binary",
 		"mv -f \"$tmp\" \"$dest\"",
+		"write_build_details",
+		"last-build-${name}.json",
+		"sha256_for",
 		"./cmd/gc",
 		"./cmd/bd",
 		"CGO_LDFLAGS",
