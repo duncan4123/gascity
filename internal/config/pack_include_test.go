@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -306,5 +307,60 @@ func TestValidateInstalledRemoteCacheLockedMemoizesSuccess(t *testing.T) {
 	}
 	if calls == first {
 		t.Fatalf("changed checkout should re-run git; calls stayed %d", calls)
+	}
+}
+
+func TestRemoteCacheFingerprintTracksLinkedWorktreeIndex(t *testing.T) {
+	repoDir := t.TempDir()
+	worktreeDir := filepath.Join(t.TempDir(), "worktree")
+	sourceDir := filepath.Join(t.TempDir(), "source")
+
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		fullArgs := append([]string{"-c", "core.hooksPath="}, args...)
+		cmd := exec.Command("git", fullArgs...)
+		if dir != "" {
+			cmd.Dir = dir
+		}
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %s: %v", strings.Join(args, " "), out, err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	git("", "init", "--initial-branch=main", repoDir)
+	if err := os.WriteFile(filepath.Join(repoDir, "pack.toml"), []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(repoDir, "add", "-A")
+	git(repoDir, "commit", "-m", "v1")
+
+	git("", "clone", repoDir, sourceDir)
+	git(sourceDir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(sourceDir, "pack.toml"), []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(sourceDir, "add", "-A")
+	git(sourceDir, "commit", "-m", "v2")
+	git(sourceDir, "push", "origin", "feature:feature")
+	git(repoDir, "worktree", "add", "--detach", worktreeDir, "HEAD")
+
+	before := remoteCacheFingerprint(worktreeDir)
+	git(worktreeDir, "checkout", "-q", "feature")
+	after := remoteCacheFingerprint(worktreeDir)
+
+	if before == after {
+		t.Fatalf("fingerprint did not change after linked-worktree checkout\nbefore: %s\nafter:  %s", before, after)
+	}
+
+	indexPath := remoteCacheIndexPath(worktreeDir)
+	wantSuffix := filepath.Join(".git", "worktrees")
+	if !strings.Contains(indexPath, wantSuffix) {
+		t.Fatalf("remoteCacheIndexPath = %q, want linked-worktree gitdir under %q", indexPath, wantSuffix)
 	}
 }
