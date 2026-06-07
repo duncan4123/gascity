@@ -152,6 +152,20 @@ func askBeadsBackend(stdin io.Reader, stdout io.Writer) string {
 	}
 }
 
+func applyInitBeadsBackend(cfg *config.City, backend string) {
+	if cfg == nil {
+		return
+	}
+	backend = strings.TrimSpace(backend)
+	if backend == "" {
+		return
+	}
+	cfg.Beads.Backend = backend
+	if resolveBeadsBackendName(backend).Name() == "doltlite" {
+		cfg.Beads.BDCompatibility = config.BeadsBDCompatibility105
+	}
+}
+
 // runWizard runs the interactive init wizard, asking the user to choose a
 // config template and a coding agent provider. If stdin is nil, returns
 // defaultWizardConfig() (non-interactive).
@@ -1311,9 +1325,7 @@ func doInit(fs fsys.FS, cityPath string, wiz wizardConfig, nameOverride string, 
 		cfg = config.DefaultCity(cityName)
 	}
 	applyBootstrapProfile(&cfg, wiz.bootstrapProfile)
-	if strings.TrimSpace(wiz.beadsBackend) != "" {
-		cfg.Beads.Backend = strings.TrimSpace(wiz.beadsBackend)
-	}
+	applyInitBeadsBackend(&cfg, wiz.beadsBackend)
 	cityPrefix := strings.TrimSpace(cfg.Workspace.Prefix)
 
 	// Write prompt files only for the agents declared by the init template.
