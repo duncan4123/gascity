@@ -99,6 +99,7 @@ func TestGraphWorkflowSuccessPath(t *testing.T) {
 		}
 	}
 
+	assertControlDispatcherTrace(t, cityDir)
 	assertControlDispatcherLane(t, cityDir)
 }
 
@@ -160,6 +161,28 @@ func assertControlDispatcherLane(t *testing.T, cityDir string) {
 	workerTrace := readOptionalFile(filepath.Join(cityDir, "graph-workflow-trace.log"))
 	if strings.Contains(workerTrace, "unexpected-control") {
 		t.Fatalf("worker should not receive control beads:\n%s", workerTrace)
+	}
+}
+
+func assertControlDispatcherTrace(t *testing.T, cityDir string) {
+	t.Helper()
+
+	workflowTrace := readOptionalFile(filepath.Join(cityDir, ".gc", "runtime", "control-dispatcher-trace.log"))
+	for _, want := range []string{
+		"serve start agent=",
+		"serve pending bead=",
+		"serve processed bead=",
+	} {
+		if !strings.Contains(workflowTrace, want) {
+			t.Fatalf("control-dispatcher trace missing %s evidence:\n%s", want, workflowTrace)
+		}
+	}
+
+	startIdx := strings.Index(workflowTrace, "serve start agent=")
+	pendingIdx := strings.Index(workflowTrace, "serve pending bead=")
+	processedIdx := strings.Index(workflowTrace, "serve processed bead=")
+	if startIdx > pendingIdx || pendingIdx > processedIdx {
+		t.Fatalf("control-dispatcher trace order wrong: start=%d pending=%d processed=%d\n%s", startIdx, pendingIdx, processedIdx, workflowTrace)
 	}
 }
 
