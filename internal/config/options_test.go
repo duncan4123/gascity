@@ -1103,12 +1103,13 @@ func TestBuiltinProviders_ClaudeHasNilArgsAndOptionDefaults(t *testing.T) {
 	}
 }
 
-func TestBuiltinProviders_CodexHasNilArgsAndOptionDefaults(t *testing.T) {
+func TestBuiltinProviders_CodexHasBaseArgsAndOptionDefaults(t *testing.T) {
 	builtins := BuiltinProviders()
 	codex := builtins["codex"]
 
-	if codex.Args != nil {
-		t.Errorf("codex Args should be nil, got %v", codex.Args)
+	wantArgs := []string{"-c", "shell_environment_policy.inherit=all"}
+	if !reflect.DeepEqual(codex.Args, wantArgs) {
+		t.Errorf("codex Args = %v, want %v", codex.Args, wantArgs)
 	}
 	if codex.OptionDefaults == nil {
 		t.Fatal("codex OptionDefaults should not be nil")
