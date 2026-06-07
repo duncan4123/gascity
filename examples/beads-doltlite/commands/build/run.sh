@@ -19,7 +19,8 @@ Options:
   --bd-output FILE   Build output path for bd. Default: <bd-source>/bin/bd.
   --install          Install built binaries after link verification.
   --install-dir DIR  Install directory for both binaries.
-                     Default: active binary under $HOME, else $HOME/.local/bin.
+                     Default: existing supervisor gc path, active binary under $HOME,
+                     else $HOME/.local/bin.
   --gc-install FILE  Install path for gc.
   --bd-install FILE  Install path for bd.
   --build-details-dir DIR
@@ -158,6 +159,51 @@ verify_linked_binary() {
   fi
 }
 
+path_under_home() {
+  local path="$1"
+  [ -n "$path" ] && [ -n "${HOME:-}" ] && [[ "$path" == "$HOME"/* ]]
+}
+
+supervisor_gc_path() {
+  local unit="gascity-supervisor.service"
+  local value path candidate
+
+  for candidate in \
+    "${XDG_CONFIG_HOME:-${HOME:-}/.config}/systemd/user/$unit" \
+    "${HOME:-}/.local/share/systemd/user/$unit"; do
+    if [ -r "$candidate" ]; then
+      value="$(awk -F= '$1 == "ExecStart" { print substr($0, index($0, "=") + 1); exit }' "$candidate")"
+      if [ -n "$value" ]; then
+        case "$value" in
+          \"*) path="${value#\"}"; path="${path%%\"*}" ;;
+          *) path="${value%% *}" ;;
+        esac
+        if [ -n "$path" ]; then
+          echo "$path"
+          return 0
+        fi
+      fi
+    fi
+  done
+
+  if command -v systemctl >/dev/null 2>&1; then
+    value="$(systemctl --user show "$unit" -p ExecStart --value 2>/dev/null || true)"
+    if [ -n "$value" ]; then
+      path="${value#*path=}"
+      if [ "$path" != "$value" ]; then
+        path="${path%% ;*}"
+        path="${path%%;*}"
+        if [ -n "$path" ]; then
+          echo "$path"
+          return 0
+        fi
+      fi
+    fi
+  fi
+
+  return 1
+}
+
 default_install_path() {
   local name="$1"
   local current=""
@@ -165,14 +211,17 @@ default_install_path() {
     echo "$INSTALL_DIR/$name"
     return 0
   fi
+  if [ "$name" = "gc" ]; then
+    current="$(supervisor_gc_path || true)"
+    if path_under_home "$current"; then
+      echo "$current"
+      return 0
+    fi
+  fi
   current="$(command -v "$name" 2>/dev/null || true)"
-  if [ -n "$current" ] && [ -n "${HOME:-}" ]; then
-    case "$current" in
-      "$HOME"/*)
-        echo "$current"
-        return 0
-        ;;
-    esac
+  if path_under_home "$current"; then
+    echo "$current"
+    return 0
   fi
   if [ -n "${HOME:-}" ]; then
     echo "$HOME/.local/bin/$name"
@@ -312,6 +361,25 @@ controller_field_for_city() {
   local status_file
   status_file="$(mktemp "${TMPDIR:-/tmp}/gc-status.XXXXXX")"
   if ! "$gc_bin" status --json "$CITY_ROOT" >"$status_file" 2>/dev/null && [ ! -s "$status_file" ]; then
+    rm -f "$status_file"
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$field" "$status_file" <<'PY'
+import json
+import sys
+
+field, path = sys.argv[1], sys.argv[2]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(0)
+value = (data.get("controller") or {}).get(field, "")
+if value is None:
+    value = ""
+print(value)
+PY
     rm -f "$status_file"
     return 0
   fi
@@ -815,7 +883,12 @@ fi
 DOLTLITE_LIB="$(abs_dir "$DOLTLITE_LIB")"
 
 if [ -z "$BUILD_DETAILS_DIR" ]; then
-  BUILD_DETAILS_DIR="$PACK_DIR"
+  CITY_PACK_DIR="$CITY_ROOT/.gc/system/packs/beads-doltlite"
+  if [ -d "$CITY_PACK_DIR" ]; then
+    BUILD_DETAILS_DIR="$CITY_PACK_DIR"
+  else
+    BUILD_DETAILS_DIR="$PACK_DIR"
+  fi
 fi
 if [ -z "$GO_CACHE_ROOT" ]; then
   GO_CACHE_ROOT="$CITY_ROOT/.cache/go"
