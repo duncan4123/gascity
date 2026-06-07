@@ -47,6 +47,23 @@ sync_worktree() {
     git -C "$WT" pull --rebase 2>/dev/null || true
 }
 
+acquire_worktree_lock() {
+    command -v flock >/dev/null 2>&1 || return 0
+
+    COMMON_DIR=$(git -C "$RIG_ROOT" rev-parse --git-common-dir 2>/dev/null) || return 0
+    case "$COMMON_DIR" in
+        /*) ;;
+        *) COMMON_DIR="$RIG_ROOT/$COMMON_DIR" ;;
+    esac
+
+    LOCK_TIMEOUT="${GC_WORKTREE_SETUP_LOCK_TIMEOUT:-300}"
+    exec 9>"$COMMON_DIR/gascity-worktree-setup.lock"
+    if ! flock -w "$LOCK_TIMEOUT" 9; then
+        echo "worktree-setup: timed out waiting for worktree setup lock for $RIG_ROOT" >&2
+        exit 1
+    fi
+}
+
 branch_name() {
     # Namescape worktree branches by target path so multiple cities or rigs
     # can share one underlying repo without colliding on global refs like
@@ -54,6 +71,8 @@ branch_name() {
     HASH=$(printf '%s' "$WT" | git -C "$RIG_ROOT" hash-object --stdin | cut -c1-12)
     printf 'gc-%s-%s' "$AGENT" "$HASH"
 }
+
+acquire_worktree_lock
 
 # Idempotent: skip if worktree already exists.
 if [ -d "$WT/.git" ] || [ -f "$WT/.git" ]; then
