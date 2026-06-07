@@ -330,11 +330,48 @@ func decodeHookClaimBeads(output string) ([]beads.Bead, error) {
 		output = extracted
 	}
 	output = normalizeWorkQueryOutput(output)
+	coerced, err := coerceHookClaimMetadataJSON(output)
+	if err != nil {
+		return nil, err
+	}
 	var candidates []beads.Bead
-	if err := json.Unmarshal([]byte(output), &candidates); err != nil {
+	if err := json.Unmarshal(coerced, &candidates); err != nil {
 		return nil, err
 	}
 	return candidates, nil
+}
+
+func coerceHookClaimMetadataJSON(output string) ([]byte, error) {
+	var candidates []map[string]any
+	if err := json.Unmarshal([]byte(output), &candidates); err != nil {
+		return nil, err
+	}
+	for _, candidate := range candidates {
+		metadata, ok := candidate["metadata"].(map[string]any)
+		if !ok {
+			continue
+		}
+		coerced := make(map[string]string, len(metadata))
+		for key, value := range metadata {
+			coerced[key] = hookClaimMetadataString(value)
+		}
+		candidate["metadata"] = coerced
+	}
+	return json.Marshal(candidates)
+}
+
+func hookClaimMetadataString(value any) string {
+	if value == nil {
+		return ""
+	}
+	if s, ok := value.(string); ok {
+		return s
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprint(value)
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func firstHookJSONValue(output string) (string, bool) {
