@@ -2,6 +2,7 @@ package beads
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -99,6 +100,16 @@ func OpenStoreAtForCity(ctx context.Context, opts StoreOpenOptions) (StoreOpenRe
 		return opts.openBdFallback(provider, diag)
 	}
 
+	if scopeBackendIsDoltlite(opts.ScopeRoot) {
+		diag := BeadsDiagnostic{
+			Store:               storeNameBdStore,
+			NativeStoreEligible: false,
+			PreflightGate:       "doltlite_fallback",
+			PreflightReason:     "doltlite backend uses bd CLI shell-out",
+		}
+		return opts.openBdFallback(provider, diag)
+	}
+
 	result, err := opts.PreflightChecker.Check(opts.ScopeRoot)
 	if err != nil {
 		diag := BeadsDiagnostic{
@@ -116,7 +127,7 @@ func OpenStoreAtForCity(ctx context.Context, opts StoreOpenOptions) (StoreOpenRe
 		return opts.openBdFallback(provider, diag)
 	}
 
-	if scopeHasExecutableBdHooks(opts.ScopeRoot) {
+	if !scopeBackendIsDoltlite(opts.ScopeRoot) && scopeHasExecutableBdHooks(opts.ScopeRoot) {
 		diag := BeadsDiagnostic{
 			Store:               storeNameBdStore,
 			NativeStoreEligible: false,
@@ -207,6 +218,20 @@ func scopeHasExecutableBdHooks(scopeRoot string) bool {
 		}
 	}
 	return false
+}
+
+func scopeBackendIsDoltlite(scopeRoot string) bool {
+	data, err := os.ReadFile(filepath.Join(scopeRoot, ".beads", "metadata.json"))
+	if err != nil {
+		return false
+	}
+	var meta struct {
+		Backend string `json:"backend"`
+	}
+	if json.Unmarshal(data, &meta) != nil {
+		return false
+	}
+	return meta.Backend == "doltlite"
 }
 
 func forceNativeFallback() bool {

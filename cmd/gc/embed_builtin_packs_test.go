@@ -813,6 +813,35 @@ func TestMaterializeBuiltinPacks_PrunesStaleGeneratedPackFiles(t *testing.T) {
 	}
 }
 
+func TestMaterializeBuiltinPacks_PreservesBeadsDoltliteBuildDetails(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := MaterializeBuiltinPacks(dir); err != nil {
+		t.Fatalf("MaterializeBuiltinPacks() error: %v", err)
+	}
+
+	packDir := filepath.Join(dir, citylayout.SystemPacksRoot, "beads-doltlite")
+	stampPath := filepath.Join(packDir, "last-build-gc.json")
+	stalePath := filepath.Join(packDir, "removed-generated-file.txt")
+	if err := os.WriteFile(stampPath, []byte(`{"target":"gc"}`), 0o644); err != nil {
+		t.Fatalf("write build stamp: %v", err)
+	}
+	if err := os.WriteFile(stalePath, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("write stale file: %v", err)
+	}
+
+	if err := MaterializeBuiltinPacks(dir); err != nil {
+		t.Fatalf("MaterializeBuiltinPacks() second call error: %v", err)
+	}
+
+	if _, err := os.Stat(stampPath); err != nil {
+		t.Fatalf("build stamp was not preserved: %v", err)
+	}
+	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
+		t.Fatalf("unrelated stale file still exists: %s", stalePath)
+	}
+}
+
 func TestMaterializeBuiltinPacks_PruneIgnoresAtomicTempFilesForDesiredAssets(t *testing.T) {
 	dir := t.TempDir()
 
@@ -925,13 +954,13 @@ func TestLoadCityConfigFallsBackToExistingBuiltinPacksWhenRefreshFails(t *testin
 		t.Fatalf("MaterializeBuiltinPacks() error: %v", err)
 	}
 
-	// dolt is a non-required pack, so a failed refresh is non-fatal:
+	// gastown is a non-required pack, so a failed refresh is non-fatal:
 	// loadCityConfig falls back to the existing materialized packs and emits a
 	// warning. Under Option B (gastownhall/gascity#2429) a correct-mode edited
 	// file is preserved with no write attempt, so the refresh failure is driven
 	// by a missing file the materializer must rewrite (scaffolding) while the
 	// directory is read-only.
-	targetDir := filepath.Join(dir, citylayout.SystemPacksRoot, "dolt", "commands", "compact")
+	targetDir := filepath.Join(dir, citylayout.SystemPacksRoot, "gastown", "commands", "status")
 	targetFile := filepath.Join(targetDir, "run.sh")
 	wantContent, err := os.ReadFile(targetFile)
 	if err != nil {
@@ -990,7 +1019,7 @@ func TestLoadCityConfigDeduplicatesBuiltinPackRefreshWarningsPerProcess(t *testi
 	// Missing non-required file forces a scaffolding write that fails while the
 	// directory is read-only (see Option B note in
 	// TestLoadCityConfigFallsBackToExistingBuiltinPacksWhenRefreshFails).
-	targetDir := filepath.Join(dir, citylayout.SystemPacksRoot, "dolt", "commands", "compact")
+	targetDir := filepath.Join(dir, citylayout.SystemPacksRoot, "gastown", "commands", "status")
 	targetFile := filepath.Join(targetDir, "run.sh")
 	if err := os.Remove(targetFile); err != nil {
 		t.Fatalf("Remove(run.sh): %v", err)
@@ -1026,7 +1055,7 @@ func TestLoadCityConfigForRegistryDoesNotSuppressBuiltinPackRefreshWarnings(t *t
 	// Missing non-required file forces a scaffolding write that fails while the
 	// directory is read-only (see Option B note in
 	// TestLoadCityConfigFallsBackToExistingBuiltinPacksWhenRefreshFails).
-	targetDir := filepath.Join(dir, citylayout.SystemPacksRoot, "dolt", "commands", "compact")
+	targetDir := filepath.Join(dir, citylayout.SystemPacksRoot, "gastown", "commands", "status")
 	targetFile := filepath.Join(targetDir, "run.sh")
 	if err := os.Remove(targetFile); err != nil {
 		t.Fatalf("Remove(run.sh): %v", err)
@@ -1251,18 +1280,20 @@ func TestBuiltinPackIncludes_DefaultProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Default provider (empty) → should include core, maintenance, and bd.
+	// Default provider (empty) → should include core, maintenance, bd, and
+	// the default Dolt backend pack.
 	t.Setenv("GC_BEADS", "")
 	includes := builtinPackIncludes(dir)
 
-	if len(includes) != 3 {
-		t.Fatalf("builtinPackIncludes() = %v, want 3 entries", includes)
+	if len(includes) != 4 {
+		t.Fatalf("builtinPackIncludes() = %v, want 4 entries", includes)
 	}
 
 	systemRoot := filepath.Join(dir, citylayout.SystemPacksRoot)
 	wantCore := filepath.Join(systemRoot, "core")
 	wantMaintenance := filepath.Join(systemRoot, "maintenance")
 	wantBd := filepath.Join(systemRoot, "bd")
+	wantDolt := filepath.Join(systemRoot, "dolt")
 
 	if includes[0] != wantCore {
 		t.Errorf("includes[0] = %q, want %q", includes[0], wantCore)
@@ -1272,6 +1303,9 @@ func TestBuiltinPackIncludes_DefaultProvider(t *testing.T) {
 	}
 	if includes[2] != wantBd {
 		t.Errorf("includes[2] = %q, want %q", includes[2], wantBd)
+	}
+	if includes[3] != wantDolt {
+		t.Errorf("includes[3] = %q, want %q", includes[3], wantDolt)
 	}
 }
 
@@ -1290,8 +1324,8 @@ func TestBuiltinPackIncludes_ExplicitBd(t *testing.T) {
 	t.Setenv("GC_BEADS", "")
 	includes := builtinPackIncludes(dir)
 
-	if len(includes) != 3 {
-		t.Fatalf("builtinPackIncludes() = %v, want 3 entries (core + maintenance + bd)", includes)
+	if len(includes) != 4 {
+		t.Fatalf("builtinPackIncludes() = %v, want 4 entries (core + maintenance + bd + dolt)", includes)
 	}
 
 	if got := filepath.Base(includes[0]); got != "core" {
@@ -1302,6 +1336,139 @@ func TestBuiltinPackIncludes_ExplicitBd(t *testing.T) {
 	}
 	if got := filepath.Base(includes[2]); got != "bd" {
 		t.Errorf("includes[2] base = %q, want bd", got)
+	}
+	if got := filepath.Base(includes[3]); got != "dolt" {
+		t.Errorf("includes[3] base = %q, want dolt", got)
+	}
+}
+
+func TestBuiltinPackIncludes_DoltliteBackend(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := MaterializeBuiltinPacks(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "city.toml"), []byte("[beads]\nprovider = \"bd\"\nbackend = \"doltlite\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GC_BEADS", "")
+	t.Setenv("GC_BEADS_BACKEND", "")
+	includes := builtinPackIncludes(dir)
+
+	if len(includes) != 4 {
+		t.Fatalf("builtinPackIncludes() = %v, want 4 entries (core + maintenance + bd + beads-doltlite)", includes)
+	}
+	for i, want := range []string{"core", "maintenance", "bd", "beads-doltlite"} {
+		if got := filepath.Base(includes[i]); got != want {
+			t.Errorf("includes[%d] base = %q, want %s", i, got, want)
+		}
+	}
+}
+
+func TestBeadsDoltlitePackUsesPackCommandNamespace(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := MaterializeBuiltinPacks(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, rel := range []string{
+		filepath.Join("formulas", "mol-doltlite-maintenance.toml"),
+		filepath.Join("orders", "doltlite-health.toml"),
+		filepath.Join("orders", "doltlite-maintenance.toml"),
+	} {
+		path := filepath.Join(dir, citylayout.SystemPacksRoot, "beads-doltlite", rel)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", rel, err)
+		}
+		text := string(data)
+		if strings.Contains(text, "gc doltlite ") {
+			t.Fatalf("%s references nonexistent command namespace:\n%s", rel, text)
+		}
+		if !strings.Contains(text, "gc beads-doltlite ") {
+			t.Fatalf("%s missing beads-doltlite command namespace:\n%s", rel, text)
+		}
+	}
+}
+
+func TestBeadsDoltlitePackIncludesLibdoltliteBuildCommand(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := MaterializeBuiltinPacks(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	packDir := filepath.Join(dir, citylayout.SystemPacksRoot, "beads-doltlite")
+	manifestPath := filepath.Join(packDir, "commands", "build", "command.toml")
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", manifestPath, err)
+	}
+	if !strings.Contains(string(manifest), "Build gc or bd against libdoltlite") {
+		t.Fatalf("build command manifest missing libdoltlite description:\n%s", manifest)
+	}
+
+	scriptPath := filepath.Join(packDir, "commands", "build", "run.sh")
+	script, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", scriptPath, err)
+	}
+	text := string(script)
+	for _, want := range []string{
+		"usage: gc beads-doltlite build [gc|bd|all]",
+		"--gc-source",
+		"--bd-source",
+		"--gc-output",
+		"--bd-output",
+		"--install",
+		"--install-dir",
+		"--gc-install",
+		"--bd-install",
+		"--build-details-dir",
+		"--no-restart",
+		"GC_DOLTLITE_RESTART_AFTER_INSTALL",
+		"GC_DOLTLITE_RESTART_WAIT_SECONDS",
+		"GC_DOLTLITE_GO_CACHE_ROOT",
+		"GOCACHE=\"$GO_CACHE_ROOT/build\"",
+		"GOMODCACHE=\"$GO_CACHE_ROOT/mod\"",
+		"GOTMPDIR=\"$GO_CACHE_ROOT/tmp\"",
+		"--restart",
+		"Stop supervisor/city before building gc, then start after install",
+		"stop_before_gc_build",
+		"start_after_gc_install",
+		"stop_supervisor_if_running",
+		"stop_standalone_controller_if_running",
+		"stop_leftover_controller_if_running",
+		"supervisor stop --wait",
+		"start \"$CITY_ROOT\"",
+		"CGO_ENABLED=1",
+		"-tags=${tags}",
+		"gascity_doltlite_lib,libsqlite3",
+		"common_env_prefix \"libsqlite3\"",
+		"install_binary",
+		"mv -f \"$tmp\" \"$dest\"",
+		"write_build_details",
+		"last-build-${name}.json",
+		"sha256_for",
+		"./cmd/gc",
+		"./cmd/bd",
+		"CGO_LDFLAGS",
+		"-ldoltlite",
+		"libdoltlite",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("build script missing %q:\n%s", want, text)
+		}
+	}
+	for _, forbidden := range []string{
+		"gascity_native_beads",
+		"CGO_ENABLED=0",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("build script must not use %q:\n%s", forbidden, text)
+		}
 	}
 }
 
@@ -1394,8 +1561,8 @@ func TestBuiltinPackIncludes_ManagedExecEnvStillIncludesBd(t *testing.T) {
 	t.Setenv("GC_BEADS", "exec:"+gcBeadsBdScriptPath(dir))
 	includes := builtinPackIncludes(dir)
 
-	if len(includes) != 3 {
-		t.Fatalf("builtinPackIncludes() = %v, want core + maintenance + bd", includes)
+	if len(includes) != 4 {
+		t.Fatalf("builtinPackIncludes() = %v, want core + maintenance + bd + dolt", includes)
 	}
 	if got := filepath.Base(includes[0]); got != "core" {
 		t.Errorf("includes[0] base = %q, want core", got)
@@ -1405,6 +1572,9 @@ func TestBuiltinPackIncludes_ManagedExecEnvStillIncludesBd(t *testing.T) {
 	}
 	if got := filepath.Base(includes[2]); got != "bd" {
 		t.Errorf("includes[2] base = %q, want bd", got)
+	}
+	if got := filepath.Base(includes[3]); got != "dolt" {
+		t.Errorf("includes[3] base = %q, want dolt", got)
 	}
 }
 
