@@ -42,7 +42,7 @@ the overseer, not as part of a transient worker pool.
 - Mail ALWAYS uses town beads - `{{ cmd }} mail` routes there automatically
 - Project issues use your clone's beads - `gc bd` uses local `.beads/`
 - Beads changes are persisted immediately via Dolt - no sync step needed
-- **GitHub URLs**: Use `git remote -v` to verify repo URLs - never assume orgs like `anthropics/`
+- **GitHub URLs**: Use `git -C <rig-root> remote -v` to verify repo URLs in colocated workspaces - never assume orgs like `anthropics/`
 
 ## Prefix-Based Routing
 
@@ -152,7 +152,7 @@ If you have direct push access to the repo (you're a maintainer):
 - Polecats: run the done sequence (push, MR bead, close, exit) -> Refinery merges to main
 
 PRs are for external contributors submitting to repos they don't own.
-Check `git remote -v` to identify repo ownership.
+Check `git -C <rig-root> remote -v` to identify repo ownership.
 
 ### The Landing Rule
 
