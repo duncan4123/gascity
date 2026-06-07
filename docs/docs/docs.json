@@ -1,0 +1,187 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "linden",
+  "name": "Gas City Docs",
+  "logo": {
+    "light": "/images/logo-wordmark.svg",
+    "dark": "/images/logo-wordmark.svg",
+    "href": "https://docs.gascityhall.com"
+  },
+  "favicon": "/images/favicon.png",
+  "navbar": {
+    "links": [
+      {
+        "label": "Gas City Hall",
+        "href": "https://gascityhall.com"
+      },
+      {
+        "label": "Discord",
+        "icon": "discord",
+        "iconType": "brands",
+        "href": "https://discord.gg/xHpUGUzZp2"
+      },
+      {
+        "label": "X",
+        "icon": "x-twitter",
+        "iconType": "brands",
+        "href": "https://x.com/gastownhall"
+      },
+      {
+        "label": "GitHub",
+        "icon": "github",
+        "iconType": "brands",
+        "href": "https://github.com/gastownhall/gascity"
+      }
+    ]
+  },
+  "colors": {
+    "primary": "#c9a84c",
+    "light": "#c9a84c",
+    "dark": "#b8862d"
+  },
+  "appearance": {
+    "default": "dark",
+    "strict": true
+  },
+  "fonts": {
+    "heading": {
+      "family": "Cinzel",
+      "weight": 700
+    },
+    "body": {
+      "family": "Raleway",
+      "weight": 400
+    }
+  },
+  "background": {
+    "color": {
+      "dark": "#0a0a0f"
+    }
+  },
+  "styling": {
+    "codeblocks": "dark"
+  },
+  "metadata": {
+    "timestamp": true
+  },
+  "redirects": [
+    {
+      "source": "/packv2/migration",
+      "destination": "/guides/shareable-packs"
+    },
+    {
+      "source": "/tutorials/01-cities-and-rigs.md",
+      "destination": "/tutorials/01-cities-and-rigs"
+    },
+    {
+      "source": "/tutorials/02-agents.md",
+      "destination": "/tutorials/02-agents"
+    },
+    {
+      "source": "/tutorials/03-sessions.md",
+      "destination": "/tutorials/03-sessions"
+    },
+    {
+      "source": "/tutorials/04-communication.md",
+      "destination": "/tutorials/04-communication"
+    },
+    {
+      "source": "/tutorials/05-formulas.md",
+      "destination": "/tutorials/05-formulas"
+    },
+    {
+      "source": "/tutorials/06-beads.md",
+      "destination": "/tutorials/06-beads"
+    },
+    {
+      "source": "/tutorials/07-orders.md",
+      "destination": "/tutorials/07-orders"
+    }
+  ],
+  "navigation": {
+    "groups": [
+      {
+        "group": "Start Here",
+        "pages": [
+          "index",
+          "getting-started/installation",
+          "getting-started/quickstart",
+          "getting-started/coming-from-gastown",
+          "getting-started/troubleshooting",
+          "getting-started/repository-map"
+        ]
+      },
+      {
+        "group": "Concepts",
+        "pages": [
+          "concepts/architecture-overview",
+          "concepts/primitives"
+        ]
+      },
+      {
+        "group": "Tutorials",
+        "pages": [
+          "tutorials/index",
+          "tutorials/01-cities-and-rigs",
+          "tutorials/02-agents",
+          "tutorials/03-sessions",
+          "tutorials/04-communication",
+          "tutorials/05-formulas",
+          "tutorials/06-beads",
+          "tutorials/07-orders"
+        ]
+      },
+      {
+        "group": "Guides",
+        "pages": [
+          "guides/index",
+          "guides/capabilities-for-coding-agent-users",
+          "guides/understanding-packs",
+          "guides/shareable-packs",
+          "guides/gastown-config-recipes",
+          "guides/using-json-from-gc",
+          "guides/multi-agent-engineering-environment"
+        ]
+      },
+      {
+        "group": "Troubleshooting",
+        "pages": [
+          "troubleshooting/gc-start-walkthrough",
+          "troubleshooting/dolt-bloat-recovery",
+          "troubleshooting/bd-backup-cleanup",
+          "runbooks/managed-city-endpoints"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/index",
+          "reference/cli",
+          "reference/gastown-command-map",
+          "reference/config",
+          "reference/formula",
+          "reference/trust-boundaries",
+          "reference/api",
+          "reference/events",
+          "schema/index",
+          "reference/system-packs",
+          "reference/exec-session-provider",
+          "reference/exec-beads-provider"
+        ]
+      },
+      {
+        "group": "Internals",
+        "pages": [
+          "internals/index",
+          "internals/beads-topology"
+        ]
+      },
+      {
+        "group": "Specifications",
+        "pages": [
+          "specs/pack-spec"
+        ]
+      }
+    ]
+  }
+}
