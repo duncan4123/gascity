@@ -155,6 +155,7 @@ var builtinProviderSpecs = map[string]BuiltinProviderSpec{
 	"codex": {
 		DisplayName: "Codex CLI",
 		Command:     "codex",
+		Args:        []string{"-c", "shell_environment_policy.inherit=all"},
 		OptionDefaults: map[string]string{
 			"permission_mode": "unrestricted",
 			"model":           "gpt-5.5",
