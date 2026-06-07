@@ -789,14 +789,11 @@ func supervisorStatusWithOptions(stdout, _ io.Writer, asJSON bool) int {
 			running, pidSource = true, "api"
 		}
 	}
+	binary := processBinaryForPID(pid)
+	build := supervisorBuildCheck(binary)
 	if asJSON {
-		payload := map[string]any{
-			"schema_version": "1",
-			"running":        running,
-			"pid":            pid,
-			"socket_path":    sockPath,
-			"checked_paths":  supervisorSocketPathCandidates(),
-		}
+		payload := supervisorStatusPayload(sockPath, pid, binary, build)
+		payload["running"] = running
 		if pidSource != "" {
 			payload["pid_source"] = pidSource
 		}
@@ -812,7 +809,7 @@ func supervisorStatusWithOptions(stdout, _ io.Writer, asJSON bool) int {
 	}
 	switch {
 	case pid > 0:
-		fmt.Fprintf(stdout, "Supervisor is running (PID %d)\n", pid) //nolint:errcheck
+		fmt.Fprintln(stdout, supervisorStatusLine(pid, binary, build)) //nolint:errcheck
 		return 0
 	case running:
 		fmt.Fprintf(stdout, "Supervisor is running (pid unavailable: control socket unreachable; liveness confirmed via %s)\n", pidSource) //nolint:errcheck
@@ -821,6 +818,27 @@ func supervisorStatusWithOptions(stdout, _ io.Writer, asJSON bool) int {
 		fmt.Fprintln(stdout, "Supervisor is not running") //nolint:errcheck
 		return 1
 	}
+}
+
+func supervisorStatusPayload(sockPath string, pid int, binary string, build *BinaryBuildJSON) map[string]any {
+	payload := map[string]any{
+		"schema_version": "1",
+		"running":        pid > 0,
+		"pid":            pid,
+		"socket_path":    sockPath,
+		"checked_paths":  supervisorSocketPathCandidates(),
+	}
+	if binary != "" {
+		payload["binary"] = binary
+	}
+	if build != nil {
+		payload["build"] = build
+	}
+	return payload
+}
+
+func supervisorStatusLine(pid int, binary string, build *BinaryBuildJSON) string {
+	return fmt.Sprintf("Supervisor is running (PID %d%s)", pid, processDetailsSuffix(binary, build))
 }
 
 func newSupervisorReloadCmd(stdout, stderr io.Writer) *cobra.Command {

@@ -655,6 +655,9 @@ func pruneStaleGeneratedPackFiles(dstDir string, desired map[string]struct{}) er
 		if rel == packHashManifestFile || strings.HasPrefix(rel, packHashManifestFile+".tmp.") {
 			return nil
 		}
+		if isPreservedGeneratedPackRel(dstDir, rel) {
+			return nil
+		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -682,6 +685,16 @@ func pruneStaleGeneratedPackFiles(dstDir string, desired map[string]struct{}) er
 		pruneEmptyDirs(dir, dstDir)
 	}
 	return nil
+}
+
+func isPreservedGeneratedPackRel(dstDir, rel string) bool {
+	if filepath.Base(filepath.Clean(dstDir)) != "beads-doltlite" {
+		return false
+	}
+	if strings.Contains(rel, "/") {
+		return false
+	}
+	return strings.HasPrefix(rel, "last-build-") && strings.HasSuffix(rel, ".json")
 }
 
 func isGeneratedPackAtomicTempRel(rel string, hasDesired func(string) bool) bool {

@@ -22,6 +22,10 @@ Options:
                      Default: active binary under $HOME, else $HOME/.local/bin.
   --gc-install FILE  Install path for gc.
   --bd-install FILE  Install path for bd.
+  --build-details-dir DIR
+                     Directory for last-build-*.json. Default: pack folder.
+  --restart          Stop supervisor/city before building gc, then start after install. Default.
+  --no-restart       Do not restart supervisor/city after installing gc.
   --version VALUE    Version string embedded in gc. Default: dev.
   --bd-build VALUE   Build string embedded in bd. Default: dev.
 
@@ -32,6 +36,9 @@ Environment overrides:
   OUTPUT, GC_DOLTLITE_GC_OUTPUT, BD_OUTPUT, GC_DOLTLITE_BD_OUTPUT
   GC_DOLTLITE_INSTALL, GC_DOLTLITE_INSTALL_DIR
   GC_DOLTLITE_GC_INSTALL, GC_DOLTLITE_BD_INSTALL
+  GC_DOLTLITE_BUILD_DETAILS_DIR
+  GC_DOLTLITE_GO_CACHE_ROOT, GOCACHE, GOMODCACHE, GOTMPDIR
+  GC_DOLTLITE_RESTART_AFTER_INSTALL, GC_DOLTLITE_RESTART_WAIT_SECONDS
   GC_VERSION, GC_COMMIT, GC_BUILD_DATE
   BD_BUILD, BD_COMMIT, BD_BRANCH
 EOF
@@ -200,6 +207,268 @@ install_binary() {
   fi
 }
 
+artifact_path_for_source() {
+  local source_dir="$1"
+  local output="$2"
+  case "$output" in
+    /*) echo "$output" ;;
+    *) echo "$source_dir/$output" ;;
+  esac
+}
+
+sha256_for() {
+  local path="$1"
+  local sum rest
+  if command -v sha256sum >/dev/null 2>&1; then
+    read -r sum rest < <(sha256sum "$path")
+    echo "$sum"
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    read -r sum rest < <(shasum -a 256 "$path")
+    echo "$sum"
+    return 0
+  fi
+  die "sha256sum or shasum is required to write build details"
+}
+
+json_escape() {
+  local value="${1-}"
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//$'\n'/\\n}
+  value=${value//$'\r'/\\r}
+  value=${value//$'\t'/\\t}
+  printf '%s' "$value"
+}
+
+write_build_details() {
+  local name="$1"
+  local source_dir="$2"
+  local output="$3"
+  local installed_to="$4"
+  local commit="$5"
+  local version="$6"
+  local branch="$7"
+  local tags="$8"
+  local built_at="$9"
+  local output_path output_sha binary_path binary_sha install_sha stamp tmp go_version go_version_m
+
+  output_path="$(artifact_path_for_source "$source_dir" "$output")"
+  output_sha="$(sha256_for "$output_path")"
+  binary_path="$output_path"
+  binary_sha="$output_sha"
+  install_sha=""
+  if [ -n "$installed_to" ]; then
+    binary_path="$installed_to"
+    install_sha="$(sha256_for "$installed_to")"
+    binary_sha="$install_sha"
+  fi
+
+  go_version="$(go version 2>/dev/null || true)"
+  go_version_m="$(go version -m "$binary_path" 2>/dev/null || true)"
+  if [ -z "$go_version_m" ] && [ "$binary_path" != "$output_path" ]; then
+    go_version_m="$(go version -m "$output_path" 2>/dev/null || true)"
+  fi
+
+  mkdir -p "$BUILD_DETAILS_DIR"
+  stamp="$BUILD_DETAILS_DIR/last-build-${name}.json"
+  tmp="$stamp.tmp.$$"
+  rm -f "$tmp"
+  {
+    printf '{\n'
+    printf '  "schema_version": "1",\n'
+    printf '  "pack": "beads-doltlite",\n'
+    printf '  "target": "%s",\n' "$(json_escape "$name")"
+    printf '  "built_at": "%s",\n' "$(json_escape "$built_at")"
+    printf '  "source": "%s",\n' "$(json_escape "$source_dir")"
+    printf '  "output": "%s",\n' "$(json_escape "$output_path")"
+    printf '  "installed_to": "%s",\n' "$(json_escape "$installed_to")"
+    printf '  "binary_path": "%s",\n' "$(json_escape "$binary_path")"
+    printf '  "sha256": "%s",\n' "$(json_escape "$binary_sha")"
+    printf '  "output_sha256": "%s",\n' "$(json_escape "$output_sha")"
+    printf '  "install_sha256": "%s",\n' "$(json_escape "$install_sha")"
+    printf '  "commit": "%s",\n' "$(json_escape "$commit")"
+    printf '  "branch": "%s",\n' "$(json_escape "$branch")"
+    printf '  "version": "%s",\n' "$(json_escape "$version")"
+    printf '  "tags": "%s",\n' "$(json_escape "$tags")"
+    printf '  "doltlite_lib": "%s",\n' "$(json_escape "$DOLTLITE_LIB")"
+    printf '  "gocache": "%s",\n' "$(json_escape "${GOCACHE:-}")"
+    printf '  "gomodcache": "%s",\n' "$(json_escape "${GOMODCACHE:-}")"
+    printf '  "gotmpdir": "%s",\n' "$(json_escape "${GOTMPDIR:-}")"
+    printf '  "go_version": "%s",\n' "$(json_escape "$go_version")"
+    printf '  "goflags": "%s",\n' "$(json_escape "${GOFLAGS:-}")"
+    printf '  "cgo_ldflags": "%s",\n' "$(json_escape "${CGO_LDFLAGS:-}")"
+    printf '  "go_version_m": "%s"\n' "$(json_escape "$go_version_m")"
+    printf '}\n'
+  } >"$tmp"
+  mv -f "$tmp" "$stamp"
+  echo "wrote $name build details: $stamp"
+}
+
+controller_field_for_city() {
+  local gc_bin="$1"
+  local field="$2"
+  local status_file
+  status_file="$(mktemp "${TMPDIR:-/tmp}/gc-status.XXXXXX")"
+  if ! "$gc_bin" status --json "$CITY_ROOT" >"$status_file" 2>/dev/null && [ ! -s "$status_file" ]; then
+    rm -f "$status_file"
+    return 0
+  fi
+  awk -v want="$field" '
+    /"controller"[[:space:]]*:/ { in_controller=1; next }
+    in_controller && /^[[:space:]]*}/ { exit }
+    in_controller && $0 ~ "\"" want "\"" {
+      value=$0
+      sub("^[^:]*:[[:space:]]*", "", value)
+      gsub("[,\"]", "", value)
+      gsub("^[[:space:]]+|[[:space:]]+$", "", value)
+      print value
+      exit
+    }
+  ' "$status_file"
+  rm -f "$status_file"
+}
+
+controller_mode_for_city() {
+  controller_field_for_city "$1" "mode"
+}
+
+controller_pid_for_city() {
+  controller_field_for_city "$1" "pid"
+}
+
+process_alive() {
+  local pid="$1"
+  [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1
+}
+
+wait_for_pid_exit() {
+  local pid="$1"
+  local remaining="$RESTART_WAIT_SECONDS"
+  while [ "$remaining" -gt 0 ]; do
+    if ! process_alive "$pid"; then
+      return 0
+    fi
+    sleep 1
+    remaining=$((remaining - 1))
+  done
+  ! process_alive "$pid"
+}
+
+terminate_controller_pid() {
+  local pid="$1"
+  if ! process_alive "$pid"; then
+    return 0
+  fi
+  echo "stopping leftover city controller PID $pid"
+  kill "$pid" >/dev/null 2>&1 || true
+  if wait_for_pid_exit "$pid"; then
+    return 0
+  fi
+  echo "force-stopping leftover city controller PID $pid"
+  kill -KILL "$pid" >/dev/null 2>&1 || true
+  wait_for_pid_exit "$pid" || die "city controller PID $pid did not stop"
+}
+
+stop_standalone_controller_if_running() {
+  local gc_bin="$1"
+  local mode pid
+  mode="$(controller_mode_for_city "$gc_bin" || true)"
+  if [ "$mode" != "standalone" ]; then
+    return 0
+  fi
+  pid="$(controller_pid_for_city "$gc_bin" || true)"
+  echo "stopping standalone city controller${pid:+ PID $pid}"
+  "$gc_bin" stop "$CITY_ROOT" --force --timeout "${RESTART_WAIT_SECONDS}s" || die "stopping standalone city controller failed"
+  if [ -n "$pid" ]; then
+    terminate_controller_pid "$pid"
+  fi
+}
+
+stop_supervisor_if_running() {
+  local gc_bin="$1"
+  if ! "$gc_bin" supervisor status >/dev/null 2>&1; then
+    echo "supervisor already stopped"
+    return 0
+  fi
+  echo "stopping supervisor"
+  "$gc_bin" supervisor stop --wait --wait-timeout "${RESTART_WAIT_SECONDS}s" || die "stopping supervisor failed"
+  if "$gc_bin" supervisor status >/dev/null 2>&1; then
+    die "supervisor still running after stop"
+  fi
+}
+
+stop_leftover_controller_if_running() {
+  local gc_bin="$1"
+  local pid
+  pid="$(controller_pid_for_city "$gc_bin" || true)"
+  if [ -z "$pid" ]; then
+    return 0
+  fi
+  terminate_controller_pid "$pid"
+}
+
+current_gc_for_stop() {
+  if [ -n "$GC_INSTALL" ] && [ -x "$GC_INSTALL" ]; then
+    echo "$GC_INSTALL"
+    return 0
+  fi
+  if command -v gc >/dev/null 2>&1; then
+    command -v gc
+    return 0
+  fi
+  return 1
+}
+
+target_includes_gc() {
+  [ "$TARGET" = "gc" ] || [ "$TARGET" = "all" ]
+}
+
+prepare_gc_install_path() {
+  if [ "$INSTALL_BUILT" != "1" ] || [ "$RESTART_AFTER_INSTALL" != "1" ] || ! target_includes_gc; then
+    return 0
+  fi
+  if [ -z "$GC_INSTALL" ]; then
+    GC_INSTALL="$(default_install_path gc)"
+  fi
+}
+
+stop_before_gc_build() {
+  if [ "$INSTALL_BUILT" != "1" ] || [ "$RESTART_AFTER_INSTALL" != "1" ] || ! target_includes_gc; then
+    return 0
+  fi
+  local gc_bin
+  gc_bin="$(current_gc_for_stop || true)"
+  if [ -z "$gc_bin" ]; then
+    die "restart requires an existing gc binary to stop current services; pass --no-restart to build without cycling services"
+  fi
+
+  echo "stopping gc services before build with $gc_bin"
+  stop_standalone_controller_if_running "$gc_bin"
+  stop_supervisor_if_running "$gc_bin"
+  stop_leftover_controller_if_running "$gc_bin"
+  GC_SERVICES_STOPPED_FOR_BUILD=1
+}
+
+start_after_gc_install() {
+  local gc_bin="$1"
+  if [ "$RESTART_AFTER_INSTALL" != "1" ]; then
+    echo "restart after gc install disabled"
+    return 0
+  fi
+  if [ ! -x "$gc_bin" ]; then
+    die "installed gc is not executable: $gc_bin"
+  fi
+
+  if [ "$GC_SERVICES_STOPPED_FOR_BUILD" != "1" ]; then
+    die "refusing to start gc services because they were not stopped before build"
+  fi
+
+  echo "starting city from $CITY_ROOT"
+  "$gc_bin" start "$CITY_ROOT" || die "starting city after gc install failed"
+}
+
 build_gc() {
   if [ -z "$GASCITY_SRC" ]; then
     GASCITY_SRC="$(find_gascity_source || true)"
@@ -238,11 +507,18 @@ build_gc() {
   verify_linked_binary "$GC_OUTPUT" "gc"
   echo "built libdoltlite-linked gc: $GC_OUTPUT"
 
+  local installed_to=""
   if [ "$INSTALL_BUILT" = "1" ]; then
     if [ -z "$GC_INSTALL" ]; then
       GC_INSTALL="$(default_install_path gc)"
     fi
     install_binary "$GC_OUTPUT" "$GC_INSTALL" "gc"
+    installed_to="$GC_INSTALL"
+  fi
+  write_build_details "gc" "$GASCITY_SRC" "$GC_OUTPUT" "$installed_to" "$commit" "$VERSION" "" "gascity_doltlite_lib,libsqlite3" "$date"
+  if [ -n "$installed_to" ]; then
+    start_after_gc_install "$installed_to"
+    write_build_details "gc" "$GASCITY_SRC" "$GC_OUTPUT" "$installed_to" "$commit" "$VERSION" "" "gascity_doltlite_lib,libsqlite3" "$date"
   fi
 }
 
@@ -268,6 +544,8 @@ build_bd() {
   if [ -z "$branch" ]; then
     branch="$(branch_for "$BD_SRC")"
   fi
+  local date
+  date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   local ldflags="-X main.Build=${BD_BUILD_VALUE} -X main.Commit=${commit}"
   if [ -n "$branch" ]; then
     ldflags="${ldflags} -X main.Branch=${branch}"
@@ -291,16 +569,20 @@ build_bd() {
   verify_linked_binary "$BD_OUTPUT" "bd"
   echo "built libdoltlite-linked bd: $BD_OUTPUT"
 
+  local installed_to=""
   if [ "$INSTALL_BUILT" = "1" ]; then
     if [ -z "$BD_INSTALL" ]; then
       BD_INSTALL="$(default_install_path bd)"
     fi
     install_binary "$BD_OUTPUT" "$BD_INSTALL" "bd"
+    installed_to="$BD_INSTALL"
   fi
+  write_build_details "bd" "$BD_SRC" "$BD_OUTPUT" "$installed_to" "$commit" "$BD_BUILD_VALUE" "$branch" "libsqlite3" "$date"
 }
 
 CITY_ROOT="${GC_CITY_PATH:-$(pwd)}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PACK_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SCRIPT_CHECKOUT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 BASE_GOFLAGS="${GOFLAGS:-}"
 BASE_CGO_LDFLAGS="${CGO_LDFLAGS:-}"
@@ -318,6 +600,11 @@ INSTALL_BUILT="${GC_DOLTLITE_INSTALL:-0}"
 INSTALL_DIR="${GC_DOLTLITE_INSTALL_DIR:-}"
 GC_INSTALL="${GC_DOLTLITE_GC_INSTALL:-}"
 BD_INSTALL="${GC_DOLTLITE_BD_INSTALL:-}"
+BUILD_DETAILS_DIR="${GC_DOLTLITE_BUILD_DETAILS_DIR:-}"
+GO_CACHE_ROOT="${GC_DOLTLITE_GO_CACHE_ROOT:-}"
+RESTART_AFTER_INSTALL="${GC_DOLTLITE_RESTART_AFTER_INSTALL:-1}"
+RESTART_WAIT_SECONDS="${GC_DOLTLITE_RESTART_WAIT_SECONDS:-180}"
+GC_SERVICES_STOPPED_FOR_BUILD=0
 VERSION="${GC_VERSION:-dev}"
 BD_BUILD_VALUE="${BD_BUILD:-dev}"
 
@@ -436,6 +723,23 @@ while [ "$#" -gt 0 ]; do
       INSTALL_BUILT=1
       shift
       ;;
+    --build-details-dir)
+      require_value "$1" "${2:-}"
+      BUILD_DETAILS_DIR="$2"
+      shift 2
+      ;;
+    --build-details-dir=*)
+      BUILD_DETAILS_DIR="${1#*=}"
+      shift
+      ;;
+    --restart)
+      RESTART_AFTER_INSTALL=1
+      shift
+      ;;
+    --no-restart)
+      RESTART_AFTER_INSTALL=0
+      shift
+      ;;
     --version)
       require_value "$1" "${2:-}"
       VERSION="$2"
@@ -491,6 +795,17 @@ case "${INSTALL_BUILT,,}" in
   *) usage_error "GC_DOLTLITE_INSTALL must be true or false" ;;
 esac
 
+case "${RESTART_AFTER_INSTALL,,}" in
+  1|true|yes|on) RESTART_AFTER_INSTALL=1 ;;
+  ""|0|false|no|off) RESTART_AFTER_INSTALL=0 ;;
+  *) usage_error "GC_DOLTLITE_RESTART_AFTER_INSTALL must be true or false" ;;
+esac
+
+case "$RESTART_WAIT_SECONDS" in
+  ''|*[!0-9]*) usage_error "GC_DOLTLITE_RESTART_WAIT_SECONDS must be a positive integer" ;;
+  0) usage_error "GC_DOLTLITE_RESTART_WAIT_SECONDS must be greater than zero" ;;
+esac
+
 if [ -z "$DOLTLITE_LIB" ]; then
   DOLTLITE_LIB="$(find_doltlite_lib || true)"
 fi
@@ -499,9 +814,29 @@ if [ -z "$DOLTLITE_LIB" ] || ! has_doltlite_lib "$DOLTLITE_LIB"; then
 fi
 DOLTLITE_LIB="$(abs_dir "$DOLTLITE_LIB")"
 
+if [ -z "$BUILD_DETAILS_DIR" ]; then
+  BUILD_DETAILS_DIR="$PACK_DIR"
+fi
+if [ -z "$GO_CACHE_ROOT" ]; then
+  GO_CACHE_ROOT="$CITY_ROOT/.cache/go"
+fi
+if [ -z "${GOCACHE:-}" ]; then
+  export GOCACHE="$GO_CACHE_ROOT/build"
+fi
+if [ -z "${GOMODCACHE:-}" ]; then
+  export GOMODCACHE="$GO_CACHE_ROOT/mod"
+fi
+if [ -z "${GOTMPDIR:-}" ]; then
+  export GOTMPDIR="$GO_CACHE_ROOT/tmp"
+fi
+mkdir -p "$GOCACHE" "$GOMODCACHE" "$GOTMPDIR"
+
 if ! command -v go >/dev/null 2>&1; then
   die "go is required to build DoltLite-linked binaries"
 fi
+
+prepare_gc_install_path
+stop_before_gc_build
 
 case "$TARGET" in
   gc)
