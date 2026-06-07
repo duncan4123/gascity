@@ -1653,7 +1653,7 @@ func TestMaterializeFS_ManifestPreservesOperatorEdit(t *testing.T) {
 
 	assertFileContentForTest(t, filepath.Join(dst, filepath.FromSlash(rel)), operatorEdit)
 	warningText := warnings.String()
-	for _, want := range []string{"local edits", "newer version available", rel} {
+	for _, want := range []string{"materialized .gc file", "local edits", "newer version available", ".gc/system/packs files update automatically", rel} {
 		if !strings.Contains(warningText, want) {
 			t.Fatalf("warning = %q, want substring %q", warningText, want)
 		}

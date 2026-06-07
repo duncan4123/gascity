@@ -958,6 +958,25 @@ func TestDoltliteReadStoreReadyLimitCutsDeterministicPrefixOnTies(t *testing.T) 
 	}
 }
 
+func TestDoltliteReadStoreReadyFiltersPluralAssigneesAcrossTiers(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStore(t)
+	defer closeStore()
+
+	rows, err := store.Ready(ReadyQuery{
+		Assignees: []string{"rig/ready-worker", "rig/wisp-worker"},
+		TierMode:  TierBoth,
+	})
+	if err != nil {
+		t.Fatalf("Ready plural assignees: %v", err)
+	}
+	if got := testBeadIDs(rows); !slices.Equal(got, []string{"gc-assigned-ready", "gc-tier-wisp"}) {
+		t.Fatalf("plural ready ids = %v, want [gc-assigned-ready gc-tier-wisp]; rows=%#v", got, rows)
+	}
+	if !rows[1].Ephemeral {
+		t.Fatalf("wisp row Ephemeral = false: %#v", rows[1])
+	}
+}
+
 func TestDoltliteReadStoreGCInternalReadWriteHarness(t *testing.T) {
 	store, closeStore := newTestDoltliteReadStore(t)
 	defer closeStore()

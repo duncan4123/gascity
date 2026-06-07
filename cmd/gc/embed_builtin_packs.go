@@ -473,7 +473,8 @@ func materializeFS(embedded fs.FS, dstDir string, preserveOperatorEdits bool, w 
 						}
 						if sha256Hex(onDiskData) != knownHash {
 							// On-disk content differs from last binary-written hash: operator edit.
-							emitBuiltinPackRefreshWarning(w, fmt.Errorf("file %s has local edits; newer version available in the binary", rel))
+							displayPath := filepath.ToSlash(dst)
+							emitBuiltinPackRefreshWarning(w, fmt.Errorf("materialized .gc file %s has local edits; newer version available in the binary; unchanged .gc/system/packs files update automatically on config load/start, but this file was preserved", displayPath))
 							pendingManifest[rel] = knownHash
 							return nil
 						}

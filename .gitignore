@@ -49,3 +49,6 @@ issues.jsonl
 # Beads / Dolt files (added by bd init)
 .beads/proxieddb/
 .beads.backup-*
+
+# bt (beadstui) local config and caches
+.bt/

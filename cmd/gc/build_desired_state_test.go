@@ -1992,6 +1992,71 @@ func TestCollectAssignedWorkBeads_ReadyProbeIncludesActiveSessionAssignees(t *te
 	}
 }
 
+func TestCollectAssignedWorkBeads_BatchesReadyAssignees(t *testing.T) {
+	store := &readyQueryRecordingStore{MemStore: beads.NewMemStore()}
+	firstSession, err := store.Create(beads.Bead{
+		Title:  "first worker session",
+		Type:   sessionBeadType,
+		Status: "open",
+		Metadata: map[string]string{
+			"session_name": "worker-a",
+			"template":     "worker",
+			"state":        "asleep",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create first session bead: %v", err)
+	}
+	secondSession, err := store.Create(beads.Bead{
+		Title:  "second worker session",
+		Type:   sessionBeadType,
+		Status: "open",
+		Metadata: map[string]string{
+			"session_name": "worker-b",
+			"template":     "worker",
+			"state":        "asleep",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create second session bead: %v", err)
+	}
+	if _, err := store.Create(beads.Bead{
+		Title:    "ready work a",
+		Type:     "task",
+		Status:   "open",
+		Assignee: "worker-a",
+	}); err != nil {
+		t.Fatalf("create ready work a: %v", err)
+	}
+	if _, err := store.Create(beads.Bead{
+		Title:    "ready work b",
+		Type:     "task",
+		Status:   "open",
+		Assignee: "worker-b",
+	}); err != nil {
+		t.Fatalf("create ready work b: %v", err)
+	}
+	snapshot := newSessionBeadSnapshot([]beads.Bead{firstSession, secondSession})
+
+	got, _, _, partial := collectAssignedWorkBeadsWithStores(&config.City{}, store, nil, nil, snapshot)
+	if partial {
+		t.Fatal("collectAssignedWorkBeadsWithStores reported partial results")
+	}
+	if len(got) != 2 {
+		t.Fatalf("collected ready work = %#v, want two ready work beads", got)
+	}
+	if len(store.readyQueries) != 1 {
+		t.Fatalf("Ready queries = %#v, want one batched probe", store.readyQueries)
+	}
+	wantAssignees := readyAssignedWorkAssignees(&config.City{}, snapshot, nil)
+	if !reflect.DeepEqual(store.readyQueries[0].Assignees, wantAssignees) {
+		t.Fatalf("Ready query Assignees = %#v, want %#v", store.readyQueries[0].Assignees, wantAssignees)
+	}
+	if store.readyQueries[0].Assignee != "" {
+		t.Fatalf("Ready query Assignee = %q, want empty when batching", store.readyQueries[0].Assignee)
+	}
+}
+
 func TestReadyAssignedWorkAssigneesExcludeBroadIdentities(t *testing.T) {
 	got := readyAssignedWorkAssignees(&config.City{
 		Agents: []config.Agent{{

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -2291,6 +2292,7 @@ func (s *BdStore) Children(parentID string, opts ...QueryOpt) ([]Bead, error) {
 // wisp-aware tier modes.
 func (s *BdStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 	q := readyQueryFromArgs(query)
+	assignees := readyQueryAssignees(q)
 	includeEphemeral := q.TierMode == TierBoth || q.TierMode == TierWisps
 	args := bdReadyArgs(q, includeEphemeral)
 	out, err := s.runner(s.dir, "bd", args...)
@@ -2305,7 +2307,7 @@ func (s *BdStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 		if !IsReadyCandidateForTier(bead, now, q.TierMode) {
 			continue
 		}
-		if q.Assignee != "" && bead.Assignee != q.Assignee {
+		if len(assignees) > 0 && !slices.Contains(assignees, bead.Assignee) {
 			continue
 		}
 		result = append(result, bead)
