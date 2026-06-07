@@ -1321,7 +1321,7 @@ func resolveStoreScopeRoot(cityPath, storePath string) string {
 func openBdStoreAt(storePath, cityPath string) (beads.Store, error) {
 	if filepath.Clean(storePath) == filepath.Clean(cityPath) {
 		store := bdStoreForCity(storePath, cityPath)
-		if optimized, ok := openOptimizedDoltliteStore(storePath, store); ok {
+		if optimized, ok := openOptimizedDoltliteStore(storePath, cityPath, store); ok {
 			return optimized, nil
 		}
 		return store, nil
@@ -1331,7 +1331,7 @@ func openBdStoreAt(storePath, cityPath string) (beads.Store, error) {
 		cfg = nil
 	}
 	store := bdStoreForRig(storePath, cityPath, cfg)
-	if optimized, ok := openOptimizedDoltliteStore(storePath, store); ok {
+	if optimized, ok := openOptimizedDoltliteStore(storePath, cityPath, store); ok {
 		return optimized, nil
 	}
 	return store, nil
