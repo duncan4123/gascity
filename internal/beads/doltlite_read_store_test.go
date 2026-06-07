@@ -71,6 +71,47 @@ func TestDoltliteReadStoreHydratesParent(t *testing.T) {
 	}
 }
 
+func TestDoltliteReadStoreHandlesCanonicalDependencySchema(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStoreWithCanonicalDeps(t)
+	defer closeStore()
+
+	rows, err := store.List(ListQuery{Type: "task", Sort: SortCreatedAsc})
+	if err != nil {
+		t.Fatalf("List tasks with canonical deps schema: %v", err)
+	}
+	child := findTestBead(t, rows, "gc-child")
+	if child.ParentID != "gc-parent" {
+		t.Fatalf("child parent = %q, want gc-parent", child.ParentID)
+	}
+
+	down, err := store.DepList("gc-child", "down")
+	if err != nil {
+		t.Fatalf("DepList down with canonical deps schema: %v", err)
+	}
+	if len(down) != 1 || down[0].DependsOnID != "gc-parent" {
+		t.Fatalf("down deps = %#v, want gc-parent", down)
+	}
+
+	up, err := store.DepList("gc-parent", "up")
+	if err != nil {
+		t.Fatalf("DepList up with canonical deps schema: %v", err)
+	}
+	if len(up) != 1 || up[0].IssueID != "gc-child" {
+		t.Fatalf("up deps = %#v, want gc-child", up)
+	}
+
+	ready, err := store.Ready()
+	if err != nil {
+		t.Fatalf("Ready with canonical deps schema: %v", err)
+	}
+	if !hasTestBead(ready, "gc-ready") {
+		t.Fatalf("Ready missing gc-ready: %#v", ready)
+	}
+	if hasTestBead(ready, "gc-blocked") {
+		t.Fatalf("Ready included blocked issue: %#v", ready)
+	}
+}
+
 func TestDoltliteReadStoreTypeFallbackCanSkipLabels(t *testing.T) {
 	store, closeStore := newTestDoltliteReadStore(t)
 	defer closeStore()
@@ -982,6 +1023,50 @@ func newTestDoltliteReadStore(t *testing.T) (*DoltliteReadStore, func()) {
 	return store, func() { _ = store.CloseStore() }
 }
 
+func newTestDoltliteReadStoreWithCanonicalDeps(t *testing.T) (*DoltliteReadStore, func()) {
+	t.Helper()
+	dir := t.TempDir()
+	beadsDir := filepath.Join(dir, ".beads")
+	if err := os.MkdirAll(filepath.Join(beadsDir, "doltlite"), 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+	meta := []byte(`{"backend":"doltlite","database":"doltlite","dolt_database":"hq"}`)
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), meta, 0o600); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+
+	dbPath := filepath.Join(beadsDir, "doltlite", "hq.db")
+	db, err := sql.Open("sqlite", dbPath+"?_busy_timeout=10000")
+	if err != nil {
+		t.Fatalf("open canonical fixture db: %v", err)
+	}
+	defer db.Close() //nolint:errcheck // test cleanup
+	createTestDoltliteCanonicalDependencySchema(t, db)
+
+	now := time.Now().UTC()
+	for _, issue := range []testDoltliteIssue{
+		{ID: "gc-parent", Title: "parent", Status: "open", IssueType: "task", CreatedAt: now},
+		{ID: "gc-child", Title: "child", Status: "open", IssueType: "task", CreatedAt: now.Add(time.Second)},
+		{ID: "gc-blocker", Title: "blocker", Status: "open", IssueType: "task", CreatedAt: now.Add(2 * time.Second)},
+		{ID: "gc-blocked", Title: "blocked", Status: "open", IssueType: "task", CreatedAt: now.Add(3 * time.Second)},
+		{ID: "gc-ready", Title: "ready", Status: "open", IssueType: "task", CreatedAt: now.Add(4 * time.Second)},
+	} {
+		insertTestDoltliteCanonicalIssue(t, db, issue)
+	}
+	insertTestDoltliteCanonicalDep(t, db, "gc-child", "gc-parent", "parent-child")
+	insertTestDoltliteCanonicalDep(t, db, "gc-blocked", "gc-blocker", "blocks")
+
+	backing := NewBdStore(dir, func(string, string, ...string) ([]byte, error) {
+		t.Fatal("backing bd runner should not be called by canonical doltlite read tests")
+		return nil, nil
+	})
+	store, err := NewDoltliteReadStore(dir, backing)
+	if err != nil {
+		t.Fatalf("NewDoltliteReadStore: %v", err)
+	}
+	return store, func() { _ = store.CloseStore() }
+}
+
 type testDoltliteDependency struct {
 	DependsOnID       string
 	DependsOnIssueID  string
@@ -1063,6 +1148,75 @@ func createTestDoltliteSchema(t *testing.T, db *sql.DB) {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("create test doltlite schema: %v\nstmt: %s", err, stmt)
 		}
+	}
+}
+
+func createTestDoltliteCanonicalDependencySchema(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, stmt := range []string{
+		`CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT)`,
+		`CREATE TABLE issues (
+			id TEXT PRIMARY KEY,
+			title TEXT,
+			status TEXT,
+			issue_type TEXT,
+			priority INTEGER,
+			created_at TEXT,
+			updated_at TEXT,
+			assignee TEXT,
+			description TEXT,
+			metadata TEXT
+		)`,
+		`CREATE TABLE labels (issue_id TEXT, label TEXT)`,
+		`CREATE TABLE dependencies (
+			issue_id TEXT,
+			depends_on_id TEXT,
+			type TEXT
+		)`,
+		`INSERT INTO config (key, value) VALUES ('issue_prefix', 'gc')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("create canonical doltlite schema: %v\nstmt: %s", err, stmt)
+		}
+	}
+}
+
+func insertTestDoltliteCanonicalIssue(t *testing.T, db *sql.DB, issue testDoltliteIssue) {
+	t.Helper()
+	if issue.Status == "" {
+		issue.Status = "open"
+	}
+	if issue.IssueType == "" {
+		issue.IssueType = "task"
+	}
+	if issue.CreatedAt.IsZero() {
+		issue.CreatedAt = time.Now().UTC()
+	}
+	if issue.UpdatedAt.IsZero() {
+		issue.UpdatedAt = issue.CreatedAt
+	}
+	if _, err := db.Exec(`INSERT INTO issues (
+		id, title, status, issue_type, priority, created_at, updated_at,
+		assignee, description, metadata
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}')`,
+		issue.ID,
+		issue.Title,
+		issue.Status,
+		issue.IssueType,
+		issue.Priority,
+		issue.CreatedAt.Format(time.RFC3339Nano),
+		issue.UpdatedAt.Format(time.RFC3339Nano),
+		issue.Assignee,
+		issue.Description,
+	); err != nil {
+		t.Fatalf("insert canonical issue %s: %v", issue.ID, err)
+	}
+}
+
+func insertTestDoltliteCanonicalDep(t *testing.T, db *sql.DB, issueID, dependsOnID, depType string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO dependencies (issue_id, depends_on_id, type) VALUES (?, ?, ?)`, issueID, dependsOnID, depType); err != nil {
+		t.Fatalf("insert canonical dep %s -> %s: %v", issueID, dependsOnID, err)
 	}
 }
 
