@@ -2875,7 +2875,7 @@ func TestWorkflowServeControlReadyQueryUsesControlTiers(t *testing.T) {
 	}
 }
 
-func TestWorkflowServeControlReadyQueryBD105IncludesEphemeral(t *testing.T) {
+func TestWorkflowServeControlReadyQueryBD105DoltKeepsPerTargetProbes(t *testing.T) {
 	query := workflowServeControlReadyQueryForBeads(
 		config.Agent{Name: config.ControlDispatcherAgentName},
 		config.BeadsConfig{BDCompatibility: config.BeadsBDCompatibility105},
@@ -2886,8 +2886,86 @@ func TestWorkflowServeControlReadyQueryBD105IncludesEphemeral(t *testing.T) {
 		`bd --readonly --sandbox ready --include-ephemeral --metadata-field "gc.routed_to=$route" --unassigned --exclude-type=epic --json --sort oldest --limit=20`,
 	} {
 		if !strings.Contains(query, want) {
-			t.Fatalf("workflowServeControlReadyQueryForBeads(bd-1.0.5) missing %q in %q", want, query)
+			t.Fatalf("workflowServeControlReadyQueryForBeads(bd-1.0.5/dolt) missing %q in %q", want, query)
 		}
+	}
+}
+
+func TestWorkflowServeControlReadyQueryBD105DoltliteUsesSingleBroadReadyProbe(t *testing.T) {
+	query := workflowServeControlReadyQueryForBeads(
+		config.Agent{Name: config.ControlDispatcherAgentName},
+		config.BeadsConfig{Backend: "doltlite", BDCompatibility: config.BeadsBDCompatibility105},
+	)
+	want := `bd --readonly --sandbox ready --include-ephemeral --exclude-type=epic --json --sort oldest --limit=0`
+	if !strings.Contains(query, want) {
+		t.Fatalf("workflowServeControlReadyQueryForBeads(bd-1.0.5/doltlite) missing %q in %q", want, query)
+	}
+	if strings.Contains(query, `--assignee="$cand"`) || strings.Contains(query, `--metadata-field "gc.routed_to=$route"`) {
+		t.Fatalf("workflowServeControlReadyQueryForBeads(bd-1.0.5/doltlite) should not issue per-target bd ready probes: %q", query)
+	}
+}
+
+func TestWorkflowServeControlReadyQueryBD105DoltliteFiltersBroadReadyProbe(t *testing.T) {
+	query := workflowServeControlReadyQueryForBeads(
+		config.Agent{Name: config.ControlDispatcherAgentName, Dir: "gascity"},
+		config.BeadsConfig{Backend: "doltlite", BDCompatibility: config.BeadsBDCompatibility105},
+		"gascity--control-dispatcher",
+	)
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "bd.log")
+	bdPath := filepath.Join(tmp, "bd")
+	if err := os.WriteFile(bdPath, []byte(`#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$BD_LOG"
+case "$*" in
+  "--readonly --sandbox ready --include-ephemeral --exclude-type=epic --json --sort oldest --limit=0")
+    cat <<'JSON'
+[
+  {"id":"ga-assigned","assignee":"gascity--control-dispatcher","metadata":{}},
+  {"id":"ga-legacy-assigned","assignee":"gascity--workflow-control","metadata":{}},
+  {"id":"ga-session-id","assignee":"gj-control","metadata":{}},
+  {"id":"ga-route","assignee":"","metadata":{"gc.run_target":"gascity/control-dispatcher"}},
+  {"id":"ga-routed","metadata":{"gc.routed_to":"gascity/control-dispatcher"}},
+  {"id":"ga-legacy-route","assignee":"","metadata":{"gc.routed_to":"gascity/workflow-control"}},
+  {"id":"ga-unrelated-assignee","assignee":"other/control-dispatcher","metadata":{}},
+  {"id":"ga-unrelated-route","assignee":"","metadata":{"gc.routed_to":"other/control-dispatcher"}},
+  {"id":"ga-routed","metadata":{"gc.run_target":"gascity/control-dispatcher"}}
+]
+JSON
+    ;;
+  *)
+    printf 'unexpected args: %s\n' "$*" >&2
+    exit 66
+    ;;
+esac
+`), 0o755); err != nil {
+		t.Fatalf("write fake bd: %v", err)
+	}
+	out, err := shellWorkQueryWithEnv(query, t.TempDir(), []string{
+		"PATH=" + tmp + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"BD_LOG=" + logPath,
+		"GC_SESSION_ID=gj-control",
+		"GC_SESSION_NAME=manual-control",
+		"GC_ALIAS=gascity/control-dispatcher",
+	})
+	if err != nil {
+		t.Fatalf("run workflow serve query: %v", err)
+	}
+	assertJSONEqual(t, out, `[
+		{"id":"ga-assigned","assignee":"gascity--control-dispatcher","metadata":{}},
+		{"id":"ga-legacy-assigned","assignee":"gascity--workflow-control","metadata":{}},
+		{"id":"ga-session-id","assignee":"gj-control","metadata":{}},
+		{"id":"ga-route","assignee":"","metadata":{"gc.run_target":"gascity/control-dispatcher"}},
+		{"id":"ga-routed","metadata":{"gc.run_target":"gascity/control-dispatcher"}},
+		{"id":"ga-legacy-route","assignee":"","metadata":{"gc.routed_to":"gascity/workflow-control"}}
+	]`)
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read bd log: %v", err)
+	}
+	calls := strings.Split(strings.TrimSpace(string(logData)), "\n")
+	if len(calls) != 1 {
+		t.Fatalf("bd calls = %d, want 1; calls:\n%s", len(calls), string(logData))
 	}
 }
 
