@@ -33,7 +33,7 @@ func TestResolveLockedRemoteImportAcceptsBundledSyntheticCache(t *testing.T) {
 	}
 }
 
-func TestResolveLockedRemoteImportRejectsBundledSyntheticContentDrift(t *testing.T) {
+func TestResolveLockedRemoteImportRefreshesBundledSyntheticContentDrift(t *testing.T) {
 	home, cityDir := setupBundledImportTest(t)
 	source := bundledPackSource()
 	commit := canonicalBundledCommit(source)
@@ -42,18 +42,25 @@ func TestResolveLockedRemoteImportRejectsBundledSyntheticContentDrift(t *testing
 	if err := builtinpacks.MaterializeSyntheticRepo(cacheDir, commit); err != nil {
 		t.Fatalf("materialize synthetic repo: %v", err)
 	}
-	writeTestFile(t, cacheDir, "internal/bootstrap/packs/core/pack.toml", `
-[pack]
-name = "tampered"
+	writeTestFile(t, cacheDir, ".gc-bundled-pack-cache.toml", `
 schema = 1
+repository = "https://github.com/gastownhall/gascity.git"
+commit = "`+commit+`"
+content_hash = "sha256:deadbeef"
 `)
 
-	_, _, err := resolveLockedRemoteImport(source, cityDir)
-	if err == nil {
-		t.Fatal("expected synthetic cache content drift error")
+	got, ok, err := resolveLockedRemoteImport(source, cityDir)
+	if err != nil {
+		t.Fatalf("resolveLockedRemoteImport: %v", err)
 	}
-	if !strings.Contains(err.Error(), "synthetic cache is invalid") || !strings.Contains(err.Error(), "content differs") {
-		t.Fatalf("error = %v, want synthetic cache content drift", err)
+	if !ok {
+		t.Fatal("resolveLockedRemoteImport ok = false, want true after refresh")
+	}
+	if got != cacheDir {
+		t.Fatalf("cacheDir = %q, want %q", got, cacheDir)
+	}
+	if err := builtinpacks.ValidateSyntheticRepo(cacheDir, commit); err != nil {
+		t.Fatalf("ValidateSyntheticRepo after refresh: %v", err)
 	}
 }
 
@@ -93,6 +100,45 @@ func TestResolveInstalledRemoteImportAcceptsBundledSyntheticCache(t *testing.T) 
 	}
 	if got != cacheDir {
 		t.Fatalf("cacheDir = %q, want %q", got, cacheDir)
+	}
+}
+
+func TestResolveInstalledRemoteImportInvalidatesMemoizedBundledSyntheticHashChanges(t *testing.T) {
+	home, cityDir := setupBundledImportTest(t)
+	source := bundledPackSource()
+	commit := canonicalBundledCommit(source)
+	writeBundledImportLock(t, cityDir, source, commit)
+	cacheDir := bundledRepoCacheDir(home, source, commit)
+	if err := builtinpacks.MaterializeSyntheticRepo(cacheDir, commit); err != nil {
+		t.Fatalf("materialize synthetic repo: %v", err)
+	}
+
+	if got, err := resolveInstalledRemoteImport(source, "", cityDir); err != nil {
+		t.Fatalf("resolveInstalledRemoteImport (warm cache): %v", err)
+	} else if got != cacheDir {
+		t.Fatalf("warm cache path = %q, want %q", got, cacheDir)
+	}
+
+	oldConfigHash := syntheticCacheContentHash
+	syntheticCacheContentHash = func() (string, error) {
+		return "sha256:cafebabe", nil
+	}
+	t.Cleanup(func() { syntheticCacheContentHash = oldConfigHash })
+
+	restoreBuiltinsHash := builtinpacks.SetSyntheticContentHashForTest(func() (string, error) {
+		return "sha256:cafebabe", nil
+	})
+	t.Cleanup(restoreBuiltinsHash)
+
+	got, err := resolveInstalledRemoteImport(source, "", cityDir)
+	if err != nil {
+		t.Fatalf("resolveInstalledRemoteImport after synthetic hash change: %v", err)
+	}
+	if got != cacheDir {
+		t.Fatalf("cacheDir = %q, want %q", got, cacheDir)
+	}
+	if err := builtinpacks.ValidateSyntheticRepo(cacheDir, commit); err != nil {
+		t.Fatalf("ValidateSyntheticRepo after memoized refresh: %v", err)
 	}
 }
 
