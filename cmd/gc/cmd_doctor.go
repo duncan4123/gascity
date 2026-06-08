@@ -126,6 +126,9 @@ func managedDoltOpsCheckSkip(cityPath string, cfg *config.City, cfgErr error) bo
 	if gcDoltSkip() {
 		return true
 	}
+	if !cityUsesManagedDoltBeadsLifecycle(cityPath) {
+		return true
+	}
 	return !doctor.ManagedLocalDoltChecksApplicableForConfig(cityPath, cfg, cfgErr)
 }
 
@@ -315,7 +318,6 @@ func buildDoctorChecks(cityPath string, cfg *config.City, cfgErr error, opts bui
 		register(doctor.NewDoltConfigCheckForConfig(cityPath, opts.SkipManagedDoltCheck, cfg, cfgErr))
 		register(doctor.NewScopedDoltVersionCheckForConfig(cityPath, opts.SkipManagedDoltCheck, cfg, cfgErr))
 	}
-
 	register(&doctor.EventsLogCheck{})
 	register(doctor.NewEventLogSizeCheck())
 	// bd auto-backup growth canary. bd's auto-backup pipeline (upstream of
