@@ -496,9 +496,9 @@ func TestRemoteCacheFingerprintTracksLinkedWorktreeIndex(t *testing.T) {
 	git(sourceDir, "push", "origin", "feature:feature")
 	git(repoDir, "worktree", "add", "--detach", worktreeDir, "HEAD")
 
-	before := remoteCacheFingerprint(worktreeDir)
+	before := remoteCacheFingerprint(repoDir, worktreeDir)
 	git(worktreeDir, "checkout", "-q", "feature")
-	after := remoteCacheFingerprint(worktreeDir)
+	after := remoteCacheFingerprint(repoDir, worktreeDir)
 
 	if before == after {
 		t.Fatalf("fingerprint did not change after linked-worktree checkout\nbefore: %s\nafter:  %s", before, after)
