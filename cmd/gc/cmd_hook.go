@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/fsys"
 )
 
 func newHookCmd(stdout, stderr io.Writer) *cobra.Command {
@@ -129,7 +130,8 @@ func cmdHookWithOptions(args []string, opts hookCommandOptions, stdout, stderr i
 	// do the same immediately after loadCityConfig.
 	resolveRigPaths(cityPath, cfg.Rigs)
 
-	if citySuspended(cfg) {
+	st, _ := loadSuspensionState(fsys.OSFS{}, cityPath)
+	if citySuspendedWithState(cfg, st) {
 		fmt.Fprintln(stderr, "gc hook: city is suspended") //nolint:errcheck // best-effort stderr
 		return 1
 	}
@@ -140,7 +142,7 @@ func cmdHookWithOptions(args []string, opts hookCommandOptions, stdout, stderr i
 		return 1
 	}
 
-	if isAgentEffectivelySuspended(cfg, &a) {
+	if isAgentEffectivelySuspendedWith(cfg, &a, st) {
 		fmt.Fprintf(stderr, "gc hook: agent %q is suspended\n", agentName) //nolint:errcheck // best-effort stderr
 		return 1
 	}

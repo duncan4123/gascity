@@ -320,7 +320,7 @@ func (s *DoltliteReadStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 			tableLimit = 0
 		}
 		readyWhere, readyArgs := s.doltliteReadyIssueWhere(tables)
-		rows, err := s.queryIssueTable(q, tables, readyWhere, readyArgs, tableLimit, "ORDER BY COALESCE(i.priority, 2) ASC, i.created_at ASC")
+		rows, err := s.queryIssueTable(q, tables, readyWhere, readyArgs, tableLimit, "ORDER BY COALESCE(i.priority, 2) ASC, i.created_at ASC, i.id ASC")
 		if err != nil {
 			return nil, err
 		}
@@ -337,7 +337,10 @@ func (s *DoltliteReadStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 		if left != right {
 			return left < right
 		}
-		return out[i].CreatedAt.Before(out[j].CreatedAt)
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
 	})
 	if q.Limit > 0 && len(out) > q.Limit {
 		out = out[:q.Limit]
@@ -1294,12 +1297,15 @@ func (s *DoltliteReadStore) queryIssueTable(query ListQuery, tables doltliteTabl
 	if len(where) > 0 {
 		sqlText += " WHERE " + strings.Join(where, " AND ")
 	}
+	// The id tiebreaker matches sortBeadsForQuery's (created_at, id) total
+	// order so a SQL LIMIT cuts a deterministic prefix even when rows share
+	// a created_at timestamp (#3208).
 	if orderBy != "" {
 		sqlText += " " + orderBy
 	} else if query.Sort == SortCreatedAsc {
-		sqlText += " ORDER BY i.created_at ASC"
+		sqlText += " ORDER BY i.created_at ASC, i.id ASC"
 	} else {
-		sqlText += " ORDER BY i.created_at DESC"
+		sqlText += " ORDER BY i.created_at DESC, i.id DESC"
 	}
 	if limit > 0 {
 		sqlText += fmt.Sprintf(" LIMIT %d", limit)

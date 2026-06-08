@@ -5893,6 +5893,12 @@
               "boolean",
               "null"
             ]
+          },
+          "SuspendedOnStart": {
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         },
         "required": [
@@ -5901,6 +5907,7 @@
           "Prefix",
           "DefaultBranch",
           "Suspended",
+          "SuspendedOnStart",
           "FormulaVars"
         ],
         "type": "object"
@@ -26254,6 +26261,16 @@
             "schema": {
               "description": "How long to block waiting for changes (Go duration string, e.g. 30s). Default 30s, max 2m.",
               "type": "string"
+            }
+          },
+          {
+            "description": "When true, omit the expensive store-health, session-count, and work-count blocks for low-cost dashboard polls.",
+            "explode": false,
+            "in": "query",
+            "name": "lite",
+            "schema": {
+              "description": "When true, omit the expensive store-health, session-count, and work-count blocks for low-cost dashboard polls.",
+              "type": "boolean"
             }
           }
         ],

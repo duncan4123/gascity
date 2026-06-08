@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,7 +9,9 @@ import (
 	"github.com/gastownhall/gascity/internal/agent"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/fsys"
 	"github.com/gastownhall/gascity/internal/session"
+	"github.com/gastownhall/gascity/internal/suspensionstate"
 	workdirutil "github.com/gastownhall/gascity/internal/workdir"
 )
 
@@ -25,10 +26,18 @@ type (
 	mailCounts  = StatusMailCounts
 )
 
+var statusStoreReadTimeout = time.Second
+
 // StatusInput is the Huma input for GET /v0/status.
 type StatusInput struct {
 	CityScope
 	BlockingParam
+	// Lite trims the body to the cheap fleet-overview fields for
+	// high-frequency dashboard polls, omitting the expensive per-request
+	// blocks: StoreHealth (full closed-history Dolt scan), the
+	// session-count detail, and the per-rig work loop. The default/full
+	// body that `gc status` renders is unchanged (gascity#3186).
+	Lite bool `query:"lite" required:"false" doc:"When true, omit the expensive store-health, session-count, and work-count blocks for low-cost dashboard polls."`
 }
 
 // humaHandleStatus is the Huma-typed handler for GET /v0/status.
@@ -44,32 +53,59 @@ func (s *Server) humaHandleStatus(ctx context.Context, input *StatusInput) (*Ind
 		return nil, err
 	}
 	bp := input.toBlockingParams()
-	if bp.isBlocking() {
+	blocking := bp.isBlocking()
+	if blocking {
 		waitForChange(ctx, s.state.EventProvider(), bp)
 	}
 	index := s.latestIndex()
 
-	// Check typed response cache (Fix 3l).
+	// /status keys its response cache on a TIME bucket, not the event index:
+	// on a busy city the sequence advances every poll, so an index-keyed
+	// entry would miss on nearly every request and force a full O(store-size)
+	// rebuild (gascity#3186). The bucket changes only once per
+	// timeBucketResponseCacheTTL, so high-frequency dashboard polls reuse the
+	// built body. The ?lite variant caches under its own key (the shared
+	// cache map keys on the string key, so the suffix is enough).
+	//
+	// Strict-freshness callers (blocking ?index=&wait=) bypass this cache so
+	// the body they receive reflects the event they waited for, never a body
+	// built before it.
 	cacheKey := "status"
-	if body, ok := cachedResponseAs[StatusBody](s, cacheKey, index); ok {
-		return &IndexOutput[StatusBody]{Index: index, CacheAgeS: cacheAgeSeconds(store), Body: body}, nil
+	if input.Lite {
+		cacheKey = "status?lite"
+	}
+	bucket := responseCacheTimeBucket(time.Now())
+	if !blocking {
+		if body, ok := cachedResponseAs[StatusBody](s, cacheKey, bucket); ok {
+			return &IndexOutput[StatusBody]{Index: index, CacheAgeS: cacheAgeSeconds(store), Body: body}, nil
+		}
 	}
 
-	resp := s.buildStatusBody()
-	s.storeResponse(cacheKey, index, resp)
+	resp := s.buildStatusBody(input.Lite)
+	if !blocking {
+		s.storeResponse(cacheKey, bucket, resp)
+	}
 
 	return &IndexOutput[StatusBody]{Index: index, CacheAgeS: cacheAgeSeconds(store), Body: resp}, nil
 }
 
 // buildStatusBody constructs the status response body.
-func (s *Server) buildStatusBody() StatusBody {
+//
+// When lite is true the expensive per-request blocks are omitted for
+// high-frequency dashboard polls (gascity#3186): the per-rig work-count loop
+// (a scan of every rig store), the StoreHealth block (a full closed-history
+// Dolt row scan), and the session-count detail. The session snapshot itself
+// is still read because agent running/suspended state depends on it. The full
+// (non-lite) body that `gc status` renders is unchanged.
+func (s *Server) buildStatusBody(lite bool) StatusBody {
 	cfg := s.state.Config()
 	sp := s.state.SessionProvider()
-	store := s.state.CityBeadStore()
 	cityName := s.state.CityName()
 	sessTmpl := cfg.Workspace.SessionTemplate
 	sessionSnapshot := s.statusSessionSnapshot()
 	partialErrors := append([]string(nil), sessionSnapshot.partialErrors...)
+
+	citySt, _ := suspensionstate.Load(fsys.OSFS{}, s.state.CityPath())
 
 	// Count agents by state and collect per-agent detail rows in a single
 	// pass. Pool expansion emits one detail row per instance with a
@@ -80,7 +116,7 @@ func (s *Server) buildStatusBody() StatusBody {
 	agentDetails := make([]StatusAgentDetail, 0, len(cfg.Agents))
 	suspendedRigs := make(map[string]bool, len(cfg.Rigs))
 	for _, r := range cfg.Rigs {
-		if r.Suspended {
+		if suspensionstate.EffectiveRigSuspended(citySt, r.Name, r.EffectiveSuspendedOnStart()) {
 			suspendedRigs[r.Name] = true
 		}
 	}
@@ -154,7 +190,7 @@ func (s *Server) buildStatusBody() StatusBody {
 	rc := rigCounts{Total: len(cfg.Rigs)}
 	rigDetails := make([]StatusRigDetail, 0, len(cfg.Rigs))
 	for _, rig := range cfg.Rigs {
-		rigSuspended := rig.Suspended
+		rigSuspended := suspensionstate.EffectiveRigSuspended(citySt, rig.Name, rig.EffectiveSuspendedOnStart())
 		if !rigSuspended {
 			if total := perRigAgentTotals[rig.Name]; total > 0 && total == perRigAgentsSuspended[rig.Name] {
 				rigSuspended = true
@@ -171,36 +207,39 @@ func (s *Server) buildStatusBody() StatusBody {
 		})
 	}
 
-	// Count work items (best-effort).
+	// Count work items (best-effort). Skipped in lite mode: scanning every
+	// rig store is one of the per-request costs the lite poll avoids.
 	var wc workCounts
-	stores := s.state.BeadStores()
-	seenStores := make(map[string]bool)
-	for _, rigName := range sortedRigNames(stores) {
-		store := stores[rigName]
-		key := fmt.Sprintf("%p", store)
-		if seenStores[key] {
-			continue
-		}
-		seenStores[key] = true
-		list, err := store.List(beads.ListQuery{AllowScan: true})
-		if err != nil {
-			partialErrors = append(partialErrors, fmt.Sprintf("rig %s work: %v", rigName, err))
-			if !beads.IsPartialResult(err) || len(list) == 0 {
+	if !lite {
+		stores := s.state.BeadStores()
+		seenStores := make(map[string]bool)
+		for _, rigName := range sortedRigNames(stores) {
+			store := stores[rigName]
+			key := fmt.Sprintf("%p", store)
+			if seenStores[key] {
 				continue
 			}
-		}
-		for _, b := range list {
-			switch b.Type {
-			case "message", "convoy", "convergence":
-				continue
+			seenStores[key] = true
+			list, err := statusListStoreWithTimeout(store, beads.ListQuery{AllowScan: true})
+			if err != nil {
+				partialErrors = append(partialErrors, fmt.Sprintf("rig %s work: %v", rigName, err))
+				if !beads.IsPartialResult(err) || len(list) == 0 {
+					continue
+				}
 			}
-			switch b.Status {
-			case "in_progress":
-				wc.InProgress++
-			case "ready":
-				wc.Ready++
-			case "open":
-				wc.Open++
+			for _, b := range list {
+				switch b.Type {
+				case "message", "convoy", "convergence":
+					continue
+				}
+				switch b.Status {
+				case "in_progress":
+					wc.InProgress++
+				case "ready":
+					wc.Ready++
+				case "open":
+					wc.Open++
+				}
 			}
 		}
 	}
@@ -214,9 +253,11 @@ func (s *Server) buildStatusBody() StatusBody {
 			continue
 		}
 		seenProvs[key] = true
-		if total, unread, err := mp.Count(""); err == nil {
+		if total, unread, err := statusMailCountWithTimeout(mp); err == nil {
 			mc.Total += total
 			mc.Unread += unread
+		} else {
+			partialErrors = append(partialErrors, fmt.Sprintf("mail: %v", err))
 		}
 	}
 
@@ -225,7 +266,7 @@ func (s *Server) buildStatusBody() StatusBody {
 	for _, ns := range cfg.NamedSessions {
 		identity := ns.QualifiedName()
 		mode := ns.ModeOrDefault()
-		status := s.namedSessionStatus(cfg, store, cityName, identity, mode, suspendedRigs)
+		status := s.namedSessionStatus(cfg, sessionSnapshot, cityName, identity, mode, suspendedRigs)
 		namedSessionDetails = append(namedSessionDetails, StatusNamedSessionDetail{
 			Identity: identity,
 			Status:   status,
@@ -233,10 +274,11 @@ func (s *Server) buildStatusBody() StatusBody {
 		})
 	}
 
-	// Session counts: walk the city bead store for session beads.
+	// Session counts: walk the city bead store for session beads. Omitted in
+	// lite mode (detail block, not needed for the high-frequency overview).
 	var sessionCounts *StatusSessionCountsDetail
-	if store != nil {
-		active, suspended := s.countSessions(store)
+	if !lite && len(sessionSnapshot.bySessionName) > 0 {
+		active, suspended := s.countSessions(sessionSnapshot)
 		if active > 0 || suspended > 0 {
 			sessionCounts = &StatusSessionCountsDetail{Active: active, Suspended: suspended}
 		}
@@ -245,6 +287,13 @@ func (s *Server) buildStatusBody() StatusBody {
 	uptime := int(time.Since(s.state.StartedAt()).Seconds())
 	versions := s.resolveComponentVersions()
 
+	// StoreHealth carries a full closed-history Dolt row scan (behind a 30s
+	// sub-cache). Omitted in lite mode so a cold lite poll never triggers it.
+	var storeHealth *StatusStoreHealth
+	if !lite {
+		storeHealth = s.cachedStoreHealth(time.Now())
+	}
+
 	return StatusBody{
 		Name:                cityName,
 		Path:                s.state.CityPath(),
@@ -252,7 +301,7 @@ func (s *Server) buildStatusBody() StatusBody {
 		DoltVersion:         versions.Dolt,
 		BeadsVersion:        versions.Beads,
 		UptimeSec:           uptime,
-		Suspended:           cfg.Workspace.Suspended,
+		Suspended:           suspensionstate.EffectiveCitySuspended(citySt, cfg.Workspace.EffectiveSuspendedOnStart()),
 		AgentCount:          ac.Total,
 		RigCount:            rc.Total,
 		Running:             rawRunning,
@@ -262,7 +311,7 @@ func (s *Server) buildStatusBody() StatusBody {
 		Mail:                mc,
 		Partial:             len(partialErrors) > 0,
 		PartialErrors:       partialErrors,
-		StoreHealth:         s.cachedStoreHealth(time.Now()),
+		StoreHealth:         storeHealth,
 		Beads:               s.cityBeadsDiagnostic(),
 		AgentDetails:        agentDetails,
 		RigDetails:          rigDetails,
@@ -312,7 +361,7 @@ func poolScaleLabel(a config.Agent) string {
 // session's state metadata when a bead is present.
 func (s *Server) namedSessionStatus(
 	cfg *config.City,
-	store beads.Store,
+	snapshot statusSessionSnapshot,
 	cityName, identity, mode string,
 	suspendedRigs map[string]bool,
 ) string {
@@ -322,26 +371,18 @@ func (s *Server) namedSessionStatus(
 			status = "degraded blocked"
 		}
 	}
-	if store == nil {
-		return status
-	}
 
 	runtimeName := config.NamedSessionRuntimeName(cityName, cfg.Workspace, identity)
-	id, err := session.ResolveSessionIDAllowClosed(store, runtimeName)
-	if err != nil {
-		if errors.Is(err, session.ErrSessionNotFound) {
-			return status
+	if info, ok := snapshot.bySessionName[runtimeName]; ok {
+		if info.state != "" {
+			return string(info.state)
 		}
-		return "lookup error: " + err.Error()
+		return "materialized"
 	}
-	bead, err := store.Get(id)
-	if err != nil {
-		return "lookup error: " + err.Error()
+	if len(snapshot.partialErrors) > 0 {
+		return "lookup error: " + strings.Join(snapshot.partialErrors, "; ")
 	}
-	if state := strings.TrimSpace(bead.Metadata["state"]); state != "" {
-		return state
-	}
-	return "materialized"
+	return status
 }
 
 // namedSessionTemplateBlocked reports whether a named-session's target
@@ -375,19 +416,13 @@ func namedSessionTemplateBlocked(cfg *config.City, ns *config.NamedSession, susp
 	return false
 }
 
-// countSessions walks the city bead store and tallies active / suspended
-// session beads. Errors from the underlying List are silently swallowed —
-// partial counts are better than a full read failure for a status endpoint.
-func (s *Server) countSessions(store beads.Store) (active, suspended int) {
-	list, err := store.List(beads.ListQuery{Type: "session", IncludeClosed: false, AllowScan: true})
-	if err != nil {
-		return 0, 0
-	}
-	for _, b := range list {
-		switch strings.TrimSpace(b.Metadata["state"]) {
-		case string(session.StateActive):
+// countSessions tallies active / suspended sessions from the status snapshot.
+func (s *Server) countSessions(snapshot statusSessionSnapshot) (active, suspended int) {
+	for _, info := range snapshot.bySessionName {
+		switch info.state {
+		case session.StateActive:
 			active++
-		case string(session.StateSuspended):
+		case session.StateSuspended:
 			suspended++
 		}
 	}
@@ -417,7 +452,30 @@ func (s *Server) statusSessionSnapshot() statusSessionSnapshot {
 		return snapshot
 	}
 
-	rows, partialErrors, err := sessionReadModelRows(store)
+	type snapshotResult struct {
+		rows          []beads.Bead
+		partialErrors []string
+		err           error
+	}
+	done := make(chan snapshotResult, 1)
+	go func() {
+		rows, partialErrors, err := sessionReadModelRows(store)
+		done <- snapshotResult{rows: rows, partialErrors: partialErrors, err: err}
+	}()
+
+	var rows []beads.Bead
+	var partialErrors []string
+	var err error
+	select {
+	case result := <-done:
+		rows = result.rows
+		partialErrors = result.partialErrors
+		err = result.err
+	case <-time.After(statusStoreReadTimeout):
+		snapshot.partialErrors = []string{fmt.Sprintf("sessions: loading session snapshot timed out after %s", statusStoreReadTimeout)}
+		return snapshot
+	}
+
 	if err != nil {
 		snapshot.partialErrors = []string{fmt.Sprintf("sessions: %v", err)}
 		return snapshot
@@ -453,6 +511,52 @@ func (s *Server) statusSessionSnapshot() statusSessionSnapshot {
 		}
 	}
 	return snapshot
+}
+
+func statusListStoreWithTimeout(store beads.Store, query beads.ListQuery) ([]beads.Bead, error) {
+	if store == nil {
+		return nil, nil
+	}
+	type listResult struct {
+		rows []beads.Bead
+		err  error
+	}
+	done := make(chan listResult, 1)
+	go func() {
+		rows, err := store.List(query)
+		done <- listResult{rows: rows, err: err}
+	}()
+	select {
+	case result := <-done:
+		return result.rows, result.err
+	case <-time.After(statusStoreReadTimeout):
+		return nil, fmt.Errorf("list timed out after %s", statusStoreReadTimeout)
+	}
+}
+
+func statusMailCountWithTimeout(mp interface {
+	Count(string) (total int, unread int, err error)
+},
+) (int, int, error) {
+	if mp == nil {
+		return 0, 0, nil
+	}
+	type countResult struct {
+		total  int
+		unread int
+		err    error
+	}
+	done := make(chan countResult, 1)
+	go func() {
+		total, unread, err := mp.Count("")
+		done <- countResult{total: total, unread: unread, err: err}
+	}()
+	select {
+	case result := <-done:
+		return result.total, result.unread, result.err
+	case <-time.After(statusStoreReadTimeout):
+		return 0, 0, fmt.Errorf("count timed out after %s", statusStoreReadTimeout)
+	}
 }
 
 func appendUnlimitedPoolSessionBeads(expanded []expandedAgent, a config.Agent, cityName, sessTmpl string, snapshot statusSessionSnapshot) []expandedAgent {

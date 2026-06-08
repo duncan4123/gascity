@@ -496,12 +496,21 @@ func normalizeCanonicalBdScopeFilesForInit(cityPath, dir, prefix, doltDatabase s
 		if !backend.NeedsManagedServer() {
 			return ensureCanonicalDoltliteScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase)
 		}
-		return ensureCanonicalScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase)
+		if err := ensureCanonicalScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase); err != nil {
+			return err
+		}
+	} else {
+		if !backend.NeedsManagedServer() {
+			return enforceCanonicalDoltliteScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase)
+		}
+		if err := enforceCanonicalScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase); err != nil {
+			return err
+		}
 	}
-	if !backend.NeedsManagedServer() {
-		return enforceCanonicalDoltliteScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase)
-	}
-	return enforceCanonicalScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase)
+	// Opt-in proxied-server overlay (no-op/revert when the city does not opt in
+	// or bd lacks support). cfg load failure falls back to server mode (safe).
+	cfg, _ := loadCityConfig(cityPath, io.Discard)
+	return applyProxiedServerScopeOverlay(fsys.OSFS{}, cityPath, dir, proxiedServerScopeActive(cfg))
 }
 
 func initAndHookDir(cityPath, dir, prefix string) error {
@@ -1554,6 +1563,8 @@ func normalizeCanonicalBdScopeFiles(cityPath string, cfg *config.City, warns ...
 				}
 			} else if err := ensureCanonicalScopeMetadataForInit(fsys.OSFS{}, cityPath, doltDatabase); err != nil {
 				return fmt.Errorf("canonicalizing city metadata: %w", err)
+			} else if err := applyProxiedServerScopeOverlay(fsys.OSFS{}, cityPath, cityPath, proxiedServerScopeActive(cfg)); err != nil {
+				return fmt.Errorf("applying proxied overlay to city: %w", err)
 			}
 		}
 	}
@@ -1571,6 +1582,8 @@ func normalizeCanonicalBdScopeFiles(cityPath string, cfg *config.City, warns ...
 				}
 			} else if err := ensureCanonicalScopeMetadataForInit(fsys.OSFS{}, cfg.Rigs[i].Path, doltDatabase); err != nil {
 				return fmt.Errorf("canonicalizing rig %q metadata: %w", cfg.Rigs[i].Name, err)
+			} else if err := applyProxiedServerScopeOverlay(fsys.OSFS{}, cityPath, cfg.Rigs[i].Path, proxiedServerScopeActive(cfg)); err != nil {
+				return fmt.Errorf("applying proxied overlay to rig %q: %w", cfg.Rigs[i].Name, err)
 			}
 		}
 	}
