@@ -199,6 +199,10 @@ backend = "doltlite"
 		},
 	}
 
+	if !managedDoltOpsCheckSkip(cityDir, cfg, nil) {
+		t.Fatal("managedDoltOpsCheckSkip() = false, want true for doltlite backend")
+	}
+
 	checks := buildDoctorChecks(cityDir, cfg, nil, buildDoctorChecksOpts{
 		ControllerRunning:    false,
 		SkipCityDoltCheck:    false,
