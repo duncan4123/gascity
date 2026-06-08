@@ -4,6 +4,7 @@ package builtinpacks
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -23,6 +24,19 @@ import (
 	gitutil "github.com/gastownhall/gascity/internal/git"
 	"github.com/gastownhall/gascity/internal/remotesource"
 )
+
+var syntheticContentHash = SyntheticContentHash
+var ErrSyntheticCacheContentHashMismatch = errors.New("bundled pack cache content hash mismatch")
+
+// SetSyntheticContentHashForTest overrides the bundled-pack content hash
+// source and returns a restore function for test cleanup.
+func SetSyntheticContentHashForTest(fn func() (string, error)) func() {
+	prev := syntheticContentHash
+	syntheticContentHash = fn
+	return func() {
+		syntheticContentHash = prev
+	}
+}
 
 const (
 	// Repository is the canonical clone URL for bundled pack imports.
@@ -162,7 +176,7 @@ func MaterializeSyntheticRepo(dst, commit string) error {
 			return fmt.Errorf("materializing bundled pack %q at %s: %w", layout.Pack.Name, layout.Subpath, err)
 		}
 	}
-	hash, err := SyntheticContentHash()
+	hash, err := syntheticContentHash()
 	if err != nil {
 		return err
 	}
@@ -219,12 +233,12 @@ func ValidateSyntheticRepo(dir, commit string) error {
 	if !gitutil.SameCommit(marker.Commit, commit) {
 		return fmt.Errorf("bundled pack cache commit %q does not match %q", marker.Commit, commit)
 	}
-	wantHash, err := SyntheticContentHash()
+	wantHash, err := syntheticContentHash()
 	if err != nil {
 		return err
 	}
 	if marker.ContentHash != wantHash {
-		return fmt.Errorf("bundled pack cache content hash %q does not match current binary %q", marker.ContentHash, wantHash)
+		return fmt.Errorf("%w: bundled pack cache content hash %q does not match current binary %q", ErrSyntheticCacheContentHashMismatch, marker.ContentHash, wantHash)
 	}
 	if err := validateSyntheticRepoFileSet(dir); err != nil {
 		return err

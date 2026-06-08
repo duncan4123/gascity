@@ -1,6 +1,7 @@
 package gastown_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9762,6 +9763,89 @@ esac
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("gate-sweep should exit non-zero when the timer-gate bd call fails (no || true suppression on that line); got success\n%s", out)
+	}
+}
+
+func TestGateSweepWaitsForTimerGateRelease(t *testing.T) {
+	binDir, bdLog, env := gateSweepEnv(t)
+	releaseFile := filepath.Join(t.TempDir(), "timer-release")
+	env["GATE_RELEASE_FILE"] = releaseFile
+	writeExecutable(t, filepath.Join(binDir, "bd"), `#!/bin/sh
+printf '%s\n' "$*" >> "$BD_LOG"
+case "$*" in
+  *--type=timer*)
+    while [ ! -f "$GATE_RELEASE_FILE" ]; do
+      sleep 0.01
+    done
+    exit 0
+    ;;
+esac
+exit 0
+`)
+
+	script := filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "gate-sweep.sh")
+	cmd := exec.Command(script)
+	cmd.Env = mergeTestEnv(env)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start gate-sweep: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		log, err := os.ReadFile(bdLog)
+		if err == nil && strings.Contains(string(log), "gate check --type=timer --escalate") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for timer gate call; output=%s", output.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	select {
+	case err := <-done:
+		t.Fatalf("gate-sweep exited before timer gate was released: %v\n%s", err, output.String())
+	default:
+	}
+
+	if err := os.WriteFile(releaseFile, []byte("release"), 0o644); err != nil {
+		t.Fatalf("write release file: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("gate-sweep after timer release: %v\n%s", err, output.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("gate-sweep did not finish after timer gate release")
+	}
+
+	log, err := os.ReadFile(bdLog)
+	if err != nil {
+		t.Fatalf("ReadFile(bd log): %v", err)
+	}
+	s := string(log)
+	timerIdx := strings.Index(s, "gate check --type=timer --escalate")
+	ghIdx := strings.Index(s, "gate check --type=gh --escalate")
+	if timerIdx < 0 || ghIdx < 0 {
+		t.Fatalf("missing gate check calls in bd log:\n%s", s)
+	}
+	if ghIdx < timerIdx {
+		t.Fatalf("gh gate check logged before timer gate release:\n%s", s)
 	}
 }
 

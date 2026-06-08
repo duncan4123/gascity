@@ -2,6 +2,7 @@ package config
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ import (
 )
 
 var runRepoCacheGit = defaultRunRepoCacheGit
+var syntheticCacheContentHash = builtinpacks.SyntheticContentHash
 
 // includeCacheDir is the subdirectory under .gc/cache/includes/ where
 // remote pack includes are cached.
@@ -163,7 +165,7 @@ func resolveLockedRemoteImport(source, cityRoot string) (string, bool, error) {
 
 	cacheRoot := filepath.Join(home, ".gc", "cache", "repos")
 	cacheDir := filepath.Join(cacheRoot, RepoCacheKey(source, entry.Commit))
-	if err := validateInstalledRemoteCacheLocked(source, cacheRoot, cacheDir, entry.Commit); err != nil {
+	if err := ensureInstalledRemoteCache(source, cacheRoot, cacheDir, entry.Commit); err != nil {
 		return "", false, err
 	}
 	return cacheDir, true, nil
@@ -195,7 +197,7 @@ func resolveInstalledRemoteImport(source, cityRoot string) (string, error) {
 
 	cacheRoot := filepath.Join(home, ".gc", "cache", "repos")
 	cacheDir := filepath.Join(cacheRoot, RepoCacheKey(source, entry.Commit))
-	if err := validateInstalledRemoteCacheLocked(source, cacheRoot, cacheDir, entry.Commit); err != nil {
+	if err := ensureInstalledRemoteCache(source, cacheRoot, cacheDir, entry.Commit); err != nil {
 		return "", err
 	}
 	return cacheDir, nil
@@ -215,17 +217,26 @@ var remoteCacheValidationCache sync.Map // cacheDir+"\x00"+commit -> remoteCache
 type remoteCacheValidationEntry struct{ fingerprint string }
 
 // remoteCacheFingerprint is a cheap change signal for a remote cache checkout:
-// the size+mtime of the checkout root, its .git dir, and the git index. Git
-// checkout/status touch .git and the index; `gc import install` rewrites the
-// tree. A nested manual worktree edit touching none of these escapes detection
-// until the process restarts — acceptable for a pinned, gc-managed cache.
-func remoteCacheFingerprint(cacheDir string) string {
+// the size+mtime of the checkout root, its .git dir, the git index, and the
+// bundled-pack content hash for synthetic caches. Git checkout/status touch
+// .git and the index; `gc import install` rewrites the tree. A nested manual
+// worktree edit touching none of these escapes detection until the process
+// restarts — acceptable for a pinned, gc-managed cache.
+func remoteCacheFingerprint(source, cacheDir string) string {
 	var b strings.Builder
 	for _, p := range []string{cacheDir, filepath.Join(cacheDir, ".git"), filepath.Join(cacheDir, ".git", "index")} {
 		if fi, err := os.Stat(p); err == nil {
 			fmt.Fprintf(&b, "%d:%d;", fi.Size(), fi.ModTime().UnixNano())
 		} else {
 			b.WriteString("-;")
+		}
+	}
+	if builtinpacks.IsSource(source) {
+		if hash, err := syntheticCacheContentHash(); err == nil {
+			b.WriteString(hash)
+		} else {
+			b.WriteString("synthetic-hash-error:")
+			b.WriteString(err.Error())
 		}
 	}
 	return b.String()
@@ -236,7 +247,7 @@ func remoteCacheFingerprint(cacheDir string) string {
 // both the flock and the git execs on subsequent loads.
 func validateInstalledRemoteCacheLocked(source, cacheRoot, cacheDir, commit string) error {
 	key := cacheDir + "\x00" + commit
-	fp := remoteCacheFingerprint(cacheDir)
+	fp := remoteCacheFingerprint(source, cacheDir)
 	if v, ok := remoteCacheValidationCache.Load(key); ok {
 		if v.(remoteCacheValidationEntry).fingerprint == fp {
 			return nil
@@ -249,6 +260,32 @@ func validateInstalledRemoteCacheLocked(source, cacheRoot, cacheDir, commit stri
 	}
 	remoteCacheValidationCache.Store(key, remoteCacheValidationEntry{fingerprint: fp})
 	return nil
+}
+
+// ensureInstalledRemoteCache validates the repo cache and refreshes bundled
+// synthetic caches when the running binary's embedded pack content changes.
+func ensureInstalledRemoteCache(source, cacheRoot, cacheDir, commit string) error {
+	if err := validateInstalledRemoteCacheLocked(source, cacheRoot, cacheDir, commit); err != nil {
+		if !shouldRefreshBundledSyntheticCache(source, err) {
+			return err
+		}
+		if _, refreshErr := WithRepoCacheWriteLock(cacheRoot, func() (string, error) {
+			if err := builtinpacks.ValidateSyntheticRepo(cacheDir, commit); err == nil {
+				return cacheDir, nil
+			}
+			if err := builtinpacks.MaterializeSyntheticRepo(cacheDir, commit); err != nil {
+				return "", fmt.Errorf("materializing bundled repo cache %q after synthetic cache hash mismatch: %w", cacheDir, err)
+			}
+			return cacheDir, nil
+		}); refreshErr != nil {
+			return refreshErr
+		}
+	}
+	return nil
+}
+
+func shouldRefreshBundledSyntheticCache(source string, err error) bool {
+	return builtinpacks.IsSource(source) && errors.Is(err, builtinpacks.ErrSyntheticCacheContentHashMismatch)
 }
 
 // ResetRemoteCacheValidationCache clears memoized remote-cache validations
