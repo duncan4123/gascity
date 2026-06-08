@@ -1,0 +1,4 @@
+[pack]
+name = "gastown-jj"
+schema = 2
+description = "Jujutsu workflow skills for Gas Town agents."
