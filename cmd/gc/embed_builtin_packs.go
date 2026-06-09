@@ -242,16 +242,29 @@ func requiredBuiltinPackNames(cityPath string) []string {
 
 	provider := strings.TrimSpace(configuredBeadsProviderValue(cityPath))
 	normalizedProvider := normalizeRawBeadsProvider(cityPath, provider)
-	if providerUsesBdStoreContract(normalizedProvider) {
-		required = append(required, "bd")
-	}
 	usesDirectExecLifecycle := strings.HasPrefix(provider, "exec:") &&
 		execProviderBase(provider) == "gc-beads-bd" &&
 		normalizedProvider != "bd"
-	if usesDirectExecLifecycle {
-		required = append(required, "dolt")
+	if providerUsesBdStoreContract(normalizedProvider) || usesDirectExecLifecycle {
+		required = appendRequiredBuiltinPack(required, "bd")
+		for _, name := range resolveBeadsBackend(cityPath).RequiredBuiltinPacks() {
+			required = appendRequiredBuiltinPack(required, name)
+		}
 	}
 	return required
+}
+
+func appendRequiredBuiltinPack(names []string, name string) []string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return names
+	}
+	for _, existing := range names {
+		if existing == name {
+			return names
+		}
+	}
+	return append(names, name)
 }
 
 func emitBuiltinPackRefreshWarning(w io.Writer, err error) {
@@ -271,8 +284,8 @@ func emitBuiltinPackRefreshWarning(w io.Writer, err error) {
 // so its content must reach PackOverlayDirs even when the user has never
 // run `gc init` (and therefore has no implicit-import.toml written to
 // $GC_HOME). When the beads provider is "bd" (the default), include bd
-// and let its own pack includes pull in dolt transitively. Gastown is
-// never auto-included — it requires an explicit workspace.includes entry.
+// and the active backend's required pack. Gastown is never auto-included —
+// it requires an explicit workspace.includes entry.
 func builtinPackIncludes(cityPath string) []string {
 	systemRoot := filepath.Join(cityPath, citylayout.SystemPacksRoot)
 
@@ -590,6 +603,9 @@ func pruneStaleGeneratedPackFiles(dstDir string, desired map[string]struct{}) er
 		}) {
 			return nil
 		}
+		if isPreservedGeneratedPackRel(dstDir, rel) {
+			return nil
+		}
 		// Preserve the pack hash manifest and its atomic temp siblings — they
 		// are runtime metadata produced by materializeFS, not embedded content.
 		if rel == packHashManifestFile || strings.HasPrefix(rel, packHashManifestFile+".tmp.") {
@@ -622,6 +638,16 @@ func pruneStaleGeneratedPackFiles(dstDir string, desired map[string]struct{}) er
 		pruneEmptyDirs(dir, dstDir)
 	}
 	return nil
+}
+
+func isPreservedGeneratedPackRel(dstDir, rel string) bool {
+	if filepath.Base(filepath.Clean(dstDir)) != "beads-doltlite" {
+		return false
+	}
+	if strings.Contains(rel, "/") {
+		return false
+	}
+	return strings.HasPrefix(rel, "last-build-") && strings.HasSuffix(rel, ".json")
 }
 
 func isGeneratedPackAtomicTempRel(rel string, hasDesired func(string) bool) bool {

@@ -330,6 +330,7 @@ func applyCanonicalDoltAuthEnv(env map[string]string, cityPath, scopeRoot string
 // (true, err) on a known backend that failed to project; caller MUST
 // surface this error rather than retrying.
 func applyCanonicalScopeBackendEnv(env map[string]string, cityPath, scopeRoot string) (bool, error) {
+	backend := resolveBeadsBackend(cityPath)
 	resolved, err := contract.ResolveScopeConfigState(fsys.OSFS{}, cityPath, scopeRoot, "")
 	if err != nil {
 		return false, err
@@ -350,7 +351,7 @@ func applyCanonicalScopeBackendEnv(env map[string]string, cityPath, scopeRoot st
 	}
 	if resolved.State.EndpointOrigin == contract.EndpointOriginInheritedCity &&
 		(meta.Backend == "" || meta.Backend == "doltlite") &&
-		cityUsesDoltliteBeadsBackend(cityPath) {
+		backend.Name() == "doltlite" {
 		clearProjectedDoltEnv(env)
 		clearProjectedPostgresEnv(env)
 		env["GC_BEADS_BACKEND"] = "doltlite"
@@ -413,19 +414,20 @@ func applyCityPostgresBackendEnv(env map[string]string, cityPath string) (bool, 
 }
 
 func scopeBackendIsDoltlite(cityPath, scopeRoot string) bool {
+	backend := resolveBeadsBackend(cityPath)
 	meta, ok, err := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(scopeRoot))
 	if err == nil && ok && meta.Backend != "" {
 		return meta.Backend == "doltlite"
 	}
 	if samePath(cityPath, scopeRoot) {
-		return cityUsesDoltliteBeadsBackend(cityPath)
+		return backend.Name() == "doltlite"
 	}
 	resolved, err := contract.ResolveScopeConfigState(fsys.OSFS{}, cityPath, scopeRoot, "")
 	if err != nil || resolved.Kind != contract.ScopeConfigAuthoritative {
 		return false
 	}
 	return resolved.State.EndpointOrigin == contract.EndpointOriginInheritedCity &&
-		cityUsesDoltliteBeadsBackend(cityPath)
+		backend.Name() == "doltlite"
 }
 
 func scopeOverridesCityBackend(cityPath, scopeRoot string) bool {
@@ -1237,9 +1239,6 @@ func bdRuntimeEnvForRigWithError(cityPath string, cfg *config.City, rigPath stri
 
 func nativeDoltOpenEnvForScope(cityPath string, cfg *config.City, scopeRoot string) (map[string]string, error) {
 	scopeRoot = resolveStoreScopeRoot(cityPath, scopeRoot)
-	if samePath(scopeRoot, cityPath) {
-		return bdRuntimeEnvWithError(cityPath)
-	}
 	if cfg == nil {
 		loaded, err := loadCityConfig(cityPath, io.Discard)
 		if err != nil {
@@ -1247,7 +1246,24 @@ func nativeDoltOpenEnvForScope(cityPath string, cfg *config.City, scopeRoot stri
 		}
 		cfg = loaded
 	}
-	return bdRuntimeEnvForRigWithError(cityPath, cfg, scopeRoot)
+	withPrefix := func(env map[string]string) map[string]string {
+		if prefix := issuePrefixForScope(scopeRoot, cityPath, cfg); prefix != "" {
+			env["GC_BEADS_PREFIX"] = prefix
+		}
+		return env
+	}
+	if samePath(scopeRoot, cityPath) {
+		env, err := bdRuntimeEnvWithError(cityPath)
+		if err != nil {
+			return nil, err
+		}
+		return withPrefix(env), nil
+	}
+	env, err := bdRuntimeEnvForRigWithError(cityPath, cfg, scopeRoot)
+	if err != nil {
+		return nil, err
+	}
+	return withPrefix(env), nil
 }
 
 func bdRuntimeEnvWithError(cityPath string) (map[string]string, error) {

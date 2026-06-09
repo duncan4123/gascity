@@ -163,6 +163,9 @@ func newNativeDoltStoreAt(parent context.Context, scopeRoot string, env map[stri
 		_ = storage.Close()
 		return nil, fmt.Errorf("reading native issue prefix: %w", err)
 	}
+	if strings.TrimSpace(prefix) == "" {
+		prefix = strings.TrimSpace(env["GC_BEADS_PREFIX"])
+	}
 	return newNativeDoltStoreWithStorageAndPrefix(storage, nativeDoltStoreActor, prefix), nil
 }
 

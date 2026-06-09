@@ -71,6 +71,47 @@ func TestDoltliteReadStoreHydratesParent(t *testing.T) {
 	}
 }
 
+func TestDoltliteReadStoreHandlesCanonicalDependencySchema(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStoreWithCanonicalDeps(t)
+	defer closeStore()
+
+	rows, err := store.List(ListQuery{Type: "task", Sort: SortCreatedAsc})
+	if err != nil {
+		t.Fatalf("List tasks with canonical deps schema: %v", err)
+	}
+	child := findTestBead(t, rows, "gc-child")
+	if child.ParentID != "gc-parent" {
+		t.Fatalf("child parent = %q, want gc-parent", child.ParentID)
+	}
+
+	down, err := store.DepList("gc-child", "down")
+	if err != nil {
+		t.Fatalf("DepList down with canonical deps schema: %v", err)
+	}
+	if len(down) != 1 || down[0].DependsOnID != "gc-parent" {
+		t.Fatalf("down deps = %#v, want gc-parent", down)
+	}
+
+	up, err := store.DepList("gc-parent", "up")
+	if err != nil {
+		t.Fatalf("DepList up with canonical deps schema: %v", err)
+	}
+	if len(up) != 1 || up[0].IssueID != "gc-child" {
+		t.Fatalf("up deps = %#v, want gc-child", up)
+	}
+
+	ready, err := store.Ready()
+	if err != nil {
+		t.Fatalf("Ready with canonical deps schema: %v", err)
+	}
+	if !hasTestBead(ready, "gc-ready") {
+		t.Fatalf("Ready missing gc-ready: %#v", ready)
+	}
+	if hasTestBead(ready, "gc-blocked") {
+		t.Fatalf("Ready included blocked issue: %#v", ready)
+	}
+}
+
 func TestDoltliteReadStoreTypeFallbackCanSkipLabels(t *testing.T) {
 	store, closeStore := newTestDoltliteReadStore(t)
 	defer closeStore()
@@ -747,6 +788,74 @@ func TestDoltliteReadStoreGetFindsWisps(t *testing.T) {
 	}
 }
 
+func TestDoltliteReadStoreListSessionBeadsIncludesWisps(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStore(t)
+	defer closeStore()
+	writer := openTestDoltliteWriter(t, store.db)
+	defer writer.Close() //nolint:errcheck // test cleanup
+
+	insertTestDoltliteIssue(t, writer, "wisps", "wisp_labels", "wisp_dependencies", testDoltliteIssue{
+		ID:        "gc-wisp-session",
+		Title:     "wisp session",
+		Status:    "open",
+		IssueType: "session",
+		Labels:    []string{"gc:session"},
+		Metadata:  map[string]string{"session_name": "wisp-session-1"},
+	})
+
+	rows, err := store.ListSessionBeads()
+	if err != nil {
+		t.Fatalf("ListSessionBeads: %v", err)
+	}
+	got := findTestBead(t, rows, "gc-wisp-session")
+	if !got.Ephemeral || got.Type != "session" || got.Metadata["session_name"] != "wisp-session-1" {
+		t.Fatalf("wisp session = %#v", got)
+	}
+}
+
+func TestDoltliteReadStoreSetMetadataBatchUpdatesWisp(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStore(t)
+	defer closeStore()
+
+	if err := store.SetMetadataBatch("gc-tier-wisp", map[string]string{"state": "start-pending"}); err != nil {
+		t.Fatalf("SetMetadataBatch wisp: %v", err)
+	}
+	got, err := store.Get("gc-tier-wisp")
+	if err != nil {
+		t.Fatalf("Get wisp: %v", err)
+	}
+	if got.Metadata["kind"] != "wisp" || got.Metadata["state"] != "start-pending" {
+		t.Fatalf("wisp metadata = %#v, want preserved kind and new state", got.Metadata)
+	}
+}
+
+func TestDoltliteReadStoreCloseAndReopenWisp(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStore(t)
+	defer closeStore()
+
+	if err := store.Close("gc-tier-wisp"); err != nil {
+		t.Fatalf("Close wisp: %v", err)
+	}
+	closed, err := store.Get("gc-tier-wisp")
+	if err != nil {
+		t.Fatalf("Get closed wisp: %v", err)
+	}
+	if closed.Status != "closed" {
+		t.Fatalf("closed wisp status = %q, want closed", closed.Status)
+	}
+
+	if err := store.Reopen("gc-tier-wisp"); err != nil {
+		t.Fatalf("Reopen wisp: %v", err)
+	}
+	open, err := store.Get("gc-tier-wisp")
+	if err != nil {
+		t.Fatalf("Get reopened wisp: %v", err)
+	}
+	if open.Status != "open" {
+		t.Fatalf("reopened wisp status = %q, want open", open.Status)
+	}
+}
+
 func TestDoltliteReadStoreFiltersPluralAssigneesAcrossTiers(t *testing.T) {
 	store, closeStore := newTestDoltliteReadStore(t)
 	defer closeStore()
@@ -764,6 +873,224 @@ func TestDoltliteReadStoreFiltersPluralAssigneesAcrossTiers(t *testing.T) {
 	}
 	if !rows[1].Ephemeral {
 		t.Fatalf("wisp row Ephemeral = false: %#v", rows[1])
+	}
+}
+
+func TestDoltliteReadStoreGCInternalReadWriteHarness(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStore(t)
+	defer closeStore()
+	writer := openTestDoltliteWriter(t, store.db)
+	defer writer.Close() //nolint:errcheck // test cleanup
+
+	insertTestDoltliteIssue(t, writer, "wisps", "wisp_labels", "wisp_dependencies", testDoltliteIssue{
+		ID:        "gc-session-wisp",
+		Title:     "session wisp",
+		Status:    "open",
+		IssueType: "session",
+		Assignee:  "rig/session-worker",
+		Labels:    []string{"gc:session", "gc:runtime"},
+		Metadata: map[string]string{
+			"session_name": "session-wisp-1",
+			"state":        "start-pending",
+		},
+		Dependencies: []testDoltliteDependency{{
+			DependsOnID:      "gc-tier-issue",
+			DependsOnIssueID: "gc-tier-issue",
+			Type:             "relates-to",
+		}, {
+			DependsOnID:      "gc-parent",
+			DependsOnIssueID: "gc-parent",
+			Type:             "parent-child",
+		}},
+	})
+	insertTestDoltliteIssue(t, writer, "wisps", "wisp_labels", "wisp_dependencies", testDoltliteIssue{
+		ID:        "gc-ready-wisp",
+		Title:     "ready wisp",
+		Status:    "open",
+		IssueType: "task",
+		Assignee:  "rig/ready-wisp-worker",
+	})
+
+	assertIDs := func(name string, rows []Bead, want []string) {
+		t.Helper()
+		if got := testBeadIDs(rows); !slices.Equal(got, want) {
+			t.Errorf("%s ids = %v, want %v; rows=%#v", name, got, want, rows)
+		}
+	}
+
+	got, err := store.Get("gc-session-wisp")
+	if err != nil {
+		t.Fatalf("Get session wisp: %v", err)
+	}
+	if !got.Ephemeral || got.Type != "session" || got.Metadata["session_name"] != "session-wisp-1" {
+		t.Fatalf("Get session wisp = %#v", got)
+	}
+
+	got, err = store.GetSessionBead("gc-session-wisp")
+	if err != nil {
+		t.Fatalf("GetSessionBead wisp id: %v", err)
+	}
+	if got.ID != "gc-session-wisp" || got.Metadata["state"] != "start-pending" {
+		t.Fatalf("GetSessionBead by id = %#v", got)
+	}
+
+	got, err = store.GetSessionBead("session-wisp-1")
+	if err != nil {
+		t.Fatalf("GetSessionBead wisp session_name: %v", err)
+	}
+	if got.ID != "gc-session-wisp" {
+		t.Fatalf("GetSessionBead by session_name = %#v", got)
+	}
+
+	sessions, err := store.ListSessionBeads()
+	if err != nil {
+		t.Fatalf("ListSessionBeads: %v", err)
+	}
+	if !hasTestBead(sessions, "gc-session") || !hasTestBead(sessions, "gc-session-wisp") {
+		t.Fatalf("ListSessionBeads missing issue or wisp session: %#v", sessions)
+	}
+
+	labelRows, err := store.ListByLabel("gc:runtime", 10, WithBothTiers)
+	if err != nil {
+		t.Fatalf("ListByLabel both tiers: %v", err)
+	}
+	assertIDs("ListByLabel runtime", labelRows, []string{"gc-session-wisp"})
+
+	metadataRows, err := store.ListByMetadata(map[string]string{"session_name": "session-wisp-1"}, 10, WithBothTiers)
+	if err != nil {
+		t.Fatalf("ListByMetadata both tiers: %v", err)
+	}
+	assertIDs("ListByMetadata session_name", metadataRows, []string{"gc-session-wisp"})
+
+	assigneeRows, err := store.List(ListQuery{
+		Assignee: "rig/session-worker",
+		Status:   "open",
+		Limit:    10,
+		TierMode: TierBoth,
+	})
+	if err != nil {
+		t.Fatalf("List by assignee wisp: %v", err)
+	}
+	assertIDs("List by assignee wisp", assigneeRows, []string{"gc-session-wisp"})
+
+	bothRows, err := store.List(ListQuery{
+		Assignees: []string{"rig/ready-worker", "rig/session-worker"},
+		TierMode:  TierBoth,
+		Sort:      SortCreatedAsc,
+	})
+	if err != nil {
+		t.Fatalf("List both tiers by assignees: %v", err)
+	}
+	assertIDs("List both tiers by assignees", bothRows, []string{"gc-assigned-ready", "gc-session-wisp"})
+
+	deps, err := store.DepList("gc-session-wisp", "down")
+	if err != nil {
+		t.Fatalf("DepList wisp down: %v", err)
+	}
+	depTypes := map[string]string{}
+	for _, dep := range deps {
+		if dep.IssueID == "gc-session-wisp" {
+			depTypes[dep.DependsOnID] = dep.Type
+		}
+	}
+	if depTypes["gc-tier-issue"] != "relates-to" || depTypes["gc-parent"] != "parent-child" {
+		t.Fatalf("DepList wisp down = %#v", deps)
+	}
+
+	batchDeps, err := store.DepListBatch([]string{"gc-session-wisp", "gc-child"})
+	if err != nil {
+		t.Fatalf("DepListBatch mixed tiers: %v", err)
+	}
+	if len(batchDeps["gc-session-wisp"]) != 2 || len(batchDeps["gc-child"]) != 1 {
+		t.Fatalf("DepListBatch mixed tiers = %#v", batchDeps)
+	}
+
+	children, err := store.Children("gc-parent", WithBothTiers)
+	if err != nil {
+		t.Fatalf("Children both tiers: %v", err)
+	}
+	assertIDs("Children both tiers", children, []string{"gc-child", "gc-session-wisp"})
+
+	readyRows, err := store.Ready(ReadyQuery{Assignee: "rig/ready-wisp-worker", TierMode: TierBoth})
+	if err != nil {
+		t.Fatalf("Ready wisp assignee: %v", err)
+	}
+	assertIDs("Ready wisp assignee", readyRows, []string{"gc-ready-wisp"})
+
+	if err := store.SetMetadataBatch("gc-session-wisp", map[string]string{
+		"last_woke_at": "2026-06-07T16:00:00Z",
+		"state":        "awake",
+	}); err != nil {
+		t.Fatalf("SetMetadataBatch wisp: %v", err)
+	}
+	got, err = store.Get("gc-session-wisp")
+	if err != nil {
+		t.Fatalf("Get metadata-updated wisp: %v", err)
+	}
+	if got.Metadata["state"] != "awake" || got.Metadata["last_woke_at"] == "" || got.Metadata["session_name"] != "session-wisp-1" {
+		t.Fatalf("updated wisp metadata = %#v", got.Metadata)
+	}
+
+	if err := store.SetMetadata("gc-session-wisp", "last_seen_at", "2026-06-07T16:01:00Z"); err != nil {
+		t.Errorf("SetMetadata wisp: %v", err)
+	} else {
+		got, err = store.Get("gc-session-wisp")
+		if err != nil {
+			t.Fatalf("Get single metadata-updated wisp: %v", err)
+		}
+		if got.Metadata["last_seen_at"] != "2026-06-07T16:01:00Z" || got.Metadata["state"] != "awake" {
+			t.Errorf("single metadata-updated wisp metadata = %#v", got.Metadata)
+		}
+	}
+
+	store.BdStore = NewBdStore(store.BdStore.dir, func(_, _ string, args ...string) ([]byte, error) {
+		return nil, fmt.Errorf("unexpected backing bd runner: bd %s", strings.Join(args, " "))
+	})
+	updateStatus := "in_progress"
+	updateAssignee := "rig/session-worker-2"
+	if err := store.Update("gc-session-wisp", UpdateOpts{
+		Status:   &updateStatus,
+		Assignee: &updateAssignee,
+		Metadata: map[string]string{"state": "running"},
+	}); err != nil {
+		t.Errorf("Update wisp session: %v", err)
+	} else {
+		got, err = store.Get("gc-session-wisp")
+		if err != nil {
+			t.Fatalf("Get Update-updated wisp: %v", err)
+		}
+		if got.Status != updateStatus || got.Assignee != updateAssignee || got.Metadata["state"] != "running" {
+			t.Errorf("Update-updated wisp = %#v", got)
+		}
+	}
+
+	closed, err := store.CloseAll([]string{"gc-session-wisp"}, map[string]string{
+		"close_reason": "session create failed: aborted before creation_complete",
+		"state":        "failed-create",
+	})
+	if err != nil {
+		t.Fatalf("CloseAll wisp: %v", err)
+	}
+	if closed != 1 {
+		t.Fatalf("CloseAll closed = %d, want 1", closed)
+	}
+	got, err = store.Get("gc-session-wisp")
+	if err != nil {
+		t.Fatalf("Get closed wisp: %v", err)
+	}
+	if got.Status != "closed" || got.Metadata["state"] != "failed-create" || got.Metadata["close_reason"] == "" {
+		t.Fatalf("closed wisp = %#v", got)
+	}
+
+	if err := store.Reopen("gc-session-wisp"); err != nil {
+		t.Fatalf("Reopen wisp: %v", err)
+	}
+	got, err = store.Get("gc-session-wisp")
+	if err != nil {
+		t.Fatalf("Get reopened wisp: %v", err)
+	}
+	if got.Status != "open" {
+		t.Fatalf("reopened wisp status = %q, want open", got.Status)
 	}
 }
 
@@ -1064,6 +1391,50 @@ func newTestDoltliteReadStore(t *testing.T) (*DoltliteReadStore, func()) {
 	return store, func() { _ = store.CloseStore() }
 }
 
+func newTestDoltliteReadStoreWithCanonicalDeps(t *testing.T) (*DoltliteReadStore, func()) {
+	t.Helper()
+	dir := t.TempDir()
+	beadsDir := filepath.Join(dir, ".beads")
+	if err := os.MkdirAll(filepath.Join(beadsDir, "doltlite"), 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+	meta := []byte(`{"backend":"doltlite","database":"doltlite","dolt_database":"hq"}`)
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), meta, 0o600); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+
+	dbPath := filepath.Join(beadsDir, "doltlite", "hq.db")
+	db, err := sql.Open("sqlite", dbPath+"?_busy_timeout=10000")
+	if err != nil {
+		t.Fatalf("open canonical fixture db: %v", err)
+	}
+	defer db.Close() //nolint:errcheck // test cleanup
+	createTestDoltliteCanonicalDependencySchema(t, db)
+
+	now := time.Now().UTC()
+	for _, issue := range []testDoltliteIssue{
+		{ID: "gc-parent", Title: "parent", Status: "open", IssueType: "task", CreatedAt: now},
+		{ID: "gc-child", Title: "child", Status: "open", IssueType: "task", CreatedAt: now.Add(time.Second)},
+		{ID: "gc-blocker", Title: "blocker", Status: "open", IssueType: "task", CreatedAt: now.Add(2 * time.Second)},
+		{ID: "gc-blocked", Title: "blocked", Status: "open", IssueType: "task", CreatedAt: now.Add(3 * time.Second)},
+		{ID: "gc-ready", Title: "ready", Status: "open", IssueType: "task", CreatedAt: now.Add(4 * time.Second)},
+	} {
+		insertTestDoltliteCanonicalIssue(t, db, issue)
+	}
+	insertTestDoltliteCanonicalDep(t, db, "gc-child", "gc-parent", "parent-child")
+	insertTestDoltliteCanonicalDep(t, db, "gc-blocked", "gc-blocker", "blocks")
+
+	backing := NewBdStore(dir, func(string, string, ...string) ([]byte, error) {
+		t.Fatal("backing bd runner should not be called by canonical doltlite read tests")
+		return nil, nil
+	})
+	store, err := NewDoltliteReadStore(dir, backing)
+	if err != nil {
+		t.Fatalf("NewDoltliteReadStore: %v", err)
+	}
+	return store, func() { _ = store.CloseStore() }
+}
+
 type testDoltliteDependency struct {
 	DependsOnID       string
 	DependsOnIssueID  string
@@ -1145,6 +1516,75 @@ func createTestDoltliteSchema(t testing.TB, db *sql.DB) {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("create test doltlite schema: %v\nstmt: %s", err, stmt)
 		}
+	}
+}
+
+func createTestDoltliteCanonicalDependencySchema(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, stmt := range []string{
+		`CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT)`,
+		`CREATE TABLE issues (
+			id TEXT PRIMARY KEY,
+			title TEXT,
+			status TEXT,
+			issue_type TEXT,
+			priority INTEGER,
+			created_at TEXT,
+			updated_at TEXT,
+			assignee TEXT,
+			description TEXT,
+			metadata TEXT
+		)`,
+		`CREATE TABLE labels (issue_id TEXT, label TEXT)`,
+		`CREATE TABLE dependencies (
+			issue_id TEXT,
+			depends_on_id TEXT,
+			type TEXT
+		)`,
+		`INSERT INTO config (key, value) VALUES ('issue_prefix', 'gc')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("create canonical doltlite schema: %v\nstmt: %s", err, stmt)
+		}
+	}
+}
+
+func insertTestDoltliteCanonicalIssue(t *testing.T, db *sql.DB, issue testDoltliteIssue) {
+	t.Helper()
+	if issue.Status == "" {
+		issue.Status = "open"
+	}
+	if issue.IssueType == "" {
+		issue.IssueType = "task"
+	}
+	if issue.CreatedAt.IsZero() {
+		issue.CreatedAt = time.Now().UTC()
+	}
+	if issue.UpdatedAt.IsZero() {
+		issue.UpdatedAt = issue.CreatedAt
+	}
+	if _, err := db.Exec(`INSERT INTO issues (
+		id, title, status, issue_type, priority, created_at, updated_at,
+		assignee, description, metadata
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}')`,
+		issue.ID,
+		issue.Title,
+		issue.Status,
+		issue.IssueType,
+		issue.Priority,
+		issue.CreatedAt.Format(time.RFC3339Nano),
+		issue.UpdatedAt.Format(time.RFC3339Nano),
+		issue.Assignee,
+		issue.Description,
+	); err != nil {
+		t.Fatalf("insert canonical issue %s: %v", issue.ID, err)
+	}
+}
+
+func insertTestDoltliteCanonicalDep(t *testing.T, db *sql.DB, issueID, dependsOnID, depType string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO dependencies (issue_id, depends_on_id, type) VALUES (?, ?, ?)`, issueID, dependsOnID, depType); err != nil {
+		t.Fatalf("insert canonical dep %s -> %s: %v", issueID, dependsOnID, err)
 	}
 }
 
