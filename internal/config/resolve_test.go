@@ -144,7 +144,7 @@ func TestResolveProviderWorkspaceProvider(t *testing.T) {
 	}
 	// After migration, CommandString() contains only provider base args;
 	// schema flags come from ResolveDefaultArgs.
-	wantCommand := "codex -c shell_environment_policy.inherit=all"
+	wantCommand := "codex"
 	if rp.CommandString() != wantCommand {
 		t.Errorf("CommandString() = %q, want %q", rp.CommandString(), wantCommand)
 	}
