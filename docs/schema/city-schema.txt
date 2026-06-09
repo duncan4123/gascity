@@ -2596,8 +2596,8 @@
         },
         "setup_timeout": {
           "type": "string",
-          "description": "SetupTimeout is the per-command/script timeout for session setup and\npre_start commands. Duration string (e.g., \"10s\", \"30s\"). Defaults to \"10s\".",
-          "default": "10s"
+          "description": "SetupTimeout is the per-command/script timeout for session setup and\npre_start commands. Duration string (e.g., \"60s\", \"2m\"). Defaults to \"60s\".",
+          "default": "60s"
         },
         "nudge_ready_timeout": {
           "type": "string",

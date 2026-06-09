@@ -1825,6 +1825,44 @@ func TestGastownRoutedToTargetsUseBindingPrefix(t *testing.T) {
 	}
 }
 
+func TestGastownJJPolecatPromptUsesRigQualifiedHookTarget(t *testing.T) {
+	dir := exampleDir()
+	path := filepath.Join(dir, "packs", "gastown-jj", "agents", "jj-polecat", "prompt.template.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading jj polecat prompt: %v", err)
+	}
+	body := string(data)
+	want := `gc hook "{{ .AgentName }}"`
+	if !strings.Contains(body, want) {
+		t.Fatalf("jj polecat prompt missing rig-qualified hook target %q:\n%s", want, body)
+	}
+	if strings.Contains(body, `gc hook "{{ .RigName }}/{{ basename .AgentName }}"`) {
+		t.Fatalf("jj polecat prompt should match gastown's exact gc hook form, not the expanded equivalent:\n%s", body)
+	}
+}
+
+func TestGastownJJPolecatFormulaValidatesBaseBranchAgainstBookmarks(t *testing.T) {
+	dir := exampleDir()
+	path := filepath.Join(dir, "packs", "gastown-jj", "formulas", "mol-polecat-work.toml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading jj polecat formula: %v", err)
+	}
+	body := string(data)
+	assertContainsInOrder(t, body,
+		"**1. Fetch latest:**",
+		"jj git fetch && git fetch --prune origin",
+		"**1b. Validate the resolved base branch against jj bookmarks:**",
+		`BASE_BRANCH={{base_branch}}`,
+		`jj bookmark list --remote origin \"$BASE_BRANCH\"`,
+		`jj bookmark list \"$BASE_BRANCH\"`,
+		`BASE_BRANCH SHAPE GATE FAILED`,
+		`gc runtime drain-ack`,
+		"**2. Ensure branch exists.**",
+	)
+}
+
 func TestGastownWarrantCreateCommandsUseCreateMetadata(t *testing.T) {
 	dir := exampleDir()
 	files := []string{

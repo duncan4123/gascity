@@ -1367,8 +1367,8 @@ type SessionConfig struct {
 	// ACP holds settings for the ACP (Agent Client Protocol) session provider.
 	ACP ACPSessionConfig `toml:"acp,omitempty"`
 	// SetupTimeout is the per-command/script timeout for session setup and
-	// pre_start commands. Duration string (e.g., "10s", "30s"). Defaults to "10s".
-	SetupTimeout string `toml:"setup_timeout,omitempty" jsonschema:"default=10s"`
+	// pre_start commands. Duration string (e.g., "60s", "2m"). Defaults to "60s".
+	SetupTimeout string `toml:"setup_timeout,omitempty" jsonschema:"default=60s"`
 	// NudgeReadyTimeout is how long to wait for the agent to be ready before
 	// sending nudge text. Duration string. Defaults to "10s".
 	NudgeReadyTimeout string `toml:"nudge_ready_timeout,omitempty" jsonschema:"default=10s"`
@@ -1409,14 +1409,14 @@ type SessionConfig struct {
 }
 
 // SetupTimeoutDuration returns the setup timeout as a time.Duration.
-// Defaults to 10s if empty or unparseable.
+// Defaults to 60s if empty or unparseable.
 func (s *SessionConfig) SetupTimeoutDuration() time.Duration {
 	if s.SetupTimeout == "" {
-		return 10 * time.Second
+		return 60 * time.Second
 	}
 	d, err := time.ParseDuration(s.SetupTimeout)
 	if err != nil {
-		return 10 * time.Second
+		return 60 * time.Second
 	}
 	return d
 }

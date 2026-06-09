@@ -303,7 +303,8 @@ func buildDoctorChecks(cityPath string, cfg *config.City, cfgErr error, opts bui
 	// can inherit the city-managed server even when the city itself is not a
 	// managed bd scope. The version check follows the same gate so file-backed
 	// and external Dolt workspaces do not get irrelevant local-binary warnings.
-	if cityNeedsDoltDoctorChecks {
+	managedDoltChecksApplicable := doctor.ManagedLocalDoltChecksApplicableForConfig(cityPath, cfg, cfgErr)
+	if cityNeedsDoltDoctorChecks && managedDoltChecksApplicable {
 		register(doctor.NewDoltNomsSizeCheckForConfig(cityPath, opts.SkipManagedDoltCheck, cfg, cfgErr))
 		register(doctor.NewDoltConfigCheckForConfig(cityPath, opts.SkipManagedDoltCheck, cfg, cfgErr))
 		register(doctor.NewScopedDoltVersionCheckForConfig(cityPath, opts.SkipManagedDoltCheck, cfg, cfgErr))

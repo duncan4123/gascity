@@ -78,6 +78,21 @@ Every check is idempotent — safe to re-run after crash/restart.
 jj git fetch && git fetch --prune origin
 ```
 
+**1b. Validate the resolved base branch against jj bookmarks:**
+```bash
+BASE_BRANCH={{base_branch}}
+if [ -n "$(jj bookmark list --remote origin \"$BASE_BRANCH\" 2>/dev/null || true)" ] || \
+   [ -n "$(jj bookmark list \"$BASE_BRANCH\" 2>/dev/null || true)" ]; then
+    :
+else
+    echo "BASE_BRANCH SHAPE GATE FAILED"
+    echo "  base_branch:  $BASE_BRANCH"
+    echo "  expected a jj bookmark (local or origin-tracked)"
+    gc runtime drain-ack
+    exit 1
+fi
+```
+
 **2. Ensure branch exists.**
 
 Check if `metadata.branch` already records a branch:

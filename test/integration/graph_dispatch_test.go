@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/test/tmuxtest"
 )
 
@@ -188,10 +189,19 @@ func setupGraphWorkflowCity(t *testing.T, mode string) string {
 	if err := os.WriteFile(configPath, []byte(cityToml), 0o644); err != nil {
 		t.Fatalf("writing graph workflow config: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(cityDir, ".beads"), 0o755); err != nil {
+		t.Fatalf("creating .beads dir: %v", err)
+	}
+	env = replaceEnv(env, "BEADS_DIR", filepath.Join(cityDir, ".beads"))
 
 	out, err := runGCDoltWithEnv(env, "", "init", "--skip-provider-readiness", "--file", configPath, cityDir)
 	if err != nil {
 		t.Fatalf("gc init --file failed: %v\noutput: %s", err, out)
+	}
+	issuePrefix := config.DeriveBeadsPrefix(cityName)
+	out, err = runCommand(cityDir, env, integrationBDCommandTimeout, bdBinary, "init", "-p", issuePrefix, "--skip-hooks", "--skip-agents", "-q")
+	if err != nil {
+		t.Fatalf("bd init in graph workflow city failed: %v\noutput: %s", err, out)
 	}
 	registerCityCommandEnv(cityDir, env)
 	t.Cleanup(func() {

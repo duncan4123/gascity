@@ -5539,8 +5539,8 @@ func TestDefaultSlingTargetRoundTrip(t *testing.T) {
 func TestSessionSetupTimeoutDefault(t *testing.T) {
 	s := SessionConfig{}
 	got := s.SetupTimeoutDuration()
-	if got != 10*time.Second {
-		t.Errorf("SetupTimeoutDuration() = %v, want 10s", got)
+	if got != 60*time.Second {
+		t.Errorf("SetupTimeoutDuration() = %v, want 60s", got)
 	}
 }
 
@@ -5555,8 +5555,8 @@ func TestSessionSetupTimeoutCustom(t *testing.T) {
 func TestSessionSetupTimeoutInvalid(t *testing.T) {
 	s := SessionConfig{SetupTimeout: "not-a-duration"}
 	got := s.SetupTimeoutDuration()
-	if got != 10*time.Second {
-		t.Errorf("SetupTimeoutDuration() = %v, want 10s (default for invalid)", got)
+	if got != 60*time.Second {
+		t.Errorf("SetupTimeoutDuration() = %v, want 60s (default for invalid)", got)
 	}
 }
 
