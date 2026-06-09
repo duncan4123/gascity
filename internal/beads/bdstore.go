@@ -245,6 +245,7 @@ type BdStore struct {
 	runner      CommandRunner   // injectable for testing
 	purgeRunner PurgeRunnerFunc // injectable for testing; nil uses exec default
 	idPrefix    string          // bead ID prefix owned by this store, without trailing "-"
+	writeMu     sync.Mutex      // serializes in-process DoltLite write entry
 
 	listSkipLabelsEnabled bool // whether bd list may receive --skip-labels
 
@@ -1680,9 +1681,20 @@ func (s *BdStore) runBDTransientCreateOutput(hasStableID bool, args ...string) (
 }
 
 func (s *BdStore) runBDTransientWriteOutputWhen(shouldRetry func(error) bool, args ...string) ([]byte, error) {
+	doltlite := s.isDoltliteBackend()
+	if doltlite {
+		s.writeMu.Lock()
+		defer s.writeMu.Unlock()
+		locker := NewFileFlock(filepath.Join(s.dir, ".beads", ".bd-write.lock"))
+		if err := locker.Lock(); err != nil {
+			return nil, fmt.Errorf("locking DoltLite bd writes: %w", err)
+		}
+		defer locker.Unlock() //nolint:errcheck // best-effort unlock after write
+	}
+
 	var err error
 	var out []byte
-	args = s.bdTransientWriteArgs(args)
+	args = s.bdTransientWriteArgsForBackend(args, doltlite)
 	for attempt := 1; attempt <= bdTransientWriteAttempts; attempt++ {
 		out, err = s.runner(s.dir, "bd", args...)
 		if err == nil || !shouldRetry(err) || attempt == bdTransientWriteAttempts {
@@ -1694,7 +1706,11 @@ func (s *BdStore) runBDTransientWriteOutputWhen(shouldRetry func(error) bool, ar
 }
 
 func (s *BdStore) bdTransientWriteArgs(args []string) []string {
-	if !s.isDoltliteBackend() {
+	return s.bdTransientWriteArgsForBackend(args, s.isDoltliteBackend())
+}
+
+func (s *BdStore) bdTransientWriteArgsForBackend(args []string, doltlite bool) []string {
+	if !doltlite {
 		return args
 	}
 	out := []string{"--dolt-auto-commit", "off"}
@@ -1735,10 +1751,12 @@ func isBdTransientWriteError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "Error 1213 (40001): serialization failure") ||
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "error 1213 (40001): serialization failure") ||
 		strings.Contains(msg, "this transaction conflicts with a committed transaction") ||
 		strings.Contains(msg, "failed to prepare catalog") ||
+		strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "database table is locked") ||
 		isBdAmbiguousWriteError(err)
 }
 
