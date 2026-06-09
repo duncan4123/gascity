@@ -37,6 +37,13 @@ var ErrParentProjectionSuperseded = errors.New("parent projection superseded by 
 // release an assignment based on the current status and assignee.
 var ErrConditionalReleaseUnsupported = errors.New("conditional assignment release unsupported")
 
+// ErrStatusConflict reports that a status transition raced with another write.
+var ErrStatusConflict = errors.New("bead status conflict")
+
+func statusConflictError(id, expected, current string) error {
+	return fmt.Errorf("updating bead %q: %w (expected status %q, got %q)", id, ErrStatusConflict, expected, current)
+}
+
 // ErrBDSilentFallback reports that a bd-backed store operation saw bd exit
 // successfully after falling back to on-disk JSONL auto-import mode. BdStore
 // surfaces this as an error for reads and writes because the command may have
@@ -86,16 +93,17 @@ type Bead struct {
 
 // UpdateOpts specifies which fields to change. Nil pointers are skipped.
 type UpdateOpts struct {
-	Title        *string // set title (nil = no change)
-	Status       *string // set status (nil = no change)
-	Type         *string // set issue type (nil = no change)
-	Priority     *int    // set priority (nil = no change)
-	Description  *string
-	ParentID     *string
-	Assignee     *string  // set assignee (nil = no change)
-	Labels       []string // append these labels (nil = no change)
-	RemoveLabels []string // remove these labels (nil = no change)
-	Metadata     map[string]string
+	Title          *string // set title (nil = no change)
+	Status         *string // set status (nil = no change)
+	ExpectedStatus *string
+	Type           *string // set issue type (nil = no change)
+	Priority       *int    // set priority (nil = no change)
+	Description    *string
+	ParentID       *string
+	Assignee       *string  // set assignee (nil = no change)
+	Labels         []string // append these labels (nil = no change)
+	RemoveLabels   []string // remove these labels (nil = no change)
+	Metadata       map[string]string
 }
 
 // ConditionalAssignmentReleaser is implemented by stores that can release an
