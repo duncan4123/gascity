@@ -112,6 +112,38 @@ func TestDoltliteReadStoreReadyUsesDoltlite(t *testing.T) {
 	}
 }
 
+func TestDoltliteReadStoreReadyCacheInvalidatesOnExternalWrite(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStore(t)
+	defer closeStore()
+
+	initial, err := store.Ready()
+	if err != nil {
+		t.Fatalf("initial Ready: %v", err)
+	}
+	initialCount := len(initial)
+
+	writer := openTestDoltliteWriter(t, store.db)
+	defer writer.Close() //nolint:errcheck // test cleanup
+	insertTestDoltliteIssue(t, writer, "issues", "labels", "dependencies", testDoltliteIssue{
+		ID:        "gc-ready-external",
+		Title:     "external ready",
+		Status:    "open",
+		IssueType: "task",
+		CreatedAt: time.Now().UTC().Add(5 * time.Second),
+	})
+
+	after, err := store.Ready()
+	if err != nil {
+		t.Fatalf("Ready after external write: %v", err)
+	}
+	if len(after) != initialCount+1 {
+		t.Fatalf("Ready() len = %d, want %d after external write", len(after), initialCount+1)
+	}
+	if !hasTestBead(after, "gc-ready-external") {
+		t.Fatalf("Ready() missing external write bead: %#v", after)
+	}
+}
+
 func TestDoltliteReadStoreReadyBlocksWorkflowDependencyTypes(t *testing.T) {
 	store, closeStore := newTestDoltliteReadStore(t)
 	defer closeStore()
