@@ -113,6 +113,59 @@ func TestProviderLifecycleProcessEnvProjectsCanonicalDoltPaths(t *testing.T) {
 	}
 }
 
+func TestProviderLifecycleProcessEnvPreservesPostgresBackendForPostgresCity(t *testing.T) {
+	cityPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cityPath, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte(`[workspace]
+name = "demo"
+
+[beads]
+provider = "bd"
+backend = "postgres"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, ".beads", "config.yaml"), []byte("issue_prefix: city\ngc.endpoint_origin: managed_city\ngc.endpoint_status: verified\ndolt.auto-start: false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, ".beads", ".env"), []byte("BEADS_POSTGRES_PASSWORD=citypw\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := contract.EnsureCanonicalMetadata(fsys.OSFS{}, filepath.Join(cityPath, ".beads", "metadata.json"), contract.MetadataState{
+		Database:         "beads",
+		Backend:          "postgres",
+		PostgresHost:     "db.example.test",
+		PostgresPort:     "5432",
+		PostgresUser:     "bd",
+		PostgresDatabase: "beads_pg",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	envEntries := mustProviderLifecycleProcessEnv(t, cityPath, "exec:"+gcBeadsBdScriptPath(cityPath))
+	env := map[string]string{}
+	for _, entry := range envEntries {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			env[key] = value
+		}
+	}
+
+	for _, key := range []string{"GC_BEADS_BACKEND", "BEADS_BACKEND"} {
+		if got := env[key]; got == "doltlite" {
+			t.Fatalf("providerLifecycleProcessEnv()[%s] = %q, want postgres projection to stay off doltlite", key, got)
+		}
+	}
+	if got := env["BEADS_POSTGRES_HOST"]; got != "db.example.test" {
+		t.Fatalf("providerLifecycleProcessEnv()[BEADS_POSTGRES_HOST] = %q, want db.example.test", got)
+	}
+	if got := env["BEADS_POSTGRES_DATABASE"]; got != "beads_pg" {
+		t.Fatalf("providerLifecycleProcessEnv()[BEADS_POSTGRES_DATABASE] = %q, want beads_pg", got)
+	}
+}
+
 func TestProviderLifecycleProcessEnvPropagatesManagedDoltTestMode(t *testing.T) {
 	cityPath := t.TempDir()
 	envEntries := mustProviderLifecycleProcessEnv(t, cityPath, "exec:"+gcBeadsBdScriptPath(cityPath))
