@@ -1,5 +1,6 @@
 //go:build gascity_doltlite_lib
 
+// Package main provides a small diagnostic client for DoltLite-backed beads stores.
 package main
 
 import (
@@ -40,7 +41,7 @@ func main() {
 func run(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("doltlite-client", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	city := fs.String("city", "/data/projects/doltlite-gascity", "city workspace root")
+	city := fs.String("city", ".", "city workspace root")
 	dbPath := fs.String("db", "", "direct DoltLite database path; overrides -city metadata")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -55,7 +56,7 @@ func run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer c.db.Close()
+	defer func() { _ = c.db.Close() }()
 
 	switch rest[0] {
 	case "info":
@@ -96,7 +97,7 @@ func run(ctx context.Context, args []string) error {
 }
 
 func usage(fs *flag.FlagSet) {
-	fmt.Fprintf(fs.Output(), "usage: doltlite-client [-city PATH] <info|query|exec|show|set-metadata|close> ...\n")
+	_, _ = fmt.Fprintf(fs.Output(), "usage: doltlite-client [-city PATH] <info|query|exec|show|set-metadata|close> ...\n")
 }
 
 func openClient(city, directDBPath string) (*client, error) {
@@ -177,7 +178,7 @@ func (c *client) query(ctx context.Context, query string, args ...string) error 
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	cols, err := rows.Columns()
 	if err != nil {
@@ -379,7 +380,7 @@ func (c *client) columns(ctx context.Context, table string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var columns []string
 	for rows.Next() {
