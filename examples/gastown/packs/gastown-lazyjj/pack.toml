@@ -1,0 +1,4 @@
+[pack]
+name = "gastown-lazyjj"
+schema = 2
+description = "LazyJJ workspace and stack workflow for Gas Town jj polecats."
