@@ -405,66 +405,7 @@ func (s *DoltliteReadStore) currentDoltHash() (string, error) {
 	if err := s.db.QueryRow("PRAGMA data_version").Scan(&dataVersion); err != nil {
 		return "", fmt.Errorf("doltlite data version: %w", err)
 	}
-
-	issueCount, issueUpdated, err := s.tableFingerprint("issues", true)
-	if err != nil {
-		return "", fmt.Errorf("doltlite issues fingerprint: %w", err)
-	}
-	wispCount, wispUpdated, err := s.tableFingerprint("wisps", false)
-	if err != nil {
-		return "", fmt.Errorf("doltlite wisps fingerprint: %w", err)
-	}
-	labelCount, err := s.tableCount("labels", true)
-	if err != nil {
-		return "", fmt.Errorf("doltlite labels fingerprint: %w", err)
-	}
-	wispLabelCount, err := s.tableCount("wisp_labels", false)
-	if err != nil {
-		return "", fmt.Errorf("doltlite wisp labels fingerprint: %w", err)
-	}
-	depCount, err := s.tableCount("dependencies", true)
-	if err != nil {
-		return "", fmt.Errorf("doltlite dependencies fingerprint: %w", err)
-	}
-	wispDepCount, err := s.tableCount("wisp_dependencies", false)
-	if err != nil {
-		return "", fmt.Errorf("doltlite wisp dependencies fingerprint: %w", err)
-	}
-
-	return fmt.Sprintf("data=%d;issues=%d:%s;wisps=%d:%s;labels=%d:%d;deps=%d:%d",
-		dataVersion, issueCount, issueUpdated, wispCount, wispUpdated, labelCount, wispLabelCount, depCount, wispDepCount), nil
-}
-
-func (s *DoltliteReadStore) tableFingerprint(table string, required bool) (int64, string, error) {
-	if !s.tableExists(table) {
-		if required {
-			return 0, "", fmt.Errorf("missing table %q", table)
-		}
-		return 0, "", nil
-	}
-	var count int64
-	var maxUpdated sql.NullString
-	if err := s.db.QueryRow("SELECT COUNT(*), MAX(updated_at) FROM "+table).Scan(&count, &maxUpdated); err != nil {
-		return 0, "", err
-	}
-	if !maxUpdated.Valid {
-		return count, "", nil
-	}
-	return count, strings.TrimSpace(maxUpdated.String), nil
-}
-
-func (s *DoltliteReadStore) tableCount(table string, required bool) (int64, error) {
-	if !s.tableExists(table) {
-		if required {
-			return 0, fmt.Errorf("missing table %q", table)
-		}
-		return 0, nil
-	}
-	var count int64
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil {
-		return 0, err
-	}
-	return count, nil
+	return fmt.Sprintf("data=%d", dataVersion), nil
 }
 
 func (s *DoltliteReadStore) resetOrderRunCache() {
