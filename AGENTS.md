@@ -325,10 +325,14 @@ Lesson test — it becomes LESS useful as models improve.
 
 Before considering any task complete:
 
-- Fast unit baseline passes (`make test`, or `make test-fast-parallel` on
-  machines where sharding is useful)
+- For routine polecat changes, run the formula's affected test command when it
+  is configured. If no affected command is configured, run focused package or
+  test-name commands that cover the changed files. Do not run `make test`,
+  `make test-fast-parallel`, or other broad/full-suite baselines by default.
 - Broader process/integration coverage uses the sharded targets documented in
-  `TESTING.md` instead of one monolithic `go test ./...` sweep
+  `TESTING.md` only when the user explicitly asks for it or the change has
+  broad shared-behavior risk. Prefer those shard targets over one monolithic
+  `go test ./...` sweep.
 - `go vet ./...` clean
 - `.githooks/pre-commit` is active locally (`git config core.hooksPath`
   prints `.githooks`) and has run for the staged change
