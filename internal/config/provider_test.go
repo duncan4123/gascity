@@ -128,8 +128,8 @@ func TestBuiltinProvidersCodex(t *testing.T) {
 	if p.Command != "codex" {
 		t.Errorf("Command = %q, want %q", p.Command, "codex")
 	}
-	if want := []string{"-c", "shell_environment_policy.inherit=all"}; !reflect.DeepEqual(p.Args, want) {
-		t.Errorf("Args = %v, want %v", p.Args, want)
+	if p.Args != nil {
+		t.Errorf("Args = %v, want nil", p.Args)
 	}
 	if p.PromptMode != "arg" {
 		t.Errorf("PromptMode = %q, want %q", p.PromptMode, "arg")
