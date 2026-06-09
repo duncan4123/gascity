@@ -53,6 +53,7 @@ func TestSupervisorStatusJSON(t *testing.T) {
 		t.Fatalf("not running with pid = %d", payload.PID)
 	}
 }
+
 func TestSupervisorStatusLineIncludesBinary(t *testing.T) {
 	if got, want := supervisorStatusLine(4242, "/home/ubuntu/.local/bin/gc", nil), "Supervisor is running (PID 4242, binary /home/ubuntu/.local/bin/gc)"; got != want {
 		t.Fatalf("supervisorStatusLine() = %q, want %q", got, want)

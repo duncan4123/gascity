@@ -1107,9 +1107,8 @@ func TestBuiltinProviders_CodexHasBaseArgsAndOptionDefaults(t *testing.T) {
 	builtins := BuiltinProviders()
 	codex := builtins["codex"]
 
-	wantArgs := []string{"-c", "shell_environment_policy.inherit=all"}
-	if !reflect.DeepEqual(codex.Args, wantArgs) {
-		t.Errorf("codex Args = %v, want %v", codex.Args, wantArgs)
+	if codex.Args != nil {
+		t.Errorf("codex Args = %v, want nil", codex.Args)
 	}
 	if codex.OptionDefaults == nil {
 		t.Fatal("codex OptionDefaults should not be nil")
