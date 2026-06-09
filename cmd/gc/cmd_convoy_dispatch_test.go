@@ -4005,6 +4005,111 @@ func TestRunControlDispatcherReturnsPendingForOpenScopeSubject(t *testing.T) {
 	}
 }
 
+func TestRunControlDispatcherResolvesCrossBeadGateAfterSubjectCloses(t *testing.T) {
+	clearGCEnv(t)
+	disableManagedDoltRecoveryForTest(t)
+
+	store := beads.NewMemStore()
+	workflow, err := store.Create(beads.Bead{
+		Title: "workflow",
+		Type:  "task",
+		Metadata: map[string]string{
+			"gc.kind":             "workflow",
+			"gc.formula_contract": "graph.v2",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+	body, err := store.Create(beads.Bead{
+		Title: "scope body",
+		Type:  "task",
+		Metadata: map[string]string{
+			"gc.kind":         "scope",
+			"gc.scope_ref":    "cross-bead-gate",
+			"gc.scope_role":   "body",
+			"gc.root_bead_id": workflow.ID,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create scope body: %v", err)
+	}
+	awaited, err := store.Create(beads.Bead{
+		Title: "awaited bead",
+		Type:  "task",
+	})
+	if err != nil {
+		t.Fatalf("create awaited bead: %v", err)
+	}
+	control, err := store.Create(beads.Bead{
+		Title: "Finalize cross-bead gate",
+		Type:  "task",
+		Metadata: map[string]string{
+			"gc.kind":         "scope-check",
+			"gc.root_bead_id": workflow.ID,
+			"gc.scope_ref":    "cross-bead-gate",
+			"gc.scope_role":   "control",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create control: %v", err)
+	}
+	if err := store.DepAdd(control.ID, awaited.ID, "blocks"); err != nil {
+		t.Fatalf("add control dependency: %v", err)
+	}
+
+	cfg := &config.City{Workspace: config.Workspace{Name: "test-city"}}
+	var stderr bytes.Buffer
+	err = runControlDispatcherWithStoreAndConfig(t.TempDir(), t.TempDir(), store, control, control.ID, cfg, io.Discard, &stderr)
+	if !errors.Is(err, dispatch.ErrControlPending) {
+		t.Fatalf("runControlDispatcherWithStoreAndConfig(open awaited) error = %v, want ErrControlPending", err)
+	}
+	controlAfter, err := store.Get(control.ID)
+	if err != nil {
+		t.Fatalf("get pending control: %v", err)
+	}
+	if controlAfter.Status != "open" {
+		t.Fatalf("control status after open awaited = %q, want open", controlAfter.Status)
+	}
+	bodyAfter, err := store.Get(body.ID)
+	if err != nil {
+		t.Fatalf("get pending body: %v", err)
+	}
+	if bodyAfter.Status != "open" {
+		t.Fatalf("body status after open awaited = %q, want open", bodyAfter.Status)
+	}
+
+	if err := store.Close(awaited.ID); err != nil {
+		t.Fatalf("close awaited bead: %v", err)
+	}
+	control, err = store.Get(control.ID)
+	if err != nil {
+		t.Fatalf("reload control: %v", err)
+	}
+	var stdout bytes.Buffer
+	err = runControlDispatcherWithStoreAndConfig(t.TempDir(), t.TempDir(), store, control, control.ID, cfg, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("runControlDispatcherWithStoreAndConfig(closed awaited): %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "control dispatch: bead="+control.ID+" action=scope-pass") {
+		t.Fatalf("stdout = %q, want scope-pass action", got)
+	}
+	controlAfter, err = store.Get(control.ID)
+	if err != nil {
+		t.Fatalf("get resolved control: %v", err)
+	}
+	if controlAfter.Status != "closed" {
+		t.Fatalf("control status after closed awaited = %q, want closed", controlAfter.Status)
+	}
+	bodyAfter, err = store.Get(body.ID)
+	if err != nil {
+		t.Fatalf("get resolved body: %v", err)
+	}
+	if bodyAfter.Status != "closed" {
+		t.Fatalf("body status after closed awaited = %q, want closed", bodyAfter.Status)
+	}
+}
+
 func TestRunWorkflowServeDispatchesUnexpectedNonControlBeadAndProcessesLaterReady(t *testing.T) {
 	clearGCEnv(t)
 	disableManagedDoltRecoveryForTest(t)
