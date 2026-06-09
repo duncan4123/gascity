@@ -5,12 +5,15 @@ package beads
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -880,6 +883,56 @@ func TestDoltliteReadStoreSetMetadataBatchUpdatesWisp(t *testing.T) {
 	}
 }
 
+func TestDoltliteReadStoreConcurrentMetadataWritesPreserveBothKeys(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStore(t)
+	defer closeStore()
+
+	dir := filepath.Dir(filepath.Dir(filepath.Dir(store.dbPath)))
+	backing2 := NewBdStore(dir, func(string, string, ...string) ([]byte, error) {
+		t.Fatal("backing bd runner should not be called by concurrent metadata regression test")
+		return nil, nil
+	})
+	store2, err := NewDoltliteReadStore(dir, backing2)
+	if err != nil {
+		t.Fatalf("NewDoltliteReadStore second handle: %v", err)
+	}
+	defer func() { _ = store2.CloseStore() }()
+
+	for i := 0; i < 12; i++ {
+		stateKey := fmt.Sprintf("state-%d", i)
+		phaseKey := fmt.Sprintf("phase-%d", i)
+		start := make(chan struct{})
+		errCh := make(chan error, 2)
+
+		go func() {
+			<-start
+			errCh <- store.SetMetadataBatch("gc-tier-wisp", map[string]string{stateKey: "running"})
+		}()
+		go func() {
+			<-start
+			errCh <- store2.Update("gc-tier-wisp", UpdateOpts{Metadata: map[string]string{phaseKey: "dispatch"}})
+		}()
+
+		close(start)
+		for j := 0; j < 2; j++ {
+			if err := <-errCh; err != nil {
+				t.Fatalf("concurrent metadata write round %d: %v", i, err)
+			}
+		}
+
+		got, err := store.Get("gc-tier-wisp")
+		if err != nil {
+			t.Fatalf("Get after round %d: %v", i, err)
+		}
+		if got.Metadata["kind"] != "wisp" {
+			t.Fatalf("round %d metadata lost kind: %#v", i, got.Metadata)
+		}
+		if got.Metadata[stateKey] != "running" || got.Metadata[phaseKey] != "dispatch" {
+			t.Fatalf("round %d metadata lost concurrent keys %q/%q: %#v", i, stateKey, phaseKey, got.Metadata)
+		}
+	}
+}
+
 func TestDoltliteReadStoreCloseAndReopenWisp(t *testing.T) {
 	store, closeStore := newTestDoltliteReadStore(t)
 	defer closeStore()
@@ -1246,6 +1299,52 @@ func TestDoltliteReadStoreGCInternalReadWriteHarness(t *testing.T) {
 	}
 }
 
+// This targets the DoltLite query helper directly so the regression can
+// assert the generated SQL without depending on an end-to-end bd query.
+func TestDoltliteReadStoreQueryIssuesOrderedUsesPerTableLimitAcrossTiers(t *testing.T) {
+	recorder := newDoltliteQueryRecorder()
+	driverName := "doltlite-limit-" + strings.NewReplacer("/", "-", " ", "-", ":", "-").Replace(t.Name())
+	sql.Register(driverName, newDoltliteQueryDriver(recorder))
+	db, err := sql.Open(driverName, "")
+	if err != nil {
+		t.Fatalf("open fake doltlite db: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	store := &DoltliteReadStore{db: db}
+	rows, err := store.queryIssuesOrdered(ListQuery{
+		SkipLabels: true,
+		TierMode:   TierBoth,
+	}, "", nil, 1, "")
+	if err != nil {
+		t.Fatalf("queryIssuesOrdered(TierBoth, limit=1): %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("queryIssuesOrdered(TierBoth, limit=1) returned %d rows, want 1", len(rows))
+	}
+
+	queries := recorder.queriesCopy()
+	var issueQuery, wispQuery string
+	for _, query := range queries {
+		switch {
+		case strings.Contains(query, "FROM issues i"):
+			issueQuery = query
+		case strings.Contains(query, "FROM wisps i"):
+			wispQuery = query
+		}
+	}
+	if issueQuery == "" || wispQuery == "" {
+		t.Fatalf("recorded queries = %v, want issue and wisp ready scans", queries)
+	}
+	for _, query := range []string{issueQuery, wispQuery} {
+		if !strings.Contains(query, "LIMIT 1") {
+			t.Fatalf("query %q, want per-table LIMIT 1", query)
+		}
+	}
+}
+
 func TestDoltliteCachingStoreLiveFastReadDoesNotEraseDependencyCache(t *testing.T) {
 	store, closeStore := newTestDoltliteReadStore(t)
 	defer closeStore()
@@ -1540,6 +1639,120 @@ type testDoltliteIssue struct {
 	Dependencies []testDoltliteDependency
 	Ephemeral    bool
 	NoHistory    bool
+}
+
+type doltliteQueryRecorder struct {
+	mu      sync.Mutex
+	queries []string
+}
+
+func newDoltliteQueryRecorder() *doltliteQueryRecorder {
+	return &doltliteQueryRecorder{}
+}
+
+func (r *doltliteQueryRecorder) record(query string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.queries = append(r.queries, query)
+}
+
+func (r *doltliteQueryRecorder) queriesCopy() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.queries...)
+}
+
+type doltliteQueryDriver struct {
+	recorder *doltliteQueryRecorder
+}
+
+func newDoltliteQueryDriver(recorder *doltliteQueryRecorder) driver.Driver {
+	return &doltliteQueryDriver{recorder: recorder}
+}
+
+func (d *doltliteQueryDriver) Open(string) (driver.Conn, error) {
+	return &doltliteQueryConn{recorder: d.recorder}, nil
+}
+
+type doltliteQueryConn struct {
+	recorder *doltliteQueryRecorder
+}
+
+func (c *doltliteQueryConn) Prepare(string) (driver.Stmt, error) {
+	return nil, fmt.Errorf("prepare unsupported")
+}
+
+func (c *doltliteQueryConn) Close() error { return nil }
+
+func (c *doltliteQueryConn) Begin() (driver.Tx, error) {
+	return nil, fmt.Errorf("transactions unsupported")
+}
+
+func (c *doltliteQueryConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	c.recorder.record(query)
+	switch {
+	case strings.Contains(query, "sqlite_master"):
+		return &doltliteQueryRows{
+			columns: []string{"name"},
+			rows:    [][]driver.Value{{"wisps"}},
+		}, nil
+	case strings.Contains(query, "FROM issues i"):
+		return newDoltliteQueryRows("gc-issue", time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)), nil
+	case strings.Contains(query, "FROM wisps i"):
+		return newDoltliteQueryRows("gc-wisp", time.Date(2026, 6, 7, 11, 0, 0, 0, time.UTC)), nil
+	default:
+		return nil, fmt.Errorf("unexpected query: %s", query)
+	}
+}
+
+type doltliteQueryRows struct {
+	columns []string
+	rows    [][]driver.Value
+	idx     int
+}
+
+func newDoltliteQueryRows(id string, createdAt time.Time) driver.Rows {
+	return &doltliteQueryRows{
+		columns: []string{
+			"id",
+			"title",
+			"status",
+			"issue_type",
+			"priority",
+			"created_at",
+			"updated_at",
+			"assignee",
+			"description",
+			"metadata",
+			"parent",
+		},
+		rows: [][]driver.Value{{
+			id,
+			id,
+			"open",
+			"task",
+			nil,
+			createdAt,
+			createdAt,
+			"",
+			"",
+			"{}",
+			"",
+		}},
+	}
+}
+
+func (r *doltliteQueryRows) Columns() []string { return r.columns }
+
+func (r *doltliteQueryRows) Close() error { return nil }
+
+func (r *doltliteQueryRows) Next(dest []driver.Value) error {
+	if r.idx >= len(r.rows) {
+		return io.EOF
+	}
+	copy(dest, r.rows[r.idx])
+	r.idx++
+	return nil
 }
 
 // createTestDoltliteSchema mirrors the snapshot schema the current DoltLite

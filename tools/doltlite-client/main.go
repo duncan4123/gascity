@@ -244,7 +244,18 @@ func (c *client) setMetadata(ctx context.Context, id string, kvs map[string]stri
 	if err != nil {
 		return err
 	}
-	metadata, err := c.loadMetadata(ctx, table, id)
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	metadata, err := c.loadMetadataTx(ctx, tx, table, id)
 	if err != nil {
 		return err
 	}
@@ -258,11 +269,15 @@ func (c *client) setMetadata(ctx context.Context, id string, kvs map[string]stri
 	if err != nil {
 		return err
 	}
-	res, err := c.db.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET metadata = ?, updated_at = ? WHERE id = ?", table), string(data), time.Now().UTC().Format(time.RFC3339Nano), id)
+	res, err := tx.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET metadata = ?, updated_at = ? WHERE id = ?", table), string(data), time.Now().UTC().Format(time.RFC3339Nano), id)
 	if err != nil {
 		return err
 	}
 	n, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
 	fmt.Printf("set-metadata table=%s id=%s keys=%s rows=%d\n", table, id, strings.Join(keys, ","), n)
 	return nil
 }
@@ -336,6 +351,23 @@ func (c *client) loadMetadata(ctx context.Context, table, id string) (map[string
 	var metadata map[string]any
 	if err := json.Unmarshal([]byte(raw.String), &metadata); err != nil {
 		return nil, fmt.Errorf("parsing metadata for %s: %w", id, err)
+	}
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	return metadata, nil
+}
+
+func (c *client) loadMetadataTx(ctx context.Context, tx *sql.Tx, table, id string) (map[string]any, error) {
+	var raw sql.NullString
+	if err := tx.QueryRowContext(ctx, fmt.Sprintf("SELECT metadata FROM %s WHERE id = ?", table), id).Scan(&raw); err != nil {
+		return nil, err
+	}
+	var metadata map[string]any
+	if raw.Valid && strings.TrimSpace(raw.String) != "" {
+		if err := json.Unmarshal([]byte(raw.String), &metadata); err != nil {
+			return nil, fmt.Errorf("parsing metadata for %s: %w", id, err)
+		}
 	}
 	if metadata == nil {
 		metadata = map[string]any{}

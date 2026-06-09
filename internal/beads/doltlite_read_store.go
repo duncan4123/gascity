@@ -537,7 +537,7 @@ func (s *DoltliteReadStore) Update(id string, opts UpdateOpts) error {
 		return fmt.Errorf("updating bead %q: %w", id, err)
 	}
 	if current.Ephemeral {
-		err := s.updateWisp(id, current, opts)
+		err := s.updateWisp(id, opts)
 		if err == nil {
 			s.resetOrderRunCache()
 		}
@@ -644,14 +644,7 @@ func (s *DoltliteReadStore) SetMetadataBatch(id string, kvs map[string]string) e
 		return nil
 	}
 	if current.Ephemeral {
-		metadata := make(map[string]string, len(current.Metadata)+len(changed))
-		for k, v := range current.Metadata {
-			metadata[k] = v
-		}
-		for k, v := range changed {
-			metadata[k] = v
-		}
-		if err := s.updateWispMetadata(id, metadata); err != nil {
+		if err := s.updateWispMetadata(id, changed); err != nil {
 			return fmt.Errorf("setting metadata on %q: %w", id, err)
 		}
 		s.resetOrderRunCache()
@@ -668,7 +661,7 @@ func (s *DoltliteReadStore) SetMetadata(id, key, value string) error {
 	return s.SetMetadataBatch(id, map[string]string{key: value})
 }
 
-func (s *DoltliteReadStore) updateWisp(id string, current Bead, opts UpdateOpts) error {
+func (s *DoltliteReadStore) updateWisp(id string, opts UpdateOpts) error {
 	if opts.Title == nil &&
 		opts.Status == nil &&
 		opts.Type == nil &&
@@ -724,16 +717,9 @@ func (s *DoltliteReadStore) updateWisp(id string, current Bead, opts UpdateOpts)
 		args = append(args, *opts.Assignee)
 	}
 	if len(opts.Metadata) > 0 {
-		metadata := make(map[string]string, len(current.Metadata)+len(opts.Metadata))
-		for k, v := range current.Metadata {
-			metadata[k] = v
-		}
-		for k, v := range opts.Metadata {
-			metadata[k] = v
-		}
-		raw, err := json.Marshal(metadata)
+		raw, err := s.mergeWispMetadata(tx, id, opts.Metadata)
 		if err != nil {
-			return fmt.Errorf("encoding wisp metadata: %w", err)
+			return fmt.Errorf("updating wisp metadata %q: %w", id, err)
 		}
 		updates = append(updates, "metadata = ?")
 		args = append(args, string(raw))
@@ -854,20 +840,27 @@ func (s *DoltliteReadStore) doltliteWriteBead(id string) (Bead, error) {
 }
 
 func (s *DoltliteReadStore) updateWispMetadata(id string, metadata map[string]string) error {
-	raw := "{}"
-	if len(metadata) > 0 {
-		data, err := json.Marshal(metadata)
-		if err != nil {
-			return fmt.Errorf("marshaling metadata: %w", err)
-		}
-		raw = string(data)
-	}
 	db, err := s.openWritableDB()
 	if err != nil {
 		return err
 	}
 	defer db.Close() //nolint:errcheck // best-effort cleanup
-	res, err := db.Exec(`UPDATE wisps SET metadata = ?, updated_at = ? WHERE id = ?`, raw, time.Now().UTC().Format(time.RFC3339Nano), id)
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	raw, err := s.mergeWispMetadata(tx, id, metadata)
+	if err != nil {
+		return err
+	}
+	res, err := tx.Exec(`UPDATE wisps SET metadata = ?, updated_at = ? WHERE id = ?`, raw, time.Now().UTC().Format(time.RFC3339Nano), id)
 	if err != nil {
 		return err
 	}
@@ -878,7 +871,43 @@ func (s *DoltliteReadStore) updateWispMetadata(id string, metadata map[string]st
 	if n == 0 {
 		return ErrNotFound
 	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
 	return nil
+}
+
+func (s *DoltliteReadStore) mergeWispMetadata(tx *sql.Tx, id string, updates map[string]string) (string, error) {
+	current, err := s.loadWispMetadata(tx, id)
+	if err != nil {
+		return "", err
+	}
+	for key, value := range updates {
+		current[key] = value
+	}
+	raw, err := json.Marshal(current)
+	if err != nil {
+		return "", fmt.Errorf("encoding wisp metadata: %w", err)
+	}
+	return string(raw), nil
+}
+
+func (s *DoltliteReadStore) loadWispMetadata(tx *sql.Tx, id string) (map[string]string, error) {
+	var raw sql.NullString
+	if err := tx.QueryRow(`SELECT metadata FROM wisps WHERE id = ?`, id).Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	metadata := make(map[string]string)
+	if raw.Valid && strings.TrimSpace(raw.String) != "" {
+		if err := json.Unmarshal([]byte(raw.String), &metadata); err != nil {
+			return nil, fmt.Errorf("parsing wisp metadata: %w", err)
+		}
+	}
+	return metadata, nil
 }
 
 func (s *DoltliteReadStore) updateWispStatus(id, status string) error {
@@ -1122,6 +1151,8 @@ func (s *DoltliteReadStore) queryIssuesOrderedInTables(query ListQuery, sets []d
 	merged := make([]Bead, 0)
 	seen := make(map[string]struct{})
 	for _, tables := range sets {
+		// A per-table LIMIT of the merged query limit is enough here: the
+		// final top-N can never contain more than N rows from any one table.
 		tableLimit := limit
 		if len(sets) > 1 && !doltliteCanPushTableLimit(query) {
 			tableLimit = 0
