@@ -1,5 +1,5 @@
-issue_prefix: gc
-issue-prefix: gc
+issue_prefix: ga
+issue-prefix: ga
 dolt.auto-start: false
 dolt.local-only: true
 dolt.auto-push: false
