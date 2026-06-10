@@ -455,6 +455,35 @@ func TestDoltliteReadStoreHandlesNullDescription(t *testing.T) {
 	}
 }
 
+func TestDoltliteReadStoreHandlesMissingDependsOnExternalColumn(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStoreWithSchema(t, createTestDoltliteSchemaWithoutExternal)
+	defer closeStore()
+
+	got, err := store.Get("gc-session")
+	if err != nil {
+		t.Fatalf("Get session bead: %v", err)
+	}
+	if got.ID != "gc-session" || got.Type != "session" {
+		t.Fatalf("Get session bead = %#v, want gc-session session", got)
+	}
+
+	ready, err := store.Ready(ReadyQuery{Assignee: "rig/ready-worker"})
+	if err != nil {
+		t.Fatalf("Ready with missing depends_on_external: %v", err)
+	}
+	if len(ready) == 0 {
+		t.Fatalf("Ready with missing depends_on_external returned no rows, want seeded rows")
+	}
+
+	deps, err := store.DepList("gc-parent", "up")
+	if err != nil {
+		t.Fatalf("DepList with missing depends_on_external: %v", err)
+	}
+	if len(deps) != 1 || deps[0].IssueID != "gc-child" || deps[0].DependsOnID != "gc-parent" {
+		t.Fatalf("DepList with missing depends_on_external = %#v, want gc-child -> gc-parent", deps)
+	}
+}
+
 // TestDoltliteReadStoreBeforeFiltersRespectCutoff verifies that the CreatedBefore
 // and UpdatedBefore list filters return only rows whose timestamps precede the
 // cutoff. Timestamps are seeded in the store's canonical SQLite text format
@@ -1379,6 +1408,10 @@ func TestDoltliteCachingStoreLiveFastReadDoesNotEraseDependencyCache(t *testing.
 }
 
 func newTestDoltliteReadStore(t *testing.T) (*DoltliteReadStore, func()) {
+	return newTestDoltliteReadStoreWithSchema(t, createTestDoltliteSchema)
+}
+
+func newTestDoltliteReadStoreWithSchema(t *testing.T, createSchema func(testing.TB, *sql.DB)) (*DoltliteReadStore, func()) {
 	t.Helper()
 	dir := t.TempDir()
 	beadsDir := filepath.Join(dir, ".beads")
@@ -1400,7 +1433,7 @@ func newTestDoltliteReadStore(t *testing.T) (*DoltliteReadStore, func()) {
 		t.Fatalf("open doltlite fixture db: %v", err)
 	}
 	defer db.Close() //nolint:errcheck // test cleanup
-	createTestDoltliteSchema(t, db)
+	createSchema(t, db)
 
 	now := time.Now().UTC()
 	created := []testDoltliteIssue{
@@ -1691,6 +1724,18 @@ func (c *doltliteQueryConn) Begin() (driver.Tx, error) {
 func (c *doltliteQueryConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
 	c.recorder.record(query)
 	switch {
+	case strings.Contains(query, "PRAGMA table_info"):
+		return &doltliteQueryRows{
+			columns: []string{"cid", "name", "type", "notnull", "dflt_value", "pk"},
+			rows: [][]driver.Value{
+				{0, "issue_id", "TEXT", 0, nil, 0},
+				{1, "depends_on_id", "TEXT", 0, nil, 0},
+				{2, "depends_on_issue_id", "TEXT", 0, nil, 0},
+				{3, "depends_on_wisp_id", "TEXT", 0, nil, 0},
+				{4, "depends_on_external", "TEXT", 0, nil, 0},
+				{5, "type", "TEXT", 0, nil, 0},
+			},
+		}, nil
 	case strings.Contains(query, "sqlite_master"):
 		return &doltliteQueryRows{
 			columns: []string{"name"},
@@ -1760,22 +1805,42 @@ func (r *doltliteQueryRows) Next(dest []driver.Value) error {
 // give both row tables ephemeral and no_history storage-flag columns.
 // createLegacyTestDoltliteSchema covers snapshots from before those columns.
 func createTestDoltliteSchema(t testing.TB, db *sql.DB) {
+	createTestDoltliteSchemaWithExternal(t, db, true)
+}
+
+func createTestDoltliteSchemaWithoutExternal(t testing.TB, db *sql.DB) {
+	createTestDoltliteSchemaWithExternal(t, db, false)
+}
+
+func createTestDoltliteSchemaWithExternal(t testing.TB, db *sql.DB, includeExternal bool) {
 	t.Helper()
 	const storageFlagColumns = `,
 			ephemeral INTEGER DEFAULT 0,
 			no_history INTEGER DEFAULT 0`
-	createTestDoltliteSchemaWithRowColumns(t, db, storageFlagColumns)
+	createTestDoltliteSchemaWithRowColumns(t, db, storageFlagColumns, includeExternal)
 }
 
 // createLegacyTestDoltliteSchema mirrors doltlite snapshots written before
 // the wisps table carried storage-flag columns: every wisps row is ephemeral.
 func createLegacyTestDoltliteSchema(t testing.TB, db *sql.DB) {
 	t.Helper()
-	createTestDoltliteSchemaWithRowColumns(t, db, "")
+	createTestDoltliteSchemaWithRowColumns(t, db, "", true)
 }
 
-func createTestDoltliteSchemaWithRowColumns(t testing.TB, db *sql.DB, extraRowColumns string) {
+func createTestDoltliteSchemaWithRowColumns(t testing.TB, db *sql.DB, extraRowColumns string, includeExternal bool) {
 	t.Helper()
+	depsColumns := []string{
+		"issue_id TEXT",
+		"depends_on_id TEXT",
+		"depends_on_issue_id TEXT",
+		"depends_on_wisp_id TEXT",
+		"type TEXT",
+	}
+	if includeExternal {
+		depsColumns = append(depsColumns[:4], append([]string{"depends_on_external TEXT"}, depsColumns[4:]...)...)
+	}
+	depsSchema := "CREATE TABLE dependencies (\n\t\t\t" + strings.Join(depsColumns, ",\n\t\t\t") + "\n\t\t)"
+	wispDepsSchema := "CREATE TABLE wisp_dependencies (\n\t\t\t" + strings.Join(depsColumns, ",\n\t\t\t") + "\n\t\t)"
 	for _, stmt := range []string{
 		`CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT)`,
 		`CREATE TABLE issues (
@@ -1810,22 +1875,8 @@ func createTestDoltliteSchemaWithRowColumns(t testing.TB, db *sql.DB, extraRowCo
 		)`,
 		`CREATE TABLE labels (issue_id TEXT, label TEXT)`,
 		`CREATE TABLE wisp_labels (issue_id TEXT, label TEXT)`,
-		`CREATE TABLE dependencies (
-			issue_id TEXT,
-			depends_on_id TEXT,
-			depends_on_issue_id TEXT,
-			depends_on_wisp_id TEXT,
-			depends_on_external TEXT,
-			type TEXT
-		)`,
-		`CREATE TABLE wisp_dependencies (
-			issue_id TEXT,
-			depends_on_id TEXT,
-			depends_on_issue_id TEXT,
-			depends_on_wisp_id TEXT,
-			depends_on_external TEXT,
-			type TEXT
-		)`,
+		depsSchema,
+		wispDepsSchema,
 		`INSERT INTO config (key, value) VALUES ('issue_prefix', 'gc')`,
 		`INSERT INTO config (key, value) VALUES ('types.custom', 'session,agent,role,rig,message,convoy,molecule,gate,merge-request')`,
 	} {
@@ -1957,9 +2008,17 @@ func insertTestDoltliteIssue(t testing.TB, db *sql.DB, issueTable, labelTable, d
 		if dependsOnIssueID == "" && dep.DependsOnWispID == "" && dep.DependsOnExternal == "" {
 			dependsOnIssueID = dep.DependsOnID
 		}
+		if testDoltliteTableHasColumn(t, db, depTable, "depends_on_external") {
+			if _, err := db.Exec(`INSERT INTO `+depTable+` (
+				issue_id, depends_on_id, depends_on_issue_id, depends_on_wisp_id, depends_on_external, type
+			) VALUES (?, ?, ?, ?, ?, ?)`, issue.ID, dep.DependsOnID, dependsOnIssueID, dep.DependsOnWispID, dep.DependsOnExternal, dep.Type); err != nil {
+				t.Fatalf("insert dep %s -> %s: %v", issue.ID, dep.DependsOnID, err)
+			}
+			continue
+		}
 		if _, err := db.Exec(`INSERT INTO `+depTable+` (
-			issue_id, depends_on_id, depends_on_issue_id, depends_on_wisp_id, depends_on_external, type
-		) VALUES (?, ?, ?, ?, ?, ?)`, issue.ID, dep.DependsOnID, dependsOnIssueID, dep.DependsOnWispID, dep.DependsOnExternal, dep.Type); err != nil {
+			issue_id, depends_on_id, depends_on_issue_id, depends_on_wisp_id, type
+		) VALUES (?, ?, ?, ?, ?)`, issue.ID, dep.DependsOnID, dependsOnIssueID, dep.DependsOnWispID, dep.Type); err != nil {
 			t.Fatalf("insert dep %s -> %s: %v", issue.ID, dep.DependsOnID, err)
 		}
 	}
@@ -2034,6 +2093,35 @@ func newLegacyTestDoltliteReadStore(t *testing.T) (*DoltliteReadStore, func()) {
 		t.Fatalf("NewDoltliteReadStore: %v", err)
 	}
 	return store, func() { _ = store.CloseStore() }
+}
+
+func testDoltliteTableHasColumn(t testing.TB, db *sql.DB, table, column string) bool {
+	t.Helper()
+	rows, err := db.Query(`PRAGMA table_info(` + quoteSQLiteIdentifier(table) + `)`)
+	if err != nil {
+		t.Fatalf("inspect %s columns: %v", table, err)
+	}
+	defer rows.Close() //nolint:errcheck // best-effort cleanup
+	for rows.Next() {
+		var (
+			cid        int
+			columnName string
+			columnType string
+			notNull    int
+			defaultVal any
+			pk         int
+		)
+		if err := rows.Scan(&cid, &columnName, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			t.Fatalf("scan %s columns: %v", table, err)
+		}
+		if columnName == column {
+			return true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate %s columns: %v", table, err)
+	}
+	return false
 }
 
 func testBeadIDs(rows []Bead) []string {
