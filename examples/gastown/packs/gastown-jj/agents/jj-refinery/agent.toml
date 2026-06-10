@@ -1,0 +1,8 @@
+scope = "rig"
+provider = "codex-mini"
+wake_mode = "fresh"
+work_dir = ".gc/workspaces/{{.Rig}}/refinery"
+nudge = "Run 'gc prime' to check merge queue and begin processing."
+pre_start = ["{{.ConfigDir}}/assets/scripts/workspace-setup.sh {{.RigRoot}} {{.WorkDir}} {{.AgentBase}} --sync"]
+idle_timeout = "2h"
+max_active_sessions = 1

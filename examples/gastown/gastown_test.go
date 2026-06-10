@@ -1462,6 +1462,108 @@ func TestWorktreeSetupKeepsIgnoresLocal(t *testing.T) {
 	}
 }
 
+func TestWorktreeSetupSerializesBeforeReuseCheck(t *testing.T) {
+	checks := []struct {
+		name    string
+		script  string
+		marker  string
+		snippet []string
+	}{
+		{
+			name:   "gastown",
+			script: filepath.Join(exampleDir(), "packs", "gastown", "assets", "scripts", "worktree-setup.sh"),
+			marker: "# Idempotent: skip if worktree already exists.",
+			snippet: []string{
+				"acquire_worktree_lock()",
+				`LOCK_TIMEOUT="${GC_WORKTREE_SETUP_LOCK_TIMEOUT:-300}"`,
+				"gascity-worktree-setup.lock",
+				`flock -w "$LOCK_TIMEOUT" 9`,
+				"acquire_worktree_lock",
+			},
+		},
+		{
+			name:   "t3bridge",
+			script: filepath.Join(exampleDir(), "..", "t3bridge-gastown", "packs", "gastown", "assets", "scripts", "worktree-setup.sh"),
+			marker: `if [ -d "$work_dir/.git" ] || git -C "$work_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then`,
+			snippet: []string{
+				"acquire_worktree_lock()",
+				`lock_timeout="${GC_WORKTREE_SETUP_LOCK_TIMEOUT:-300}"`,
+				"gascity-worktree-setup.lock",
+				`flock -w "$lock_timeout" 9`,
+				"acquire_worktree_lock",
+			},
+		},
+	}
+
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			data, err := os.ReadFile(check.script)
+			if err != nil {
+				t.Fatalf("reading %s: %v", check.script, err)
+			}
+			body := string(data)
+			assertContainsInOrder(t, body, check.snippet...)
+			if !strings.Contains(body, check.marker) {
+				t.Fatalf("%s missing reuse marker %q", check.script, check.marker)
+			}
+			callMarker := "\nacquire_worktree_lock\n"
+			callAt := strings.Index(body, callMarker)
+			markerAt := strings.Index(body, check.marker)
+			if callAt == -1 {
+				t.Fatalf("%s missing worktree lock call", check.script)
+			}
+			if callAt > markerAt {
+				t.Fatalf("%s acquires the lock after the reuse check:\n%s", check.script, body)
+			}
+		})
+	}
+}
+
+func TestWorkspaceSetupSerializesBeforeReuseCheck(t *testing.T) {
+	checks := []struct {
+		name    string
+		script  string
+		marker  string
+		snippet []string
+	}{
+		{
+			name:   "gastown-jj",
+			script: filepath.Join(exampleDir(), "packs", "gastown-jj", "assets", "scripts", "workspace-setup.sh"),
+			marker: "# Idempotent: skip if workspace already exists.",
+			snippet: []string{
+				"acquire_workspace_lock()",
+				`LOCK_TIMEOUT="${GC_WORKSPACE_SETUP_LOCK_TIMEOUT:-300}"`,
+				"gascity-workspace-setup.lock",
+				`flock -w "$LOCK_TIMEOUT" 9`,
+				"acquire_workspace_lock",
+			},
+		},
+	}
+
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			data, err := os.ReadFile(check.script)
+			if err != nil {
+				t.Fatalf("reading %s: %v", check.script, err)
+			}
+			body := string(data)
+			assertContainsInOrder(t, body, check.snippet...)
+			if !strings.Contains(body, check.marker) {
+				t.Fatalf("%s missing reuse marker %q", check.script, check.marker)
+			}
+			callMarker := "\nacquire_workspace_lock\n"
+			callAt := strings.Index(body, callMarker)
+			markerAt := strings.Index(body, check.marker)
+			if callAt == -1 {
+				t.Fatalf("%s missing workspace lock call", check.script)
+			}
+			if callAt > markerAt {
+				t.Fatalf("%s acquires the lock after the reuse check:\n%s", check.script, body)
+			}
+		})
+	}
+}
+
 func TestWorktreeSetupBootstrapsPrepopulatedTargetDir(t *testing.T) {
 	tmp := t.TempDir()
 	repo := filepath.Join(tmp, "repo")
