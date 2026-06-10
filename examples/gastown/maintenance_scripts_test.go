@@ -611,6 +611,110 @@ exit 1
 	}
 }
 
+func TestOrphanSweepPreservesLiveJjWorkspaceAssignees(t *testing.T) {
+	cityDir := t.TempDir()
+	binDir := t.TempDir()
+	gcLog := filepath.Join(t.TempDir(), "gc.log")
+	jjLog := filepath.Join(t.TempDir(), "jj.log")
+
+	writeExecutable(t, filepath.Join(binDir, "jj"), `#!/bin/sh
+printf '%s\n' "$*" >> "$JJ_CALL_LOG"
+case "$1" in
+  workspace)
+    if [ "$2" = "list" ]; then
+      cat <<'EOF'
+project/gastown.missing: nyrvoqrw 76053077 polecat/gc-i9a* | (empty) (no description set)
+EOF
+      exit 0
+    fi
+    ;;
+esac
+exit 1
+`)
+	writeExecutable(t, filepath.Join(binDir, "gc"), `#!/bin/sh
+printf '%s\n' "$*" >> "$GC_CALL_LOG"
+if [ "$1" = "--rig" ]; then
+  shift 2
+fi
+case "$1" in
+  config)
+    if [ "$2" = "explain" ]; then
+      cat <<'EOF'
+Agent: project/worker
+  source: pack
+EOF
+      exit 0
+    fi
+    ;;
+  rig)
+    if [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+      printf '{"rigs":[{"name":"hq","hq":true},{"name":"project","hq":false}]}\n'
+      exit 0
+    fi
+    ;;
+  session)
+    if [ "$2" = "list" ] && [ "$3" = "--json" ]; then
+      printf '{"sessions":[],"summary":{},"filters":{},"schema_version":"1"}\n'
+      exit 0
+    fi
+    ;;
+  bd)
+    if [ "$2" = "list" ]; then
+      cat <<'EOF'
+[
+  {"id":"ga-orphan","status":"in_progress","assignee":"project/gastown.missing"}
+]
+EOF
+      exit 0
+    fi
+    if [ "$2" = "show" ] && [ "$3" = "ga-orphan" ] && [ "$4" = "--json" ]; then
+      cat <<'EOF'
+[
+  {"id":"ga-orphan","status":"in_progress","assignee":"project/gastown.missing"}
+]
+EOF
+      exit 0
+    fi
+    ;;
+esac
+exit 1
+`)
+
+	env := map[string]string{
+		"GC_CITY":      cityDir,
+		"GC_CITY_PATH": cityDir,
+		"GC_CALL_LOG":  gcLog,
+		"JJ_CALL_LOG":  jjLog,
+		"PATH":         binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+
+	script := filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "orphan-sweep.sh")
+	cmd := exec.Command(script)
+	cmd.Env = mergeTestEnv(env)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s failed: %v\n%s", filepath.Base(script), err, out)
+	}
+	if strings.Contains(string(out), "orphan-sweep: reset") {
+		t.Fatalf("live jj workspace assignee was reset:\n%s", out)
+	}
+
+	gcData, err := os.ReadFile(gcLog)
+	if err != nil {
+		t.Fatalf("ReadFile(gc log): %v", err)
+	}
+	if strings.Contains(string(gcData), "bd release-if-current ga-orphan project/gastown.missing") {
+		t.Fatalf("live jj workspace assignee was reset:\n%s", gcData)
+	}
+	jjData, err := os.ReadFile(jjLog)
+	if err != nil {
+		t.Fatalf("ReadFile(jj log): %v", err)
+	}
+	if !strings.Contains(string(jjData), "workspace list") {
+		t.Fatalf("jj workspace list was not queried:\n%s", jjData)
+	}
+}
+
 func TestOrphanSweepRefreshesRigLivenessAfterBeadList(t *testing.T) {
 	cityDir := t.TempDir()
 	binDir := t.TempDir()
