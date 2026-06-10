@@ -3912,6 +3912,64 @@ func TestRefineryPromptUsesCanonicalAgentIdentity(t *testing.T) {
 	}
 }
 
+// TestRefineryPromptUsesJjNativeMergeLoop verifies the refinery prompt and
+// shared propulsion fragment speak in jj-native terms instead of git branch
+// and worktree language.
+func TestRefineryPromptUsesJjNativeMergeLoop(t *testing.T) {
+	dir := exampleDir()
+
+	promptPath := filepath.Join(dir, "packs", "gastown", "agents", "refinery", "prompt.template.md")
+	promptData, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("reading refinery prompt: %v", err)
+	}
+
+	fragmentPath := filepath.Join(dir, "packs", "gastown", "template-fragments", "propulsion.template.md")
+	fragmentData, err := os.ReadFile(fragmentPath)
+	if err != nil {
+		t.Fatalf("reading refinery propulsion fragment: %v", err)
+	}
+
+	prompt := string(promptData)
+	fragment := string(fragmentData)
+
+	for _, check := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "prompt workspace refresh",
+			body: prompt,
+			want: "recorded workspace is missing, renamed, or not present in " + "`" + "jj workspace list" + "`",
+		},
+		{
+			name: "prompt jj push",
+			body: prompt,
+			want: "| Push merged changes | " + "`" + "jj git push --bookmark \"$TARGET\"" + "`" + " |",
+		},
+		{
+			name: "prompt jj rebase",
+			body: prompt,
+			want: "| Rebase on target | " + "`" + "jj rebase -r @ -d \"$TARGET@origin\"" + "`" + " |",
+		},
+		{
+			name: "fragment jj bookmarks",
+			body: fragment,
+			want: `Work flows in as work beads that point at jj bookmarks.`,
+		},
+		{
+			name: "fragment workspace list",
+			body: fragment,
+			want: "Refresh the live workspace with " + "`" + "jj workspace list" + "`",
+		},
+	} {
+		if !strings.Contains(check.body, check.want) {
+			t.Errorf("%s missing jj-native refinery wording %q", check.name, check.want)
+		}
+	}
+}
+
 // TestRefineryAssignedWorkQueriesUsePortableRigScope verifies every refinery
 // work-bead lookup added for rig scope uses an attached --rig=value token.
 func TestRefineryAssignedWorkQueriesUsePortableRigScope(t *testing.T) {

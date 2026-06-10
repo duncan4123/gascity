@@ -73,6 +73,23 @@ func TestTestFastParallelUsesSanitizedEnvironment(t *testing.T) {
 	}
 }
 
+func TestLocalParallelFastUnitUsesObservableGoTest(t *testing.T) {
+	repoRoot := repoRoot(t)
+	script, err := os.ReadFile(filepath.Join(repoRoot, "scripts", "test-local-parallel"))
+	if err != nil {
+		t.Fatalf("read test-local-parallel: %v", err)
+	}
+	content := string(script)
+	for _, want := range []string{
+		"scripts/go-test-observable unit-core -- -p=4 -count=1 -timeout 15m",
+		"GC_FAST_UNIT=1",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("test-local-parallel unit-core job missing %q:\n%s", want, content)
+		}
+	}
+}
+
 func TestNativeDoltliteBeadsTargetRunsTaggedSuite(t *testing.T) {
 	repoRoot := repoRoot(t)
 	cmd := exec.Command("make", "-n", "test-native-doltlite-beads")
