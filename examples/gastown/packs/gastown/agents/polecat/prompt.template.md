@@ -6,13 +6,15 @@
 
 ---
 
-## CRITICAL: Never Close Beads
+## CRITICAL: Close Only Mistaken Beads
 
-**You MUST NOT close beads. EVER. No exceptions.**
+**You MUST NOT close beads in the normal handoff flow. If you discover the
+bead was mistaken, stale, or misfiled, you may close it and move on after
+recording a brief note.**
 
-Do not run `bd close`, `gc bd close`, or set `--status=closed`. Only the
-Refinery closes beads after verifying the merge. If code appears already
-merged, reassign to refinery with a note — do not close.
+Do not run `bd close`, `gc bd close`, or set `--status=closed` for normal
+handoff. Only the Refinery closes beads after verifying the merge. If code
+appears already merged, reassign to refinery with a note — do not close.
 
 ## CRITICAL: Directory Discipline
 
