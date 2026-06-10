@@ -833,28 +833,38 @@ func (s *NativeDoltStore) SetMetadataBatch(id string, kvs map[string]string) err
 	defer release()
 	ctx, cancel := nativeDoltOperationContext(context.TODO())
 	defer cancel()
-	issue, err := storage.GetIssue(ctx, id)
+
+	err = storage.RunInTransaction(ctx, fmt.Sprintf("gc: update bead %s metadata", id), func(tx beadslib.Transaction) error {
+		issue, err := tx.GetIssue(ctx, id)
+		if err != nil {
+			return nativeStoreError(id, err)
+		}
+		if issue == nil {
+			return fmt.Errorf("bead %q: %w", id, ErrNotFound)
+		}
+		metadata, err := metadataMapFromNative(issue.Metadata)
+		if err != nil {
+			return fmt.Errorf("parsing metadata for bead %q: %w", id, err)
+		}
+		if metadata == nil {
+			metadata = make(map[string]string, len(kvs))
+		}
+		for k, v := range kvs {
+			metadata[k] = v
+		}
+		raw, err := metadataRawFromMap(metadata)
+		if err != nil {
+			return err
+		}
+		if err := tx.UpdateIssue(ctx, id, map[string]interface{}{"metadata": raw}, s.actor); err != nil {
+			return nativeStoreError(id, err)
+		}
+		return nil
+	})
 	if err != nil {
 		return nativeStoreError(id, err)
 	}
-	if issue == nil {
-		return fmt.Errorf("bead %q: %w", id, ErrNotFound)
-	}
-	metadata, err := metadataMapFromNative(issue.Metadata)
-	if err != nil {
-		return fmt.Errorf("parsing metadata for bead %q: %w", id, err)
-	}
-	if metadata == nil {
-		metadata = make(map[string]string, len(kvs))
-	}
-	for k, v := range kvs {
-		metadata[k] = v
-	}
-	raw, err := metadataRawFromMap(metadata)
-	if err != nil {
-		return err
-	}
-	return nativeStoreError(id, storage.UpdateIssue(ctx, id, map[string]interface{}{"metadata": raw}, s.actor))
+	return nil
 }
 
 // Tx executes fn sequentially against the native Dolt store.
