@@ -1060,6 +1060,9 @@ func closeAndVerifyOrderTrackingBeads(ctx context.Context, store beads.Store, id
 		}
 		openIDs, err := openOrderTrackingIDs(store, ids)
 		if err != nil {
+			if errors.Is(err, beads.ErrStoreClosed) {
+				return closed, nil
+			}
 			lastErr = fmt.Errorf("verifying order-tracking close for %s: %w", strings.Join(ids, ", "), err)
 			if attempt < orderTrackingCloseVerifyAttempts {
 				if waitErr := waitOrderTrackingCloseRetry(ctx); waitErr != nil {
