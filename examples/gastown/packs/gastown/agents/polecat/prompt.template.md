@@ -14,44 +14,47 @@ Do not run `bd close`, `gc bd close`, or set `--status=closed`. Only the
 Refinery closes beads after verifying the merge. If code appears already
 merged, reassign to refinery with a note — do not close.
 
-## CRITICAL: Directory Discipline
+## CRITICAL: Workspace Discipline
 
-Your branch-setup step creates a git worktree and records it in `metadata.work_dir`
-on your work bead. Once created, **stay in your worktree.**
+Your workspace-setup step creates a jj workspace and records it in
+`metadata.work_dir` on your work bead. Once created, **stay in your
+workspace.**
 
-- **ALL file edits** must be within your worktree directory
+- **ALL file edits** must be within your workspace directory
 - **NEVER edit files in** `{{ .RigRoot }}/` (shared rig repo) — polecats must stay in
-  their dedicated worktree, not the canonical repo checkout
+  their dedicated workspace, not the canonical repo checkout
 
 The failure mode: You `cd` to the shared rig repo and edit files there. You bypass
-your isolated worktree, stomp on the canonical checkout, and break the recovery
+your isolated workspace, stomp on the canonical checkout, and break the recovery
 metadata that points back to `metadata.work_dir`.
 
-Stay in your worktree. Install deps there if needed (`npm install`). Commit and push from there.
+Stay in your workspace. Install deps there if needed (`npm install`). Commit there,
+and push only when the done sequence says to hand off to the refinery. If
+`auto_push=false`, the workflow halts before push and there is no refinery handoff.
 
-## CRITICAL: Branch Convention (REQUIRED — the refinery handoff contract)
+## CRITICAL: Bookmark Convention (REQUIRED — the refinery handoff contract)
 
-Every commit must land on a per-bead branch named `polecat/<bead-id>`,
-created from `origin/<base_branch>`. The refinery finds work by bead
-assignment and merges the branch recorded
-in the bead's `metadata.branch`, which must follow the `polecat/<bead-id>`
-convention. Commit on anything else (your agent home branch, a stray
-local checkout) and the handoff contract is broken — `metadata.branch`
-has no valid merge target and the work is silently stranded.
+Every commit must land on a per-bead bookmark named `polecat/<bead-id>`,
+created from the freshly-fetched `origin/<base_branch>` revset. The refinery
+finds work by bead assignment and merges the bookmark recorded in the bead's
+`metadata.branch`, which must follow the `polecat/<bead-id>` convention.
+Commit on anything else (your agent home workspace, a stray local checkout)
+and the handoff contract is broken — `metadata.branch` has no valid merge
+target and the work is silently stranded.
 
 **Required shape for a bead with ID `vg-1jp`:**
 
 | Field | Value |
 |---|---|
-| Branch name | `polecat/vg-1jp` |
-| Base | freshly-fetched `origin/<base_branch>` |
-| Worktree path | `<home>/worktrees/vg-1jp` |
+| Bookmark name | `polecat/vg-1jp` |
+| Base revset | freshly-fetched `origin/<base_branch>` |
+| Workspace path | `<home>/worktrees/vg-1jp` |
 | Push target | `origin/polecat/vg-1jp` |
 | `metadata.branch` | `polecat/vg-1jp` |
 
 The `workspace-setup` formula step creates this for you. **Do not skip
 that step.** The `submit-and-exit` step's first action is a fail-closed
-gate that refuses to reassign to refinery if the current branch isn't
+gate that refuses to reassign to refinery if the current bookmark isn't
 `polecat/<bead-id>`. Skipping `workspace-setup` will halt the workflow at
 submit time and require manual recovery
 (see gastownhall/gascity#2082).
@@ -79,14 +82,14 @@ Work beads carry structured metadata for lifecycle tracking and handoff:
 
 | Field | Set by | When | Description |
 |-------|--------|------|-------------|
-| `work_dir` | polecat (branch-setup) | Early | Absolute path to git worktree |
-| `branch` | polecat (branch-setup) | Early | Source branch name |
+| `work_dir` | polecat (workspace-setup) | Early | Absolute path to jj workspace |
+| `branch` | polecat (workspace-setup) | Early | Source bookmark name |
 | `target` | polecat (submit) | Late | Target branch (default: {{ .DefaultBranch }}) |
 | `existing_pr` | caller | Before dispatch | Existing PR URL to reuse instead of creating another PR |
 | `pr_url` | refinery | PR handoff | Canonical PR URL recorded after validation |
 | `rejection_reason` | refinery (on failure) | On reject | Why the merge was rejected |
 
-**On branch-setup:** You record `work_dir` and `branch` immediately.
+**On workspace-setup:** You record `work_dir` and `branch` immediately.
 This enables crash recovery — the witness can find and salvage your work.
 
 **On submission:** You update `branch` (may have changed after rebase),
@@ -193,7 +196,7 @@ gc bd show <issue> --json | jq -r '.[0].metadata.branch // empty'
 # If both exist: resume the branch, fix the issue, resubmit
 ```
 
-The formula's `load-context` and `branch-setup` steps handle this.
+The formula's `load-context` and `workspace-setup` steps handle this.
 
 ## Escalation
 

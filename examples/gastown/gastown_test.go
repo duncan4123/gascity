@@ -776,11 +776,11 @@ func TestPolecatFormulaSubmitHasBranchShapeGate(t *testing.T) {
 	)
 }
 
-// TestPolecatPromptInlinesBranchConvention asserts the polecat agent
-// prompt embeds the polecat/<bead-id> convention verbatim in a
+// TestPolecatPromptInlinesBookmarkConvention asserts the polecat agent
+// prompt embeds the polecat/<bead-id> bookmark convention verbatim in a
 // CRITICAL section, so a provider that skips reading the formula
 // (observed with codex on #2082) still sees the rule inline.
-func TestPolecatPromptInlinesBranchConvention(t *testing.T) {
+func TestPolecatPromptInlinesBookmarkConvention(t *testing.T) {
 	dir := exampleDir()
 	path := filepath.Join(dir, "packs", "gastown", "agents", "polecat", "prompt.template.md")
 	data, err := os.ReadFile(path)
@@ -790,7 +790,7 @@ func TestPolecatPromptInlinesBranchConvention(t *testing.T) {
 	body := string(data)
 
 	assertContainsInOrder(t, body,
-		"## CRITICAL: Branch Convention",
+		"## CRITICAL: Bookmark Convention",
 		"`polecat/<bead-id>`",
 		"`metadata.branch`",
 		"handoff contract is broken",
@@ -1726,8 +1726,11 @@ func TestPromptGuidanceUsesConfiguredRigRootsAndNamespacedWorktrees(t *testing.T
 	if err != nil {
 		t.Fatalf("reading polecat prompt: %v", err)
 	}
-	if strings.Contains(string(polecatPrompt), "that's not a git working tree") {
-		t.Fatalf("polecat prompt still claims rig root is not a git working tree:\n%s", polecatPrompt)
+	if !strings.Contains(string(polecatPrompt), "jj workspace") {
+		t.Fatalf("polecat prompt missing jj workspace guidance:\n%s", polecatPrompt)
+	}
+	if strings.Contains(string(polecatPrompt), "git worktree") {
+		t.Fatalf("polecat prompt still claims the workspace is a git worktree:\n%s", polecatPrompt)
 	}
 }
 
