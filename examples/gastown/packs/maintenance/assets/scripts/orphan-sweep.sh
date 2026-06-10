@@ -157,6 +157,19 @@ LIVE_SESSION_IDS=$(jq -r -s '
     | select(. != null and . != "")
 ' "$SESSION_TMP" 2>/dev/null) || exit 0
 
+# jj workspace names are also live identities for the sweep: a workspace can
+# still be active even when the session-list path is lagging or the session
+# name has been remapped. Treat the workspace list as a second liveness source
+# so jj-managed workspace lifecycles don't get swept as orphans.
+LIVE_WORKSPACE_IDS=$(jj workspace list 2>/dev/null | awk -F: '
+    {
+        name = $1
+        sub(/^[[:space:]]+/, "", name)
+        sub(/[[:space:]]+$/, "", name)
+        if (name != "") print name
+    }
+') || LIVE_WORKSPACE_IDS=""
+
 agent_exists() {
     local candidate="$1"
     [ -n "$candidate" ] && printf '%s\n' "$AGENTS" | grep -Fxq -- "$candidate"
@@ -166,6 +179,12 @@ live_session_match() {
     local candidate="$1"
     [ -n "$candidate" ] && [ -n "$LIVE_SESSION_IDS" ] \
         && printf '%s\n' "$LIVE_SESSION_IDS" | grep -Fxq -- "$candidate"
+}
+
+live_workspace_match() {
+    local candidate="$1"
+    [ -n "$candidate" ] && [ -n "$LIVE_WORKSPACE_IDS" ] \
+        && printf '%s\n' "$LIVE_WORKSPACE_IDS" | grep -Fxq -- "$candidate"
 }
 
 CURRENT_BEAD_JSON=""
@@ -304,7 +323,7 @@ is_known_agent() {
     # match any template form — accept them as known when a non-closed session
     # is currently running with a matching ID, SessionName, Alias, or
     # AgentName. Mirrors liveOpenSessionAssignmentExists in the Go path.
-    if live_session_match "$name"; then return 0; fi
+    if live_session_match "$name" || live_workspace_match "$name"; then return 0; fi
     # Bare short-form assignee whose canonical agent is LIVE: an assignee like
     # "backend_dev" can be the last-dot segment of a configured qualified agent
     # ("thriva/devpipeline.backend_dev") whose live session is known only by the
@@ -317,7 +336,7 @@ is_known_agent() {
     if [ -n "$name" ] && [ -n "$AGENTS" ]; then
         while IFS= read -r _cfg_agent; do
             [ -z "$_cfg_agent" ] && continue
-            if [ "${_cfg_agent##*.}" = "$name" ] && live_session_match "$_cfg_agent"; then
+            if [ "${_cfg_agent##*.}" = "$name" ] && (live_session_match "$_cfg_agent" || live_workspace_match "$_cfg_agent"); then
                 return 0
             fi
         done <<<"$AGENTS"
