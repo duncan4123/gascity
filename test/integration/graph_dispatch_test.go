@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/test/tmuxtest"
 )
 
@@ -169,7 +170,8 @@ func graphWorkflowCloseTimeout() time.Duration {
 
 func setupGraphWorkflowCity(t *testing.T, mode string) string {
 	t.Helper()
-	env := newIsolatedCommandEnv(t, true)
+	env := newIsolatedCommandEnv(t, false)
+	env = append(env, "GC_BEADS=file")
 
 	var cityName string
 	if usingSubprocess() {
@@ -188,11 +190,23 @@ func setupGraphWorkflowCity(t *testing.T, mode string) string {
 	if err := os.WriteFile(configPath, []byte(cityToml), 0o644); err != nil {
 		t.Fatalf("writing graph workflow config: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(cityDir, ".gc"), 0o755); err != nil {
+		t.Fatalf("creating .gc dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cityDir, ".gc", "beads.json"), []byte("{\"seq\":0,\"beads\":[]}\n"), 0o644); err != nil {
+		t.Fatalf("seeding file beads store: %v", err)
+	}
 
 	out, err := runGCDoltWithEnv(env, "", "init", "--skip-provider-readiness", "--file", configPath, cityDir)
 	if err != nil {
 		t.Fatalf("gc init --file failed: %v\noutput: %s", err, out)
 	}
+
+	issuePrefix := config.DeriveBeadsPrefix(cityName)
+	if err := os.WriteFile(filepath.Join(cityDir, ".beads", "config.yaml"), []byte("issue_prefix: "+issuePrefix+"\n"), 0o644); err != nil {
+		t.Fatalf("seeding graph workflow issue_prefix: %v", err)
+	}
+
 	registerCityCommandEnv(cityDir, env)
 	t.Cleanup(func() {
 		unregisterCityCommandEnv(cityDir)
