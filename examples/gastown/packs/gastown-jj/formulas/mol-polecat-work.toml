@@ -28,7 +28,7 @@ be inherited from a parent convoy with `metadata.target` set.
 | Variable | Source | Description |
 |----------|--------|-------------|
 | binding_prefix | import binding | Agent identity prefix for bound Gas Town imports. |
-| affected_tests_command | rig `formula_vars` | Shell-safe command that reads `git diff --name-only origin/{{base_branch}}...HEAD` and runs the matching test subset. Empty = run full `test_command`. |
+| affected_tests_command | rig `formula_vars` | Optional shell-safe command for tasks that explicitly request affected-test verification. Empty = no default test execution. |
 
 **Rejection-aware.** If the work bead has `metadata.branch` and
 `metadata.rejection_reason`, a previous attempt was rejected by the
@@ -38,7 +38,7 @@ refinery. Resume the existing branch — don't redo all the work.
 
 | Situation | Action |
 |-----------|--------|
-| Tests fail | Fix them. Do not proceed with failures. |
+| Requested check fails | Fix it if your change caused it. Otherwise file a bead. |
 | Blocked on external | Mail Witness, mark yourself stuck |
 | Context filling | `gc runtime request-restart` (blocks until controller kills you) |
 | Unsure what to do | Mail Witness, don't guess |"""
@@ -51,7 +51,7 @@ description = "Import binding prefix for gastown agent identities, including tra
 default = "jj-"
 
 [vars.affected_tests_command]
-description = "Shell-safe affected-tests command. Must read `git diff --name-only origin/{{base_branch}}...HEAD` and run the matching test subset. From rig `formula_vars` or empty to run full test_command."
+description = "Optional shell-safe affected-tests command for explicit test requests. Empty means do not run tests by default."
 default = ""
 
 [[steps]]
@@ -177,14 +177,14 @@ rebased on latest {{base_branch}}, deps installed, branch recorded on the bead."
 
 [[steps]]
 id = "self-review"
-title = "Self-review and run tests (affected-aware)"
+title = "Self-review and record verification"
 needs = ["implement"]
 description = """
-Review your changes and verify they work. Override of mol-polecat-base
-`self-review` to support affected-test detection — when the rig configures
-`affected_tests_command`, only the tests touched by your diff run, instead
-of the full suite. Saves polecat time and reduces CI clog from PRs whose
-locally-runnable failures should have been caught before push.
+Review your changes and verify they work. Run only the checks explicitly
+requested by the bead, the operator, or the rig instructions for this task.
+Do not infer that a vague request like "integration checks" means running
+the test suite; first inspect the task context and use the narrowest
+verification that proves the requested behavior.
 
 **Config: setup_command = {{setup_command}}**
 **Config: typecheck_command = {{typecheck_command}}**
@@ -211,27 +211,19 @@ debug cruft, unintended file changes. Fix anything you find.
 {{build_command}}
 ```
 
-**3. Run tests — affected subset if rig provides one, full suite otherwise:**
+**3. Run task-specific verification only when requested:**
 ```bash
-if [ -n "{{affected_tests_command}}" ]; then
-    # Rig has an affected-tests detector. Run only the tests our diff
-    # touches — same logic the rig's CI uses to dispatch test workflows.
-    # The command must read `git diff --name-only origin/{{base_branch}}...HEAD`
-    # internally and execute the relevant test subset.
-    {{affected_tests_command}}
-else
-    # No affected detector — run the full suite (legacy behavior).
-    {{test_command}}
-fi
+# If the bead/operator/rig explicitly names a check, run that exact focused
+# command and record the result. Otherwise inspect and report the smallest
+# non-test verification that proves the template or config change.
 ```
 
-**ALL CHECKS MUST PASS.** If your change caused the failure, fix it.
+**REQUESTED CHECKS MUST PASS.** If your change caused the failure, fix it.
 If pre-existing, file a bead.
 
-Refusing to push on local failure is a feature: the rig's CI will run the
-same affected subset (and more), and a PR that already fails locally will
-fail in CI too — wasting reviewer attention and CI minutes. Fix before
-submitting.
+Do not run full suites opportunistically from this prompt. Broad tests are a
+separate operator decision unless the task, bead, or rig instructions require
+them.
 
 **4. Ensure everything is committed:**
 ```bash
@@ -253,7 +245,7 @@ BODY
 
 NEVER discard implementation changes with `git checkout -- .`
 
-**Exit criteria:** All checks pass (affected subset OR full suite), all
+**Exit criteria:** Requested verification recorded, all
 changes committed, working tree clean."""
 
 [[steps]]
@@ -377,8 +369,8 @@ Set `assignee` to the configured refinery named-session identity and clear
 demand is represented by unassigned work with `gc.routed_to=<target>`, so
 named-session work should not retain pool-demand metadata.
 
-The refinery will pick this up, rebase onto {{base_branch}}, run tests,
-merge, and close the bead. If there's a conflict, the refinery puts the
+The refinery will pick this up, rebase onto {{base_branch}}, perform its
+configured review, merge, and close the bead. If there's a conflict, the refinery puts the
 bead back in the pool with `rejection_reason` metadata — a new polecat
 picks it up and resumes from the existing branch.
 

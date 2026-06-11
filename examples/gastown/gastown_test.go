@@ -232,6 +232,7 @@ func renderGastownPromptForPack(t *testing.T, rel, agentName, templateName, rigN
 		"AssignedReadyQuery":      "bd ready --include-ephemeral --assignee=<session>",
 		"BindingName":             bindingName,
 		"BindingPrefix":           bindingPrefix,
+		"BeadsBackend":            "dolt",
 		"CityRoot":                "/city",
 		"DefaultBranch":           "main",
 		"IssuePrefix":             "demo",

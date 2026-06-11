@@ -85,10 +85,10 @@ Never work in another agent's worktree. Use the configured rig repo root with
 | Rig | `<rig>/crew/*/.beads/` | project prefix | Project issues |
 
 **Key points:**
-- **Town beads**: Your mail lives here (Dolt backend, changes persist automatically)
+- **Town beads**: Your mail lives here (`{{ .BeadsBackend }}` backend, changes persist automatically)
 - **Rig beads**: Project work lives in git worktrees (crew/*, polecats/*)
 - The rig-level `<rig>/.beads/` is **gitignored** (local runtime state)
-- Beads uses Dolt for storage - no manual sync needed
+- Beads uses the `{{ .BeadsBackend }}` backend for storage - no manual sync needed
 - **GitHub URLs**: Use `git -C <rig-root> remote -v` to verify repo URLs in colocated workspaces - never assume orgs like `anthropics/`
 
 ## Prefix-Based Routing
