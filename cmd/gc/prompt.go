@@ -29,6 +29,7 @@ type PromptContext struct {
 	TemplateName            string // config name: "polecat" (template) or "mayor" (named backing template)
 	BindingName             string
 	BindingPrefix           string
+	BeadsBackend            string // storage backend from [beads].backend, defaulted like runtime config
 	RigName                 string
 	RigRoot                 string
 	WorkDir                 string

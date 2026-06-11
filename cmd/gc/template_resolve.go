@@ -326,12 +326,17 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 	if p.city != nil {
 		beadsCfg = p.city.Beads
 	}
+	beadsBackend := strings.TrimSpace(beadsCfg.Backend)
+	if beadsBackend == "" {
+		beadsBackend = "dolt"
+	}
 	prompt = renderPrompt(p.fs, p.cityPath, p.cityName, cfgAgent.PromptTemplate, PromptContext{
 		CityRoot:                p.cityPath,
 		AgentName:               qualifiedName,
 		TemplateName:            cfgAgent.Name,
 		BindingName:             cfgAgent.BindingName,
 		BindingPrefix:           cfgAgent.BindingPrefix(),
+		BeadsBackend:            beadsBackend,
 		RigName:                 rigName,
 		RigRoot:                 rigRoot,
 		WorkDir:                 workDir,
