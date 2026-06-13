@@ -630,23 +630,30 @@ func (s *DoltliteReadStore) SetMetadataBatch(id string, kvs map[string]string) e
 	if len(kvs) == 0 {
 		return nil
 	}
-	current, err := s.doltliteWriteBead(id)
+	var current Bead
+	var changed map[string]string
+	err := s.runWispWrite(func() error {
+		var err error
+		current, err = s.doltliteWriteBead(id)
+		if err != nil {
+			return err
+		}
+		changed = changedMetadata(current.Metadata, kvs)
+		if len(changed) == 0 {
+			return nil
+		}
+		if current.Ephemeral {
+			return s.updateWispMetadataLocked(id, changed)
+		}
+		return nil
+	})
 	if err != nil {
 		return fmt.Errorf("setting metadata on %q: %w", id, err)
-	}
-	changed := make(map[string]string, len(kvs))
-	for k, v := range kvs {
-		if current.Metadata[k] != v {
-			changed[k] = v
-		}
 	}
 	if len(changed) == 0 {
 		return nil
 	}
 	if current.Ephemeral {
-		if err := s.updateWispMetadata(id, changed); err != nil {
-			return fmt.Errorf("setting metadata on %q: %w", id, err)
-		}
 		s.resetOrderRunCache()
 		return nil
 	}
@@ -659,6 +666,16 @@ func (s *DoltliteReadStore) SetMetadataBatch(id string, kvs map[string]string) e
 
 func (s *DoltliteReadStore) SetMetadata(id, key, value string) error {
 	return s.SetMetadataBatch(id, map[string]string{key: value})
+}
+
+func changedMetadata(current, updates map[string]string) map[string]string {
+	changed := make(map[string]string, len(updates))
+	for k, v := range updates {
+		if current[k] != v {
+			changed[k] = v
+		}
+	}
+	return changed
 }
 
 func (s *DoltliteReadStore) updateWisp(id string, opts UpdateOpts) error {
@@ -674,6 +691,12 @@ func (s *DoltliteReadStore) updateWisp(id string, opts UpdateOpts) error {
 		len(opts.Metadata) == 0 {
 		return nil
 	}
+	return s.runWispWrite(func() error {
+		return s.updateWispLocked(id, opts)
+	})
+}
+
+func (s *DoltliteReadStore) updateWispLocked(id string, opts UpdateOpts) error {
 	db, err := s.openWritableDB()
 	if err != nil {
 		return err
@@ -840,6 +863,12 @@ func (s *DoltliteReadStore) doltliteWriteBead(id string) (Bead, error) {
 }
 
 func (s *DoltliteReadStore) updateWispMetadata(id string, metadata map[string]string) error {
+	return s.runWispWrite(func() error {
+		return s.updateWispMetadataLocked(id, metadata)
+	})
+}
+
+func (s *DoltliteReadStore) updateWispMetadataLocked(id string, metadata map[string]string) error {
 	db, err := s.openWritableDB()
 	if err != nil {
 		return err
@@ -911,6 +940,12 @@ func (s *DoltliteReadStore) loadWispMetadata(tx *sql.Tx, id string) (map[string]
 }
 
 func (s *DoltliteReadStore) updateWispStatus(id, status string) error {
+	return s.runWispWrite(func() error {
+		return s.updateWispStatusLocked(id, status)
+	})
+}
+
+func (s *DoltliteReadStore) updateWispStatusLocked(id, status string) error {
 	db, err := s.openWritableDB()
 	if err != nil {
 		return err
@@ -928,6 +963,25 @@ func (s *DoltliteReadStore) updateWispStatus(id, status string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *DoltliteReadStore) runWispWrite(fn func() error) error {
+	if s.dbPath == "" {
+		return fn()
+	}
+	lockRoot := filepath.Dir(filepath.Dir(s.dbPath))
+	lockPath := filepath.Join(lockRoot, ".bd-write.lock")
+	return withDoltliteWriteLock(lockRoot, lockPath, func() error {
+		var err error
+		for attempt := 1; attempt <= bdTransientWriteAttempts; attempt++ {
+			err = fn()
+			if err == nil || !isBdTransientWriteError(err) || attempt == bdTransientWriteAttempts {
+				return err
+			}
+			time.Sleep(time.Duration(attempt) * 25 * time.Millisecond)
+		}
+		return err
+	})
 }
 
 func (s *DoltliteReadStore) openWritableDB() (*sql.DB, error) {
