@@ -84,6 +84,7 @@ type wizardConfig struct {
 	provider         string // compatibility mirror for older internal callers
 	startCommand     string // custom start command (workspace-level)
 	bootstrapProfile string // hosted bootstrap profile, or "" for local defaults
+	beadsBackend     string // bead store backend: "dolt" or "doltlite", "" = default
 	err              error
 }
 
@@ -100,6 +101,7 @@ func canBootstrapExistingCity(wiz wizardConfig) bool {
 		len(wiz.providers) == 0 &&
 		wiz.startCommand == "" &&
 		wiz.bootstrapProfile == "" &&
+		wiz.beadsBackend == "" &&
 		wiz.err == nil
 }
 
@@ -127,6 +129,37 @@ func readLine(br *bufio.Reader) string {
 		return strings.TrimSpace(line)
 	}
 	return strings.TrimSpace(line)
+}
+
+func askBeadsBackend(stdin *bufio.Reader, stdout io.Writer) string {
+	fmt.Fprintln(stdout, "")                                                      //nolint:errcheck // best-effort stdout
+	fmt.Fprintln(stdout, "Choose bead store backend:")                            //nolint:errcheck // best-effort stdout
+	fmt.Fprintln(stdout, "  1. dolt      - managed Dolt SQL server (default)")    //nolint:errcheck // best-effort stdout
+	fmt.Fprintln(stdout, "  2. doltlite  - embedded DoltLite, no server process") //nolint:errcheck // best-effort stdout
+	fmt.Fprintf(stdout, "Beads backend [1]: ")                                    //nolint:errcheck // best-effort stdout
+	switch strings.ToLower(readLine(stdin)) {
+	case "", "1", "dolt":
+		return ""
+	case "2", "doltlite":
+		return "doltlite"
+	default:
+		fmt.Fprintln(stdout, "Unknown backend, using dolt.") //nolint:errcheck // best-effort stdout
+		return ""
+	}
+}
+
+func applyInitBeadsBackend(cfg *config.City, backend string) {
+	if cfg == nil {
+		return
+	}
+	backend = strings.TrimSpace(backend)
+	if backend == "" {
+		return
+	}
+	cfg.Beads.Backend = backend
+	if resolveBeadsBackendName(backend).Name() == "doltlite" {
+		cfg.Beads.BDCompatibility = config.BeadsBDCompatibility105
+	}
 }
 
 // runWizard runs the interactive init wizard, asking the user to choose a
@@ -164,11 +197,13 @@ func runWizard(stdin io.Reader, stdout io.Writer) wizardConfig {
 		fmt.Fprintf(stdout, "Unknown template %q, using gascity.\n", configChoice) //nolint:errcheck // best-effort stdout
 	}
 
-	// Custom config → skip agent question, return minimal config.
+	// Custom config → skip agent question, return after backend choice.
 	if configName == "custom" {
+		beadsBackend := askBeadsBackend(br, stdout)
 		return wizardConfig{
-			interactive: true,
-			configName:  "custom",
+			interactive:  true,
+			configName:   "custom",
+			beadsBackend: beadsBackend,
 		}
 	}
 
@@ -207,12 +242,14 @@ func runWizard(stdin io.Reader, stdout io.Writer) wizardConfig {
 		}
 	}
 
+	beadsBackend := askBeadsBackend(br, stdout)
 	return wizardConfig{
 		interactive:     true,
 		configName:      configName,
 		defaultProvider: defaultProvider,
 		providers:       providers,
 		provider:        defaultProvider,
+		beadsBackend:    beadsBackend,
 	}
 }
 
@@ -319,6 +356,7 @@ func newInitCmd(stdout, stderr io.Writer) *cobra.Command {
 	var providersFlag []string
 	var defaultProviderFlag string
 	var bootstrapProfileFlag string
+	var beadsBackendFlag string
 	var skipProviderReadiness bool
 	var preserveExisting bool
 	var jsonOut bool
@@ -337,13 +375,19 @@ or --file to initialize from an existing TOML config file.
 
 Pass --preserve-existing to keep any pre-authored pack.toml, city.toml, or
 agent prompt files in the target directory (useful when bootstrapping a
-committed workspace — e.g. from a bootstrap.sh shipped in the repo).`,
+committed workspace — e.g. from a bootstrap.sh shipped in the repo).
+
+Use --beads-backend to configure the bead store backend. "dolt" uses the
+managed Dolt SQL server (default). "doltlite" uses embedded DoltLite
+databases with no server process.`,
 		Example: `  gc init
   gc init ~/my-city
   gc init --default-provider codex ~/my-city
   gc init --template gastown --default-provider codex ~/my-city
   gc init --providers claude,codex --default-provider codex ~/my-city
   gc init --default-provider codex --bootstrap-profile k8s-cell /city
+  gc init --beads-backend doltlite ~/my-city
+  gc init --template gastown --beads-backend doltlite ~/my-city
   gc init --name my-city
   gc init --from ~/elan --name elan /city
   gc init --file ./my-city.toml ~/bright-lights
@@ -373,6 +417,9 @@ committed workspace — e.g. from a bootstrap.sh shipped in the repo).`,
 			if flagMode != "" {
 				mode = flagMode
 			}
+			if beadsBackendFlag != "" {
+				wiz.beadsBackend = strings.TrimSpace(beadsBackendFlag)
+			}
 			code := cmdInitWithPreparedWizardInternal(args, wiz, flagMode != "", nameFlag, out, stderr, skipProviderReadiness, preserveExisting, jsonOut, noStart)
 			return writeInitJSONOrExit(code, jsonOut, args, nameFlag, wiz.configName, wizardDefaultProvider(wiz), wizardProviders(wiz), bootstrapProfileFlag, mode, stdout)
 		},
@@ -385,6 +432,7 @@ committed workspace — e.g. from a bootstrap.sh shipped in the repo).`,
 	cmd.Flags().StringArrayVar(&providersFlag, "providers", nil, "readiness-aware providers to write to city.toml (repeatable or comma-separated)")
 	cmd.Flags().StringVar(&templateFlag, "template", "", "non-interactive template to write: minimal, gastown, gascity, or custom")
 	cmd.Flags().StringVar(&bootstrapProfileFlag, "bootstrap-profile", "", "bootstrap profile to apply for hosted/container defaults")
+	cmd.Flags().StringVar(&beadsBackendFlag, "beads-backend", "", "bead store backend: \"dolt\" (managed Dolt server) or \"doltlite\" (embedded DoltLite); default: dolt")
 	cmd.Flags().BoolVar(&skipProviderReadiness, "skip-provider-readiness", false, "skip provider login/readiness checks during init and continue startup")
 	cmd.Flags().BoolVar(&noStart, "no-start", false, "initialize files and imports without registering or starting the city")
 	cmd.Flags().BoolVar(&preserveExisting, "preserve-existing", false, "keep any pre-authored pack.toml, city.toml, or agent prompt files instead of overwriting them")
@@ -401,6 +449,8 @@ committed workspace — e.g. from a bootstrap.sh shipped in the repo).`,
 	cmd.MarkFlagsMutuallyExclusive("template", "from")
 	cmd.MarkFlagsMutuallyExclusive("bootstrap-profile", "file")
 	cmd.MarkFlagsMutuallyExclusive("bootstrap-profile", "from")
+	cmd.MarkFlagsMutuallyExclusive("beads-backend", "file")
+	cmd.MarkFlagsMutuallyExclusive("beads-backend", "from")
 	_ = cmd.Flags().MarkHidden("provider")
 	return cmd
 }
@@ -1310,6 +1360,7 @@ func doInit(fs fsys.FS, cityPath string, wiz wizardConfig, nameOverride string, 
 		cfg = config.DefaultCity(cityName)
 	}
 	applyBootstrapProfile(&cfg, wiz.bootstrapProfile)
+	applyInitBeadsBackend(&cfg, wiz.beadsBackend)
 	cityPrefix := strings.TrimSpace(cfg.Workspace.Prefix)
 
 	// Write prompt files only for the agents declared by the init template.
