@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,8 +26,9 @@ func newHookCmd(stdout, stderr io.Writer) *cobra.Command {
 	var drainAck bool
 	var jsonOut bool
 	cmd := &cobra.Command{
-		Use:   "hook [agent]",
-		Short: "Find routed work for an agent",
+		Use:         "hook [agent]",
+		Short:       "Find routed work for an agent",
+		Annotations: map[string]string{jsonSchemaDirAnnotation: filepath.Join("schemas", "hook")},
 		Long: `Finds routed work using the agent's work_query config.
 
 Without --inject: prints normalized ready-only output, exits 0 if work exists, 1 if empty.
@@ -310,11 +312,6 @@ func cmdHookWithOptions(args []string, opts hookCommandOptions, stdout, stderr i
 		if rigStores := appendOneRigHookStore(nil, cityPath, cfg, &a, rig, overrides); len(rigStores) > 0 {
 			stores = append(rigStores, stores...)
 		}
-		// A rig-backed agent's own env above is ALSO rig-scoped, so without
-		// this no entry reaches the CITY store and root-only beads assigned
-		// to the agent stay invisible. Best-effort tertiary; see
-		// appendCityHookStore.
-		stores = appendCityHookStore(stores, cityPath, cfg, &a, overrides)
 	}
 
 	runner := func(command, _ string) (string, error) {

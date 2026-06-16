@@ -71,6 +71,47 @@ func TestDoltliteReadStoreHydratesParent(t *testing.T) {
 	}
 }
 
+func TestDoltliteReadStoreHandlesCanonicalDependencySchema(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStoreWithCanonicalDeps(t)
+	defer closeStore()
+
+	rows, err := store.List(ListQuery{Type: "task", Sort: SortCreatedAsc})
+	if err != nil {
+		t.Fatalf("List tasks with canonical deps schema: %v", err)
+	}
+	child := findTestBead(t, rows, "gc-child")
+	if child.ParentID != "gc-parent" {
+		t.Fatalf("child parent = %q, want gc-parent", child.ParentID)
+	}
+
+	down, err := store.DepList("gc-child", "down")
+	if err != nil {
+		t.Fatalf("DepList down with canonical deps schema: %v", err)
+	}
+	if len(down) != 1 || down[0].DependsOnID != "gc-parent" {
+		t.Fatalf("down deps = %#v, want gc-parent", down)
+	}
+
+	up, err := store.DepList("gc-parent", "up")
+	if err != nil {
+		t.Fatalf("DepList up with canonical deps schema: %v", err)
+	}
+	if len(up) != 1 || up[0].IssueID != "gc-child" {
+		t.Fatalf("up deps = %#v, want gc-child", up)
+	}
+
+	ready, err := store.Ready()
+	if err != nil {
+		t.Fatalf("Ready with canonical deps schema: %v", err)
+	}
+	if !hasTestBead(ready, "gc-ready") {
+		t.Fatalf("Ready missing gc-ready: %#v", ready)
+	}
+	if hasTestBead(ready, "gc-blocked") {
+		t.Fatalf("Ready included blocked issue: %#v", ready)
+	}
+}
+
 func TestDoltliteReadStoreTypeFallbackCanSkipLabels(t *testing.T) {
 	store, closeStore := newTestDoltliteReadStore(t)
 	defer closeStore()
@@ -705,6 +746,11 @@ func TestDoltliteMetadataFilterPredicatesMatchStringValues(t *testing.T) {
 	}
 }
 
+// TestDoltliteReadStoreTierModesIncludeWisps pins the storage-tier contract
+// from query.go (TierMode) to the same shape TestBdStoreListStorageTierConformance
+// pins for BdStore (#3045, #3444): TierIssues keeps history and no-history
+// rows and drops only ephemeral ones; TierWisps keeps no-history and
+// ephemeral rows; TierBoth unions everything.
 func TestDoltliteReadStoreTierModesIncludeWisps(t *testing.T) {
 	store, closeStore := newTestDoltliteReadStore(t)
 	defer closeStore()
@@ -713,24 +759,70 @@ func TestDoltliteReadStoreTierModesIncludeWisps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List issues tier: %v", err)
 	}
-	if len(issues) != 1 || issues[0].ID != "gc-tier-issue" || issues[0].Ephemeral {
-		t.Fatalf("issues tier rows = %#v, want only non-ephemeral gc-tier-issue", issues)
+	if got := testBeadIDs(issues); !slices.Equal(got, []string{"gc-tier-issue", "gc-tier-nohistory"}) {
+		t.Fatalf("issues tier ids = %v, want [gc-tier-issue gc-tier-nohistory]; rows=%#v", got, issues)
+	}
+	noHistory := findTestBead(t, issues, "gc-tier-nohistory")
+	if noHistory.Ephemeral || !noHistory.NoHistory {
+		t.Fatalf("no-history row flags = %#v, want Ephemeral=false NoHistory=true", noHistory)
+	}
+	durable := findTestBead(t, issues, "gc-tier-issue")
+	if durable.Ephemeral || durable.NoHistory {
+		t.Fatalf("history row flags = %#v, want Ephemeral=false NoHistory=false", durable)
 	}
 
 	wisps, err := store.List(ListQuery{Label: "tier-test", TierMode: TierWisps, Sort: SortCreatedAsc})
 	if err != nil {
 		t.Fatalf("List wisps tier: %v", err)
 	}
-	if len(wisps) != 1 || wisps[0].ID != "gc-tier-wisp" || !wisps[0].Ephemeral {
-		t.Fatalf("wisps tier rows = %#v, want only ephemeral gc-tier-wisp", wisps)
+	if got := testBeadIDs(wisps); !slices.Equal(got, []string{"gc-tier-wisp", "gc-tier-nohistory"}) {
+		t.Fatalf("wisps tier ids = %v, want [gc-tier-wisp gc-tier-nohistory]; rows=%#v", got, wisps)
+	}
+	if ephemeral := findTestBead(t, wisps, "gc-tier-wisp"); !ephemeral.Ephemeral || ephemeral.NoHistory {
+		t.Fatalf("ephemeral row flags = %#v, want Ephemeral=true NoHistory=false", ephemeral)
 	}
 
 	both, err := store.List(ListQuery{Label: "tier-test", TierMode: TierBoth, Sort: SortCreatedAsc})
 	if err != nil {
 		t.Fatalf("List both tiers: %v", err)
 	}
-	if got := testBeadIDs(both); !slices.Equal(got, []string{"gc-tier-issue", "gc-tier-wisp"}) {
-		t.Fatalf("both tier ids = %v, want [gc-tier-issue gc-tier-wisp]; rows=%#v", got, both)
+	if got := testBeadIDs(both); !slices.Equal(got, []string{"gc-tier-issue", "gc-tier-wisp", "gc-tier-nohistory"}) {
+		t.Fatalf("both tier ids = %v, want [gc-tier-issue gc-tier-wisp gc-tier-nohistory]; rows=%#v", got, both)
+	}
+}
+
+// TestDoltliteReadStoreLegacyWispsSchemaStaysEphemeralOnly pins backward
+// compatibility for doltlite snapshots written before the wisps table carried
+// the ephemeral/no_history storage-flag columns (beads migrations 0020/0023):
+// without the discriminator every wisp row is ephemeral, so TierIssues must
+// keep excluding the whole wisps table and TierWisps must surface its rows
+// with Ephemeral=true.
+func TestDoltliteReadStoreLegacyWispsSchemaStaysEphemeralOnly(t *testing.T) {
+	store, closeStore := newLegacyTestDoltliteReadStore(t)
+	defer closeStore()
+
+	issues, err := store.List(ListQuery{Label: "tier-test", Sort: SortCreatedAsc})
+	if err != nil {
+		t.Fatalf("List issues tier: %v", err)
+	}
+	if got := testBeadIDs(issues); !slices.Equal(got, []string{"gc-legacy-issue"}) {
+		t.Fatalf("issues tier ids = %v, want [gc-legacy-issue]; rows=%#v", got, issues)
+	}
+
+	wisps, err := store.List(ListQuery{Label: "tier-test", TierMode: TierWisps, Sort: SortCreatedAsc})
+	if err != nil {
+		t.Fatalf("List wisps tier: %v", err)
+	}
+	if len(wisps) != 1 || wisps[0].ID != "gc-legacy-wisp" || !wisps[0].Ephemeral {
+		t.Fatalf("wisps tier rows = %#v, want only ephemeral gc-legacy-wisp", wisps)
+	}
+
+	both, err := store.List(ListQuery{Label: "tier-test", TierMode: TierBoth, Sort: SortCreatedAsc})
+	if err != nil {
+		t.Fatalf("List both tiers: %v", err)
+	}
+	if got := testBeadIDs(both); !slices.Equal(got, []string{"gc-legacy-issue", "gc-legacy-wisp"}) {
+		t.Fatalf("both tier ids = %v, want [gc-legacy-issue gc-legacy-wisp]; rows=%#v", got, both)
 	}
 }
 
@@ -1051,10 +1143,66 @@ func newTestDoltliteReadStore(t *testing.T) (*DoltliteReadStore, func()) {
 		Assignee:  "rig/wisp-worker",
 		Labels:    []string{"tier-test"},
 		Metadata:  map[string]string{"kind": "wisp"},
+		Ephemeral: true,
+	})
+	insertTestDoltliteIssue(t, db, "wisps", "wisp_labels", "wisp_dependencies", testDoltliteIssue{
+		ID:        "gc-tier-nohistory",
+		Title:     "tier no-history",
+		Status:    "open",
+		IssueType: "task",
+		CreatedAt: now.Add(5 * time.Second),
+		Assignee:  "rig/nohistory-worker",
+		Labels:    []string{"tier-test"},
+		Metadata:  map[string]string{"kind": "no-history"},
+		NoHistory: true,
 	})
 
 	backing := NewBdStore(dir, func(string, string, ...string) ([]byte, error) {
 		t.Fatal("backing bd runner should not be called by doltlite read tests")
+		return nil, nil
+	})
+	store, err := NewDoltliteReadStore(dir, backing)
+	if err != nil {
+		t.Fatalf("NewDoltliteReadStore: %v", err)
+	}
+	return store, func() { _ = store.CloseStore() }
+}
+
+func newTestDoltliteReadStoreWithCanonicalDeps(t *testing.T) (*DoltliteReadStore, func()) {
+	t.Helper()
+	dir := t.TempDir()
+	beadsDir := filepath.Join(dir, ".beads")
+	if err := os.MkdirAll(filepath.Join(beadsDir, "doltlite"), 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+	meta := []byte(`{"backend":"doltlite","database":"doltlite","dolt_database":"hq"}`)
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), meta, 0o600); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+
+	dbPath := filepath.Join(beadsDir, "doltlite", "hq.db")
+	db, err := sql.Open("sqlite", dbPath+"?_busy_timeout=10000")
+	if err != nil {
+		t.Fatalf("open canonical fixture db: %v", err)
+	}
+	defer db.Close() //nolint:errcheck // test cleanup
+	createTestDoltliteCanonicalDependencySchema(t, db)
+
+	now := time.Now().UTC()
+	for _, issue := range []testDoltliteIssue{
+		{ID: "gc-parent", Title: "parent", Status: "open", IssueType: "task", CreatedAt: now},
+		{ID: "gc-child", Title: "child", Status: "open", IssueType: "task", CreatedAt: now.Add(time.Second)},
+		{ID: "gc-blocker", Title: "blocker", Status: "open", IssueType: "task", CreatedAt: now.Add(2 * time.Second)},
+		{ID: "gc-blocked", Title: "blocked", Status: "open", IssueType: "task", CreatedAt: now.Add(3 * time.Second)},
+		{ID: "gc-ready", Title: "ready", Status: "open", IssueType: "task", CreatedAt: now.Add(4 * time.Second)},
+	} {
+		insertTestDoltliteCanonicalIssue(t, db, issue)
+	}
+	insertTestDoltliteCanonicalDep(t, db, "gc-child", "gc-parent", "parent-child")
+	insertTestDoltliteCanonicalDep(t, db, "gc-blocked", "gc-blocker", "blocks")
+
+	backing := NewBdStore(dir, func(string, string, ...string) ([]byte, error) {
+		t.Fatal("backing bd runner should not be called by canonical doltlite read tests")
 		return nil, nil
 	})
 	store, err := NewDoltliteReadStore(dir, backing)
@@ -1085,9 +1233,30 @@ type testDoltliteIssue struct {
 	Labels       []string
 	Metadata     map[string]string
 	Dependencies []testDoltliteDependency
+	Ephemeral    bool
+	NoHistory    bool
 }
 
+// createTestDoltliteSchema mirrors the snapshot schema the current DoltLite
+// beads backend writes: the upstream wisps/no-history migrations (0020/0023)
+// give both row tables ephemeral and no_history storage-flag columns.
+// createLegacyTestDoltliteSchema covers snapshots from before those columns.
 func createTestDoltliteSchema(t testing.TB, db *sql.DB) {
+	t.Helper()
+	const storageFlagColumns = `,
+			ephemeral INTEGER DEFAULT 0,
+			no_history INTEGER DEFAULT 0`
+	createTestDoltliteSchemaWithRowColumns(t, db, storageFlagColumns)
+}
+
+// createLegacyTestDoltliteSchema mirrors doltlite snapshots written before
+// the wisps table carried storage-flag columns: every wisps row is ephemeral.
+func createLegacyTestDoltliteSchema(t testing.TB, db *sql.DB) {
+	t.Helper()
+	createTestDoltliteSchemaWithRowColumns(t, db, "")
+}
+
+func createTestDoltliteSchemaWithRowColumns(t testing.TB, db *sql.DB, extraRowColumns string) {
 	t.Helper()
 	for _, stmt := range []string{
 		`CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT)`,
@@ -1104,7 +1273,7 @@ func createTestDoltliteSchema(t testing.TB, db *sql.DB) {
 			design TEXT,
 			acceptance_criteria TEXT,
 			notes TEXT,
-			metadata TEXT
+			metadata TEXT` + extraRowColumns + `
 		)`,
 		`CREATE TABLE wisps (
 			id TEXT PRIMARY KEY,
@@ -1119,7 +1288,7 @@ func createTestDoltliteSchema(t testing.TB, db *sql.DB) {
 			design TEXT,
 			acceptance_criteria TEXT,
 			notes TEXT,
-			metadata TEXT
+			metadata TEXT` + extraRowColumns + `
 		)`,
 		`CREATE TABLE labels (issue_id TEXT, label TEXT)`,
 		`CREATE TABLE wisp_labels (issue_id TEXT, label TEXT)`,
@@ -1148,6 +1317,75 @@ func createTestDoltliteSchema(t testing.TB, db *sql.DB) {
 	}
 }
 
+func createTestDoltliteCanonicalDependencySchema(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, stmt := range []string{
+		`CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT)`,
+		`CREATE TABLE issues (
+			id TEXT PRIMARY KEY,
+			title TEXT,
+			status TEXT,
+			issue_type TEXT,
+			priority INTEGER,
+			created_at TEXT,
+			updated_at TEXT,
+			assignee TEXT,
+			description TEXT,
+			metadata TEXT
+		)`,
+		`CREATE TABLE labels (issue_id TEXT, label TEXT)`,
+		`CREATE TABLE dependencies (
+			issue_id TEXT,
+			depends_on_id TEXT,
+			type TEXT
+		)`,
+		`INSERT INTO config (key, value) VALUES ('issue_prefix', 'gc')`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("create canonical doltlite schema: %v\nstmt: %s", err, stmt)
+		}
+	}
+}
+
+func insertTestDoltliteCanonicalIssue(t *testing.T, db *sql.DB, issue testDoltliteIssue) {
+	t.Helper()
+	if issue.Status == "" {
+		issue.Status = "open"
+	}
+	if issue.IssueType == "" {
+		issue.IssueType = "task"
+	}
+	if issue.CreatedAt.IsZero() {
+		issue.CreatedAt = time.Now().UTC()
+	}
+	if issue.UpdatedAt.IsZero() {
+		issue.UpdatedAt = issue.CreatedAt
+	}
+	if _, err := db.Exec(`INSERT INTO issues (
+		id, title, status, issue_type, priority, created_at, updated_at,
+		assignee, description, metadata
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}')`,
+		issue.ID,
+		issue.Title,
+		issue.Status,
+		issue.IssueType,
+		issue.Priority,
+		issue.CreatedAt.Format(time.RFC3339Nano),
+		issue.UpdatedAt.Format(time.RFC3339Nano),
+		issue.Assignee,
+		issue.Description,
+	); err != nil {
+		t.Fatalf("insert canonical issue %s: %v", issue.ID, err)
+	}
+}
+
+func insertTestDoltliteCanonicalDep(t *testing.T, db *sql.DB, issueID, dependsOnID, depType string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO dependencies (issue_id, depends_on_id, type) VALUES (?, ?, ?)`, issueID, dependsOnID, depType); err != nil {
+		t.Fatalf("insert canonical dep %s -> %s: %v", issueID, dependsOnID, err)
+	}
+}
+
 func insertTestDoltliteIssue(t testing.TB, db *sql.DB, issueTable, labelTable, depTable string, issue testDoltliteIssue) {
 	t.Helper()
 	if issue.Status == "" {
@@ -1172,8 +1410,9 @@ func insertTestDoltliteIssue(t testing.TB, db *sql.DB, issueTable, labelTable, d
 	}
 	_, err := db.Exec(`INSERT INTO `+issueTable+` (
 		id, title, status, issue_type, priority, created_at, updated_at,
-		assignee, description, design, acceptance_criteria, notes, metadata
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', ?)`,
+		assignee, description, design, acceptance_criteria, notes, metadata,
+		ephemeral, no_history
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', ?, ?, ?)`,
 		issue.ID,
 		issue.Title,
 		issue.Status,
@@ -1184,6 +1423,8 @@ func insertTestDoltliteIssue(t testing.TB, db *sql.DB, issueTable, labelTable, d
 		issue.Assignee,
 		issue.Description,
 		metadata,
+		boolToTestInt(issue.Ephemeral),
+		boolToTestInt(issue.NoHistory),
 	)
 	if err != nil {
 		t.Fatalf("insert %s into %s: %v", issue.ID, issueTable, err)
@@ -1204,6 +1445,77 @@ func insertTestDoltliteIssue(t testing.TB, db *sql.DB, issueTable, labelTable, d
 			t.Fatalf("insert dep %s -> %s: %v", issue.ID, dep.DependsOnID, err)
 		}
 	}
+}
+
+func boolToTestInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+// newLegacyTestDoltliteReadStore builds a read store over a pre-storage-flag
+// snapshot (no ephemeral/no_history columns) seeded with one durable issue
+// and one wisps row, both labeled tier-test.
+func newLegacyTestDoltliteReadStore(t *testing.T) (*DoltliteReadStore, func()) {
+	t.Helper()
+	dir := t.TempDir()
+	beadsDir := filepath.Join(dir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+	meta := []byte(`{"backend":"doltlite","database":"doltlite","dolt_database":"hq"}`)
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), meta, 0o600); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	dbDir := filepath.Join(beadsDir, "doltlite")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatalf("mkdir doltlite dir: %v", err)
+	}
+	dbPath := filepath.Join(dbDir, "hq.db")
+	db, err := sql.Open("sqlite", dbPath+"?_busy_timeout=10000")
+	if err != nil {
+		t.Fatalf("open legacy doltlite fixture db: %v", err)
+	}
+	defer db.Close() //nolint:errcheck // test cleanup
+	createLegacyTestDoltliteSchema(t, db)
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
+		{
+			`INSERT INTO issues (
+			id, title, status, issue_type, priority, created_at, updated_at,
+			assignee, description, design, acceptance_criteria, notes, metadata
+		) VALUES (?, ?, 'open', 'task', 2, ?, ?, '', '', '', '', '', '{}')`,
+			[]any{"gc-legacy-issue", "legacy issue", now, now},
+		},
+		{`INSERT INTO labels (issue_id, label) VALUES ('gc-legacy-issue', 'tier-test')`, nil},
+		{
+			`INSERT INTO wisps (
+			id, title, status, issue_type, priority, created_at, updated_at,
+			assignee, description, design, acceptance_criteria, notes, metadata
+		) VALUES (?, ?, 'open', 'task', 2, ?, ?, '', '', '', '', '', '{}')`,
+			[]any{"gc-legacy-wisp", "legacy wisp", now, now},
+		},
+		{`INSERT INTO wisp_labels (issue_id, label) VALUES ('gc-legacy-wisp', 'tier-test')`, nil},
+	} {
+		if _, err := db.Exec(stmt.sql, stmt.args...); err != nil {
+			t.Fatalf("seed legacy doltlite fixture: %v\nstmt: %s", err, stmt.sql)
+		}
+	}
+
+	backing := NewBdStore(dir, func(string, string, ...string) ([]byte, error) {
+		t.Fatal("backing bd runner should not be called by doltlite read tests")
+		return nil, nil
+	})
+	store, err := NewDoltliteReadStore(dir, backing)
+	if err != nil {
+		t.Fatalf("NewDoltliteReadStore: %v", err)
+	}
+	return store, func() { _ = store.CloseStore() }
 }
 
 func testBeadIDs(rows []Bead) []string {
