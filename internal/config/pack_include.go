@@ -298,7 +298,7 @@ func resolveBundledSourceWithoutLock(source, declaredVersion string) (string, bo
 		return "", true, fmt.Errorf("resolving global repo cache root: %w", err)
 	}
 	cacheDir := filepath.Join(cacheRoot, RepoCacheKey(source, commit))
-	if builtinpacks.ValidateSyntheticRepoFast(cacheDir, commit) == nil {
+	if builtinpacks.ValidateSyntheticRepo(cacheDir, commit) == nil {
 		return cacheDir, true, nil
 	}
 	if _, err := WithRepoCacheWriteLock(cacheRoot, func() (string, error) {
@@ -368,13 +368,15 @@ var remoteCacheValidationCache sync.Map // cacheDir+"\x00"+commit -> remoteCache
 type remoteCacheValidationEntry struct{ fingerprint string }
 
 // remoteCacheFingerprint is a cheap change signal for a remote cache checkout:
-// the size+mtime of the checkout root, its .git dir, and the git index. Git
-// checkout/status touch .git and the index; `gc import install` rewrites the
-// tree. A nested manual worktree edit touching none of these escapes detection
-// until the process restarts — acceptable for a pinned, gc-managed cache.
+// the size+mtime of the checkout root, its .git marker, and the git index.
+// Linked worktrees store the real index under the gitdir target, so we resolve
+// that path instead of assuming .git/index. Git checkout/status touch .git and
+// the index; `gc import install` rewrites the tree. A nested manual worktree
+// edit touching none of these escapes detection until the process restarts —
+// acceptable for a pinned, gc-managed cache.
 func remoteCacheFingerprint(cacheDir string) string {
 	var b strings.Builder
-	for _, p := range []string{cacheDir, filepath.Join(cacheDir, ".git"), filepath.Join(cacheDir, ".git", "index")} {
+	for _, p := range []string{cacheDir, filepath.Join(cacheDir, ".git"), remoteCacheIndexPath(cacheDir)} {
 		if fi, err := os.Stat(p); err == nil {
 			fmt.Fprintf(&b, "%d:%d;", fi.Size(), fi.ModTime().UnixNano())
 		} else {
@@ -382,6 +384,33 @@ func remoteCacheFingerprint(cacheDir string) string {
 		}
 	}
 	return b.String()
+}
+
+// remoteCacheIndexPath returns the index path for a cached checkout.
+// Linked worktrees store the real index under the gitdir target referenced by
+// the .git file, so we resolve that target instead of assuming .git/index.
+func remoteCacheIndexPath(cacheDir string) string {
+	gitPath := filepath.Join(cacheDir, ".git")
+	info, err := os.Stat(gitPath)
+	if err == nil && info.IsDir() {
+		return filepath.Join(gitPath, "index")
+	}
+	data, err := os.ReadFile(gitPath)
+	if err != nil {
+		return filepath.Join(gitPath, "index")
+	}
+	content := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(content, "gitdir:") {
+		return filepath.Join(gitPath, "index")
+	}
+	target := strings.TrimSpace(strings.TrimPrefix(content, "gitdir:"))
+	if target == "" {
+		return filepath.Join(gitPath, "index")
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(cacheDir, target)
+	}
+	return filepath.Join(filepath.Clean(target), "index")
 }
 
 // validateInstalledRemoteCacheLocked validates the remote cache under the
@@ -417,7 +446,7 @@ func validateInstalledRemoteCache(source, cacheDir, commit string) error {
 	gitPath := filepath.Join(cacheDir, ".git")
 	gitInfo, gitStatErr := os.Stat(gitPath)
 	if IsBundledSourceAtCanonicalPin(source, commit) {
-		err := builtinpacks.ValidateSyntheticRepoFast(cacheDir, commit)
+		err := builtinpacks.ValidateSyntheticRepo(cacheDir, commit)
 		if err == nil {
 			return nil
 		}

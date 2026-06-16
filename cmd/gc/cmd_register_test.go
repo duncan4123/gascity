@@ -214,6 +214,35 @@ func TestRegisteredCityNamePreservesExistingRegistryAlias(t *testing.T) {
 	}
 }
 
+func TestEffectiveCityNameAppliesBuiltinPackAgentPatches(t *testing.T) {
+	dir := t.TempDir()
+	cityPath := filepath.Join(dir, "my-city")
+	if err := os.MkdirAll(cityPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cityToml := `[workspace]
+name = "workspace-name"
+
+[patches]
+
+[[patches.agent]]
+dir = ""
+name = "dog"
+suspended = true
+`
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte(cityToml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := effectiveCityName(cityPath)
+	if err != nil {
+		t.Fatalf("effectiveCityName: %v", err)
+	}
+	if got != "workspace-name" {
+		t.Fatalf("effectiveCityName = %q, want workspace-name", got)
+	}
+}
+
 func TestRestartRegistrationNameCapturesExistingRegistryAlias(t *testing.T) {
 	dir := t.TempDir()
 	cityPath := filepath.Join(dir, "my-city")

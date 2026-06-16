@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -410,69 +411,6 @@ func TestResolvePackRefFallsBackToIncludeCacheWhenUnlocked(t *testing.T) {
 // The synthetic derivation applies only at the source's canonical pin: any
 // other commit on a bundled source is an ordinary remote import and keeps the
 // plain source+commit key.
-// TestResolveBundledSourceWithoutLockHitsFastPathOnPreMaterializedCache demonstrates
-// that the read-lock pre-check in resolveBundledSourceWithoutLock uses the fast
-// (marker-only) validator and returns the cache dir without acquiring the write lock.
-func TestResolveBundledSourceWithoutLockHitsFastPathOnPreMaterializedCache(t *testing.T) {
-	dir := t.TempDir()
-	home := filepath.Join(dir, "home")
-	t.Setenv("HOME", home)
-	t.Setenv("GC_HOME", filepath.Join(home, ".gc"))
-
-	source := builtinpacks.MustSource("core")
-	commit := strings.TrimPrefix(BundledSourcePinnedVersion(source), "sha:")
-	cacheRoot, err := GlobalRepoCacheRoot()
-	if err != nil {
-		t.Fatalf("GlobalRepoCacheRoot: %v", err)
-	}
-	cacheDir := filepath.Join(cacheRoot, RepoCacheKey(source, commit))
-	if err := os.MkdirAll(filepath.Dir(cacheDir), 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	if err := builtinpacks.MaterializeSyntheticRepo(cacheDir, commit); err != nil {
-		t.Fatalf("MaterializeSyntheticRepo: %v", err)
-	}
-
-	got, ok, err := resolveBundledSourceWithoutLock(source, "")
-	if err != nil {
-		t.Fatalf("resolveBundledSourceWithoutLock: %v", err)
-	}
-	if !ok {
-		t.Fatal("resolveBundledSourceWithoutLock returned ok=false for a known bundled source")
-	}
-	if got != cacheDir {
-		t.Fatalf("resolveBundledSourceWithoutLock = %q, want %q", got, cacheDir)
-	}
-}
-
-// TestValidateInstalledRemoteCacheAcceptsBundledCanonicalPinFast demonstrates
-// that validateInstalledRemoteCache routes bundled sources at the canonical pin
-// through the fast (marker-only) validator.
-func TestValidateInstalledRemoteCacheAcceptsBundledCanonicalPinFast(t *testing.T) {
-	dir := t.TempDir()
-	home := filepath.Join(dir, "home")
-	t.Setenv("HOME", home)
-	t.Setenv("GC_HOME", filepath.Join(home, ".gc"))
-
-	source := builtinpacks.MustSource("core")
-	commit := strings.TrimPrefix(BundledSourcePinnedVersion(source), "sha:")
-	cacheRoot, err := GlobalRepoCacheRoot()
-	if err != nil {
-		t.Fatalf("GlobalRepoCacheRoot: %v", err)
-	}
-	cacheDir := filepath.Join(cacheRoot, RepoCacheKey(source, commit))
-	if err := os.MkdirAll(filepath.Dir(cacheDir), 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	if err := builtinpacks.MaterializeSyntheticRepo(cacheDir, commit); err != nil {
-		t.Fatalf("MaterializeSyntheticRepo: %v", err)
-	}
-
-	if err := validateInstalledRemoteCache(source, cacheDir, commit); err != nil {
-		t.Fatalf("validateInstalledRemoteCache: %v", err)
-	}
-}
-
 func TestRepoCacheKeyIncludesSyntheticContentComponent(t *testing.T) {
 	source := builtinpacks.MustSource("core")
 	commit := strings.TrimPrefix(BundledSourcePinnedVersion(source), "sha:")
@@ -516,4 +454,59 @@ func TestRepoCacheKeyUnchangedForNonSyntheticSources(t *testing.T) {
 func repoCacheKeyTestSum(identity string) string {
 	sum := sha256.Sum256([]byte(identity))
 	return fmt.Sprintf("%x", sum[:])
+}
+
+func TestRemoteCacheFingerprintTracksLinkedWorktreeIndex(t *testing.T) {
+	repoDir := t.TempDir()
+	worktreeDir := filepath.Join(t.TempDir(), "worktree")
+	sourceDir := filepath.Join(t.TempDir(), "source")
+
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		fullArgs := append([]string{"-c", "core.hooksPath="}, args...)
+		cmd := exec.Command("git", fullArgs...)
+		if dir != "" {
+			cmd.Dir = dir
+		}
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %s: %v", strings.Join(args, " "), out, err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	git("", "init", "--initial-branch=main", repoDir)
+	if err := os.WriteFile(filepath.Join(repoDir, "pack.toml"), []byte("v1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(repoDir, "add", "-A")
+	git(repoDir, "commit", "-m", "v1")
+
+	git("", "clone", repoDir, sourceDir)
+	git(sourceDir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(sourceDir, "pack.toml"), []byte("v2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(sourceDir, "add", "-A")
+	git(sourceDir, "commit", "-m", "v2")
+	git(sourceDir, "push", "origin", "feature:feature")
+	git(repoDir, "worktree", "add", "--detach", worktreeDir, "HEAD")
+
+	before := remoteCacheFingerprint(worktreeDir)
+	git(worktreeDir, "checkout", "-q", "feature")
+	after := remoteCacheFingerprint(worktreeDir)
+
+	if before == after {
+		t.Fatalf("fingerprint did not change after linked-worktree checkout\nbefore: %s\nafter:  %s", before, after)
+	}
+
+	indexPath := remoteCacheIndexPath(worktreeDir)
+	wantSuffix := filepath.Join(".git", "worktrees")
+	if !strings.Contains(indexPath, wantSuffix) {
+		t.Fatalf("remoteCacheIndexPath = %q, want linked-worktree gitdir under %q", indexPath, wantSuffix)
+	}
 }
