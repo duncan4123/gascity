@@ -199,6 +199,9 @@ func newNativeDoltStoreAt(parent context.Context, scopeRoot string, env map[stri
 		_ = storage.Close()
 		return nil, fmt.Errorf("reading native issue prefix: %w", err)
 	}
+	if strings.TrimSpace(prefix) == "" {
+		prefix = strings.TrimSpace(env["GC_BEADS_PREFIX"])
+	}
 	if accessor, ok := storage.(rawDBGetter); ok {
 		if repairErr := repairDependenciesIDDefault(accessor.DB()); repairErr != nil {
 			// Log but don't fail: the error will surface on the first DepAdd.
