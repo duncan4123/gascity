@@ -1209,6 +1209,15 @@ func openStoreResultAtForCity(storePath, cityPath string) (beads.StoreOpenResult
 			return openExecStoreAtForCity(provider, scopeRoot, runtimeCityPath)
 		},
 		OpenNativeStore: func() (beads.Store, error) {
+			var bdStore *beads.BdStore
+			if samePath(scopeRoot, runtimeCityPath) {
+				bdStore = bdStoreForCity(scopeRoot, runtimeCityPath)
+			} else {
+				bdStore = bdStoreForRig(scopeRoot, runtimeCityPath, cfg)
+			}
+			if optimized, ok := openOptimizedDoltliteStore(scopeRoot, runtimeCityPath, bdStore); ok {
+				return optimized, nil
+			}
 			env, err := nativeDoltOpenEnvForScope(runtimeCityPath, nil, scopeRoot)
 			if err != nil {
 				return nil, fmt.Errorf("project native store env %s: %w", scopeRoot, err)

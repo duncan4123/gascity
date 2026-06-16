@@ -108,16 +108,6 @@ func OpenStoreAtForCity(ctx context.Context, opts StoreOpenOptions) (StoreOpenRe
 		return opts.openBdFallback(provider, diag)
 	}
 
-	if scopeBackendIsDoltlite(opts.ScopeRoot) {
-		diag := BeadsDiagnostic{
-			Store:               storeNameBdStore,
-			NativeStoreEligible: false,
-			PreflightGate:       "doltlite_fallback",
-			PreflightReason:     "doltlite backend uses bd CLI shell-out",
-		}
-		return opts.openBdFallback(provider, diag)
-	}
-
 	result, err := opts.PreflightChecker.Check(opts.ScopeRoot)
 	if err != nil {
 		diag := BeadsDiagnostic{
