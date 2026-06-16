@@ -656,13 +656,6 @@ func workflowServeControlReadyQueryForBeads(agentCfg config.Agent, beadsCfg conf
 	if beadsCfg.UsesBD105ReadySemantics() {
 		includeEphemeral = " --include-ephemeral"
 	}
-	jqFilter := fmt.Sprintf(
-		`reduce add[] as $item ([]; if (($item.metadata // {})[%q] // "") != "" then . elif any(.[]; .id == $item.id) then . else . + [$item] end)`,
-		beadmeta.InstantiatingMetadataKey,
-	)
-	jqFilter = strings.ReplaceAll(jqFilter, `\`, `\\`)
-	jqFilter = strings.ReplaceAll(jqFilter, `"`, `\"`)
-	jqFilter = strings.ReplaceAll(jqFilter, `$`, `\$`)
 	queryPrefix := `BD_EXPORT_AUTO=false GC_CONTROL_TARGET=` + shellquote.Quote(target)
 	for _, name := range controlSessionNames {
 		name = strings.TrimSpace(name)
@@ -675,6 +668,16 @@ func workflowServeControlReadyQueryForBeads(agentCfg config.Agent, beadsCfg conf
 	if legacy := workflowServeLegacyControlRoute(target); legacy != "" {
 		queryPrefix += ` GC_CONTROL_LEGACY_TARGET=` + shellquote.Quote(legacy)
 	}
+	if beadsCfg.UsesBD105ReadySemantics() && resolveBeadsBackendName(beadsCfg.Backend).Name() == "doltlite" {
+		return workflowServeControlReadyQueryBD105Doltlite(queryPrefix, limit)
+	}
+	jqFilter := fmt.Sprintf(
+		`reduce add[] as $item ([]; if (($item.metadata // {})[%q] // "") != "" then . elif any(.[]; .id == $item.id) then . else . + [$item] end)`,
+		beadmeta.InstantiatingMetadataKey,
+	)
+	jqFilter = strings.ReplaceAll(jqFilter, `\`, `\\`)
+	jqFilter = strings.ReplaceAll(jqFilter, `"`, `\"`)
+	jqFilter = strings.ReplaceAll(jqFilter, `$`, `\$`)
 	query := queryPrefix + ` sh -c '` +
 		`set -e; ` +
 		`tmp=$(mktemp); seen="$tmp.seen"; err="$tmp.err"; : > "$seen"; trap "rm -f \"$tmp\" \"$seen\" \"$err\"" EXIT; ` +
@@ -697,6 +700,28 @@ func workflowServeControlReadyQueryForBeads(agentCfg config.Agent, beadsCfg conf
 		`routed_ready "${GC_CONTROL_LEGACY_TARGET:-}"; ` +
 		`if [ -s "$tmp" ]; then jq -s "` + jqFilter + `" "$tmp"; else printf "[]"; fi` + `'`
 	return query
+}
+
+func workflowServeControlReadyQueryBD105Doltlite(queryPrefix, limit string) string {
+	jqFilter := `def lineset($s): $s | split("\n") | map(select(. != "")); ` +
+		`def take_limit($n): if $n > 0 then .[:$n] else . end; ` +
+		`def unique_ids: reduce .[] as $item ([]; if any(.[]; .id == $item.id) then . else . + [$item] end); ` +
+		`(lineset($assignees)) as $assignees | (lineset($routes)) as $routes | . as $items | (` +
+		`[ $assignees[] as $cand | [$items[] | select((.assignee // "") == $cand)] | take_limit($limit) | .[] ] + ` +
+		`[ $routes[] as $route | [$items[] | select(((.assignee // "") == "") and ((.metadata["gc.run_target"] // "") == $route))] | take_limit($limit) | .[] ] + ` +
+		`[ $routes[] as $route | [$items[] | select(((.assignee // "") == "") and ((.metadata["gc.routed_to"] // "") == $route))] | take_limit($limit) | .[] ]` +
+		`) | unique_ids`
+	return queryPrefix + ` GC_CONTROL_READY_FILTER=` + shellquote.Quote(jqFilter) + ` sh -c '` +
+		`set -e; ` +
+		`tmp=$(mktemp); assignees="$tmp.assignees"; routes="$tmp.routes"; err="$tmp.err"; ` +
+		`: > "$assignees"; : > "$routes"; trap "rm -f \"$tmp\" \"$assignees\" \"$routes\" \"$err\"" EXIT; ` +
+		`add_unique() { file="$1"; value="$2"; [ -z "$value" ] && return 0; grep -Fxq "$value" "$file" 2>/dev/null || printf "%s\n" "$value" >> "$file"; }; ` +
+		`add_assignee() { id="$1"; [ -z "$id" ] && return 0; add_unique "$assignees" "$id"; case "$id" in *control-dispatcher) add_unique "$assignees" "${id%control-dispatcher}workflow-control";; esac; }; ` +
+		`for id in "$GC_CONTROL_SESSION_NAME" "$GC_SESSION_NAME" "$GC_ALIAS" "$GC_CONTROL_TARGET" "$GC_SESSION_ID"; do add_assignee "$id"; done; ` +
+		`add_unique "$routes" "$GC_CONTROL_TARGET"; add_unique "$routes" "${GC_CONTROL_LEGACY_TARGET:-}"; ` +
+		`r=$(bd --readonly --sandbox ready --include-ephemeral --exclude-type=epic --json --sort oldest --limit=0 2>"$err") || { status=$?; [ -n "$r" ] && printf "%s\n" "$r" >&2; cat "$err" >&2; exit "$status"; }; ` +
+		`[ -n "$r" ] || r="[]"; ` +
+		`printf "%s\n" "$r" | jq --argjson limit ` + limit + ` --rawfile assignees "$assignees" --rawfile routes "$routes" "$GC_CONTROL_READY_FILTER"` + `'`
 }
 
 func workflowServeLegacyControlRoute(target string) string {
