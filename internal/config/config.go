@@ -2884,12 +2884,16 @@ type Agent struct {
 	// agent's qualified identity. Relative paths resolve against city root
 	// and may use the same template placeholders as session_setup.
 	WorkDir string `toml:"work_dir,omitempty"`
+	// Pack is the pack/workspace route key exposed to work_dir, pre_start,
+	// session_setup, and tmux_alias templates as {{.Pack}}. When unset, the
+	// template context falls back to AgentBase for backward-compatible routing.
+	Pack string `toml:"pack,omitempty"`
 	// TmuxAlias overrides the tmux session_name for pool and factory-created
 	// manual sessions of this agent. When unset, sessions fall back to the
 	// universal derivation ("s-<beadID>" for ad-hoc sessions,
 	// "<basename>-<beadID>" for pool sessions). When set, it is expanded as a
 	// Go text/template using the same PathContext fields as work_dir /
-	// session_setup (Agent, AgentBase, Rig, RigRoot, CityRoot, CityName),
+	// session_setup (Agent, AgentBase, Pack, Rig, RigRoot, CityRoot, CityName),
 	// sanitized for tmux, and validated as an explicit session name. For pool
 	// sessions, a live-name collision appends the bead ID as a deterministic
 	// suffix. For manual `gc session new` sessions, tmux_alias becomes the

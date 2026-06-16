@@ -18,6 +18,7 @@ import (
 type PathContext struct {
 	Agent         string
 	AgentBase     string
+	Pack          string
 	Rig           string
 	RigRoot       string
 	CityRoot      string
@@ -116,9 +117,14 @@ func rigNameForQualifiedAgent(cityPath, qualifiedName string, a config.Agent, ri
 func PathContextForQualifiedName(cityPath, cityName, qualifiedName string, a config.Agent, rigs []config.Rig) PathContext {
 	rigName := rigNameForQualifiedAgent(cityPath, qualifiedName, a, rigs)
 	_, agentBase := config.ParseQualifiedName(qualifiedName)
+	packName := strings.TrimSpace(a.Pack)
+	if packName == "" {
+		packName = agentBase
+	}
 	return PathContext{
 		Agent:         qualifiedName,
 		AgentBase:     agentBase,
+		Pack:          packName,
 		Rig:           rigName,
 		RigRoot:       RigRootForName(rigName, rigs),
 		CityRoot:      cityPath,

@@ -79,6 +79,33 @@ func TestResolveWorkDirPathUsesPoolInstanceBase(t *testing.T) {
 	}
 }
 
+func TestResolveWorkDirPathUsesPackTemplate(t *testing.T) {
+	cityPath := t.TempDir()
+	got := ResolveWorkDirPath(cityPath, "gastown", "demo/packsmith-1", config.Agent{
+		Name:    "packsmith",
+		Dir:     "demo",
+		Pack:    "jj-hunk",
+		WorkDir: ".gc/workspaces/{{.Rig}}/packs/{{.Pack}}",
+	}, []config.Rig{{Name: "demo", Path: filepath.Join(cityPath, "repos", "demo")}})
+	want := filepath.Join(cityPath, ".gc", "workspaces", "demo", "packs", "jj-hunk")
+	if got != want {
+		t.Fatalf("ResolveWorkDirPath() = %q, want %q", got, want)
+	}
+}
+
+func TestResolveWorkDirPathPackTemplateFallsBackToAgentBase(t *testing.T) {
+	cityPath := t.TempDir()
+	got := ResolveWorkDirPath(cityPath, "gastown", "demo/packsmith-1", config.Agent{
+		Name:    "packsmith",
+		Dir:     "demo",
+		WorkDir: ".gc/workspaces/{{.Rig}}/packs/{{.Pack}}",
+	}, []config.Rig{{Name: "demo", Path: filepath.Join(cityPath, "repos", "demo")}})
+	want := filepath.Join(cityPath, ".gc", "workspaces", "demo", "packs", "packsmith-1")
+	if got != want {
+		t.Fatalf("ResolveWorkDirPath() = %q, want %q", got, want)
+	}
+}
+
 // TestResolveWorkDirPathGivesEachPoolSlotUniqueWorktree is the #774 regression
 // guard: N pool workers sharing one template must each resolve to a distinct
 // worktree path derived from their namepool slot, not the template base.
