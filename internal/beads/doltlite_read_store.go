@@ -20,6 +20,7 @@ import (
 type DoltliteReadStore struct {
 	*BdStore
 	db              *sql.DB
+	dbPath          string
 	orderRunMu      sync.Mutex
 	orderRunLastRun map[string]time.Time
 	orderRunOpen    map[string]bool
@@ -146,7 +147,7 @@ func NewDoltliteReadStore(dir string, backing *BdStore) (*DoltliteReadStore, err
 		_ = db.Close()
 		return nil, err
 	}
-	return &DoltliteReadStore{BdStore: backing, db: db}, nil
+	return &DoltliteReadStore{BdStore: backing, db: db, dbPath: dbPath}, nil
 }
 
 func readDoltliteMetadata(dir string) (doltliteMetadata, error) {
@@ -186,7 +187,7 @@ func (s *DoltliteReadStore) GetSessionBead(id string) (Bead, error) {
 	sessions, err := s.ListSessionBeads()
 	if err == nil {
 		for _, session := range sessions {
-			if session.ID == id {
+			if session.ID == id || session.Metadata["session_name"] == id {
 				return session, nil
 			}
 		}
@@ -195,6 +196,7 @@ func (s *DoltliteReadStore) GetSessionBead(id string) (Bead, error) {
 		AllowScan:     true,
 		IncludeClosed: true,
 		SkipLabels:    true,
+		TierMode:      TierBoth,
 	}, "i.id = ?", []any{id}, 1)
 	if err != nil {
 		return Bead{}, err
@@ -224,6 +226,7 @@ func (s *DoltliteReadStore) ListSessionBeads() ([]Bead, error) {
 	rows, err := s.queryIssues(ListQuery{
 		Type:       "session",
 		SkipLabels: true,
+		TierMode:   TierBoth,
 	}, "", nil, 0)
 	if err != nil {
 		return nil, err
@@ -257,6 +260,7 @@ func (s *DoltliteReadStore) Children(parentID string, opts ...QueryOpt) ([]Bead,
 		IncludeClosed: HasOpt(opts, IncludeClosed),
 		AllowScan:     true,
 		Sort:          SortCreatedAsc,
+		TierMode:      TierModeFromOpts(opts),
 	})
 }
 
@@ -290,7 +294,8 @@ func (s *DoltliteReadStore) ListByMetadata(filters map[string]string, limit int,
 
 func (s *DoltliteReadStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 	rq := readyQueryFromArgs(query)
-	cacheKey := fmt.Sprintf("%s\x00%d", rq.Assignee, rq.Limit)
+	assignees := readyQueryAssignees(rq)
+	cacheKey := fmt.Sprintf("%s\x00%d\x00%d", strings.Join(assignees, "\x1f"), rq.Limit, rq.TierMode)
 	hash, err := s.currentDoltHash()
 	if err != nil {
 		return nil, err
@@ -305,15 +310,19 @@ func (s *DoltliteReadStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 	s.readyMu.Unlock()
 
 	q := ListQuery{Status: "open", AllowScan: true, IncludeClosed: false, Limit: 0, SkipLabels: true}
-	if rq.Assignee != "" {
-		q.Assignee = rq.Assignee
+	switch len(assignees) {
+	case 0:
+	case 1:
+		q.Assignee = assignees[0]
+	default:
+		q.Assignees = assignees
 	}
 	if rq.Limit > 0 {
 		q.Limit = rq.Limit
 	}
 	readyWhere, readyArgs := s.doltliteReadyIssueWhere(doltliteIssueTables)
 	// The id tiebreaker keeps a LIMIT deterministic when rows share
-	// (priority, created_at) — same bug class as queryIssueTable (#3208).
+	// (priority, created_at), same bug class as queryIssueTable (#3208).
 	// Raw Ready stays on the durable issues table even though aligned
 	// TierIssues List reads span no-history wisps (#3444): claimable work
 	// remains history-backed per the compatibility policy documented on
@@ -333,6 +342,13 @@ func (s *DoltliteReadStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 	}
 	s.readyMu.Unlock()
 	return out, nil
+}
+
+func doltliteReadyPriority(b Bead) int {
+	if b.Priority == nil {
+		return 2
+	}
+	return *b.Priority
 }
 
 func (s *DoltliteReadStore) LastOrderRun(name string) (time.Time, error) {
@@ -513,7 +529,21 @@ func hasOrderRunLabel(labels []string) bool {
 }
 
 func (s *DoltliteReadStore) Update(id string, opts UpdateOpts) error {
-	err := s.BdStore.Update(id, opts)
+	current, err := s.doltliteWriteBead(id)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return fmt.Errorf("updating bead %q: %w", id, ErrNotFound)
+		}
+		return fmt.Errorf("updating bead %q: %w", id, err)
+	}
+	if current.Ephemeral {
+		err := s.updateWisp(id, opts)
+		if err == nil {
+			s.resetOrderRunCache()
+		}
+		return err
+	}
+	err = s.BdStore.Update(id, opts)
 	if err == nil {
 		s.resetOrderRunCache()
 	}
@@ -521,7 +551,18 @@ func (s *DoltliteReadStore) Update(id string, opts UpdateOpts) error {
 }
 
 func (s *DoltliteReadStore) Close(id string) error {
-	err := s.BdStore.Close(id)
+	current, err := s.doltliteWriteBead(id)
+	if err != nil {
+		return err
+	}
+	if current.Ephemeral {
+		err = s.updateWispStatus(id, "closed")
+		if err == nil {
+			s.resetOrderRunCache()
+		}
+		return err
+	}
+	err = s.BdStore.Close(id)
 	if err == nil {
 		s.resetOrderRunCache()
 	}
@@ -529,15 +570,48 @@ func (s *DoltliteReadStore) Close(id string) error {
 }
 
 func (s *DoltliteReadStore) CloseAll(ids []string, metadata map[string]string) (int, error) {
-	n, err := s.BdStore.CloseAll(ids, metadata)
-	if err == nil && n > 0 {
+	closed := 0
+	for _, id := range ids {
+		if len(metadata) > 0 {
+			if err := s.SetMetadataBatch(id, metadata); err != nil {
+				return closed, err
+			}
+		}
+		current, err := s.doltliteWriteBead(id)
+		if err != nil {
+			return closed, err
+		}
+		if current.Status == "closed" {
+			continue
+		}
+		if current.Ephemeral {
+			if err := s.updateWispStatus(id, "closed"); err != nil {
+				return closed, err
+			}
+		} else if err := s.BdStore.Close(id); err != nil {
+			return closed, err
+		}
+		closed++
+	}
+	if closed > 0 {
 		s.resetOrderRunCache()
 	}
-	return n, err
+	return closed, nil
 }
 
 func (s *DoltliteReadStore) Reopen(id string) error {
-	err := s.BdStore.Reopen(id)
+	current, err := s.doltliteWriteBead(id)
+	if err != nil {
+		return err
+	}
+	if current.Ephemeral {
+		err = s.updateWispStatus(id, "open")
+		if err == nil {
+			s.resetOrderRunCache()
+		}
+		return err
+	}
+	err = s.BdStore.Reopen(id)
 	if err == nil {
 		s.resetOrderRunCache()
 	}
@@ -556,28 +630,31 @@ func (s *DoltliteReadStore) SetMetadataBatch(id string, kvs map[string]string) e
 	if len(kvs) == 0 {
 		return nil
 	}
-	current, err := s.GetSessionBead(id)
+	var current Bead
+	var changed map[string]string
+	err := s.runWispWrite(func() error {
+		var err error
+		current, err = s.doltliteWriteBead(id)
+		if err != nil {
+			return err
+		}
+		changed = changedMetadata(current.Metadata, kvs)
+		if len(changed) == 0 {
+			return nil
+		}
+		if current.Ephemeral {
+			return s.updateWispMetadataLocked(id, changed)
+		}
+		return nil
+	})
 	if err != nil {
-		rows, queryErr := s.queryIssues(ListQuery{
-			AllowScan:     true,
-			IncludeClosed: true,
-			SkipLabels:    true,
-		}, "i.id = ?", []any{id}, 1)
-		if queryErr != nil {
-			return queryErr
-		}
-		if len(rows) == 0 {
-			return fmt.Errorf("setting metadata on %q: %w", id, ErrNotFound)
-		}
-		current = rows[0]
-	}
-	changed := make(map[string]string, len(kvs))
-	for k, v := range kvs {
-		if current.Metadata[k] != v {
-			changed[k] = v
-		}
+		return fmt.Errorf("setting metadata on %q: %w", id, err)
 	}
 	if len(changed) == 0 {
+		return nil
+	}
+	if current.Ephemeral {
+		s.resetOrderRunCache()
 		return nil
 	}
 	err = s.BdStore.SetMetadataBatch(id, changed)
@@ -589,6 +666,339 @@ func (s *DoltliteReadStore) SetMetadataBatch(id string, kvs map[string]string) e
 
 func (s *DoltliteReadStore) SetMetadata(id, key, value string) error {
 	return s.SetMetadataBatch(id, map[string]string{key: value})
+}
+
+func changedMetadata(current, updates map[string]string) map[string]string {
+	changed := make(map[string]string, len(updates))
+	for k, v := range updates {
+		if current[k] != v {
+			changed[k] = v
+		}
+	}
+	return changed
+}
+
+func (s *DoltliteReadStore) updateWisp(id string, opts UpdateOpts) error {
+	if opts.Title == nil &&
+		opts.Status == nil &&
+		opts.Type == nil &&
+		opts.Priority == nil &&
+		opts.Description == nil &&
+		opts.ParentID == nil &&
+		opts.Assignee == nil &&
+		len(opts.Labels) == 0 &&
+		len(opts.RemoveLabels) == 0 &&
+		len(opts.Metadata) == 0 {
+		return nil
+	}
+	return s.runWispWrite(func() error {
+		return s.updateWispLocked(id, opts)
+	})
+}
+
+func (s *DoltliteReadStore) updateWispLocked(id string, opts UpdateOpts) error {
+	db, err := s.openWritableDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close() //nolint:errcheck // best-effort cleanup
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	updates := make([]string, 0, 8)
+	args := make([]any, 0, 10)
+	if opts.Title != nil {
+		updates = append(updates, "title = ?")
+		args = append(args, *opts.Title)
+	}
+	if opts.Status != nil {
+		updates = append(updates, "status = ?")
+		args = append(args, *opts.Status)
+	}
+	if opts.Type != nil {
+		updates = append(updates, "issue_type = ?")
+		args = append(args, *opts.Type)
+	}
+	if opts.Priority != nil {
+		updates = append(updates, "priority = ?")
+		args = append(args, *opts.Priority)
+	}
+	if opts.Description != nil {
+		updates = append(updates, "description = ?")
+		args = append(args, *opts.Description)
+	}
+	if opts.Assignee != nil {
+		updates = append(updates, "assignee = ?")
+		args = append(args, *opts.Assignee)
+	}
+	if len(opts.Metadata) > 0 {
+		raw, err := s.mergeWispMetadata(tx, id, opts.Metadata)
+		if err != nil {
+			return fmt.Errorf("updating wisp metadata %q: %w", id, err)
+		}
+		updates = append(updates, "metadata = ?")
+		args = append(args, string(raw))
+	}
+	if len(updates) > 0 {
+		updates = append(updates, "updated_at = ?")
+		args = append(args, time.Now().UTC().Format(time.RFC3339Nano), id)
+		res, err := tx.Exec(`UPDATE wisps SET `+strings.Join(updates, ", ")+` WHERE id = ?`, args...)
+		if err != nil {
+			return fmt.Errorf("updating wisp %q: %w", id, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("checking updated wisp %q: %w", id, err)
+		}
+		if n == 0 {
+			return fmt.Errorf("updating wisp %q: %w", id, ErrNotFound)
+		}
+	}
+	if opts.ParentID != nil {
+		if err := s.replaceWispParent(tx, id, *opts.ParentID); err != nil {
+			return fmt.Errorf("updating wisp parent %q: %w", id, err)
+		}
+	}
+	if len(opts.Labels) > 0 || len(opts.RemoveLabels) > 0 {
+		if err := s.updateWispLabels(tx, id, opts.Labels, opts.RemoveLabels); err != nil {
+			return fmt.Errorf("updating wisp labels %q: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func (s *DoltliteReadStore) replaceWispParent(tx *sql.Tx, id, parentID string) error {
+	if _, err := tx.Exec(`DELETE FROM wisp_dependencies WHERE issue_id = ? AND type = 'parent-child'`, id); err != nil {
+		return err
+	}
+	parentID = strings.TrimSpace(parentID)
+	if parentID == "" {
+		return nil
+	}
+	parent, err := s.doltliteWriteBead(parentID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	columns := []string{"issue_id", "depends_on_id", "type"}
+	values := []any{id, parentID, "parent-child"}
+	if s.columnExists("wisp_dependencies", "depends_on_issue_id") {
+		columns = append(columns, "depends_on_issue_id")
+		if !parent.Ephemeral {
+			values = append(values, parentID)
+		} else {
+			values = append(values, "")
+		}
+	}
+	if s.columnExists("wisp_dependencies", "depends_on_wisp_id") {
+		columns = append(columns, "depends_on_wisp_id")
+		if parent.Ephemeral {
+			values = append(values, parentID)
+		} else {
+			values = append(values, "")
+		}
+	}
+	if s.columnExists("wisp_dependencies", "depends_on_external") {
+		columns = append(columns, "depends_on_external")
+		values = append(values, "")
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(columns)), ",")
+	_, err = tx.Exec(`INSERT INTO wisp_dependencies (`+strings.Join(columns, ", ")+`) VALUES (`+placeholders+`)`, values...)
+	return err
+}
+
+func (s *DoltliteReadStore) updateWispLabels(tx *sql.Tx, id string, addLabels, removeLabels []string) error {
+	for _, label := range removeLabels {
+		label = strings.TrimSpace(label)
+		if label == "" {
+			continue
+		}
+		if _, err := tx.Exec(`DELETE FROM wisp_labels WHERE issue_id = ? AND label = ?`, id, label); err != nil {
+			return err
+		}
+	}
+	for _, label := range addLabels {
+		label = strings.TrimSpace(label)
+		if label == "" {
+			continue
+		}
+		if _, err := tx.Exec(`DELETE FROM wisp_labels WHERE issue_id = ? AND label = ?`, id, label); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO wisp_labels (issue_id, label) VALUES (?, ?)`, id, label); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *DoltliteReadStore) doltliteWriteBead(id string) (Bead, error) {
+	rows, err := s.queryIssues(ListQuery{
+		AllowScan:     true,
+		IncludeClosed: true,
+		SkipLabels:    true,
+		TierMode:      TierBoth,
+	}, "i.id = ?", []any{id}, 1)
+	if err != nil {
+		return Bead{}, err
+	}
+	if len(rows) == 0 {
+		return Bead{}, ErrNotFound
+	}
+	return rows[0], nil
+}
+
+func (s *DoltliteReadStore) updateWispMetadata(id string, metadata map[string]string) error {
+	return s.runWispWrite(func() error {
+		return s.updateWispMetadataLocked(id, metadata)
+	})
+}
+
+func (s *DoltliteReadStore) updateWispMetadataLocked(id string, metadata map[string]string) error {
+	db, err := s.openWritableDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close() //nolint:errcheck // best-effort cleanup
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	raw, err := s.mergeWispMetadata(tx, id, metadata)
+	if err != nil {
+		return err
+	}
+	res, err := tx.Exec(`UPDATE wisps SET metadata = ?, updated_at = ? WHERE id = ?`, raw, time.Now().UTC().Format(time.RFC3339Nano), id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func (s *DoltliteReadStore) mergeWispMetadata(tx *sql.Tx, id string, updates map[string]string) (string, error) {
+	current, err := s.loadWispMetadata(tx, id)
+	if err != nil {
+		return "", err
+	}
+	for key, value := range updates {
+		current[key] = value
+	}
+	raw, err := json.Marshal(current)
+	if err != nil {
+		return "", fmt.Errorf("encoding wisp metadata: %w", err)
+	}
+	return string(raw), nil
+}
+
+func (s *DoltliteReadStore) loadWispMetadata(tx *sql.Tx, id string) (map[string]string, error) {
+	var raw sql.NullString
+	if err := tx.QueryRow(`SELECT metadata FROM wisps WHERE id = ?`, id).Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	metadata := make(map[string]string)
+	if raw.Valid && strings.TrimSpace(raw.String) != "" {
+		if err := json.Unmarshal([]byte(raw.String), &metadata); err != nil {
+			return nil, fmt.Errorf("parsing wisp metadata: %w", err)
+		}
+	}
+	return metadata, nil
+}
+
+func (s *DoltliteReadStore) updateWispStatus(id, status string) error {
+	return s.runWispWrite(func() error {
+		return s.updateWispStatusLocked(id, status)
+	})
+}
+
+func (s *DoltliteReadStore) updateWispStatusLocked(id, status string) error {
+	db, err := s.openWritableDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close() //nolint:errcheck // best-effort cleanup
+	res, err := db.Exec(`UPDATE wisps SET status = ?, updated_at = ? WHERE id = ?`, status, time.Now().UTC().Format(time.RFC3339Nano), id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *DoltliteReadStore) runWispWrite(fn func() error) error {
+	if s.dbPath == "" {
+		return fn()
+	}
+	lockRoot := filepath.Dir(filepath.Dir(s.dbPath))
+	lockPath := filepath.Join(lockRoot, ".bd-write.lock")
+	return withDoltliteWriteLock(lockRoot, lockPath, func() error {
+		var err error
+		for attempt := 1; attempt <= bdTransientWriteAttempts; attempt++ {
+			err = fn()
+			if err == nil || !isBdTransientWriteError(err) || attempt == bdTransientWriteAttempts {
+				return err
+			}
+			time.Sleep(time.Duration(attempt) * 25 * time.Millisecond)
+		}
+		return err
+	})
+}
+
+func (s *DoltliteReadStore) openWritableDB() (*sql.DB, error) {
+	if s.dbPath == "" {
+		return nil, fmt.Errorf("doltlite writable database path is empty")
+	}
+	db, err := sql.Open(doltliteSQLDriverName, "file:"+s.dbPath+"?mode=rw&_busy_timeout=10000")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(0)
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
 }
 
 func (s *DoltliteReadStore) DepAdd(id, dep, depType string) error {
@@ -795,6 +1205,8 @@ func (s *DoltliteReadStore) queryIssuesOrderedInTables(query ListQuery, sets []d
 	merged := make([]Bead, 0)
 	seen := make(map[string]struct{})
 	for _, tables := range sets {
+		// A per-table LIMIT of the merged query limit is enough here: the
+		// final top-N can never contain more than N rows from any one table.
 		tableLimit := limit
 		if len(sets) > 1 && !doltliteCanPushTableLimit(query) {
 			tableLimit = 0

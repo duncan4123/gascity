@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -249,6 +250,22 @@ type BdStore struct {
 }
 
 const bdTransientWriteAttempts = 3
+
+var doltliteWriteLocks sync.Map // map[string]*sync.Mutex
+
+func withDoltliteWriteLock(lockKey, lockPath string, fn func() error) error {
+	actual, _ := doltliteWriteLocks.LoadOrStore(lockKey, &sync.Mutex{})
+	mu := actual.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+
+	locker := NewFileFlock(lockPath)
+	if err := locker.Lock(); err != nil {
+		return fmt.Errorf("locking DoltLite writes: %w", err)
+	}
+	defer locker.Unlock() //nolint:errcheck // best-effort unlock after write
+	return fn()
+}
 
 var _ ConditionalAssignmentReleaser = (*BdStore)(nil)
 
@@ -1715,21 +1732,33 @@ func (s *BdStore) runBDTransientCreateOutput(hasStableID bool, args ...string) (
 }
 
 func (s *BdStore) runBDTransientWriteOutputWhen(shouldRetry func(error) bool, args ...string) ([]byte, error) {
+	doltlite := s.isDoltliteBackend()
 	var err error
 	var out []byte
-	args = s.bdTransientWriteArgs(args)
-	for attempt := 1; attempt <= bdTransientWriteAttempts; attempt++ {
-		out, err = s.runner(s.dir, "bd", args...)
-		if err == nil || !shouldRetry(err) || attempt == bdTransientWriteAttempts {
-			return out, err
+	args = s.bdTransientWriteArgsForBackend(args, doltlite)
+	run := func() error {
+		for attempt := 1; attempt <= bdTransientWriteAttempts; attempt++ {
+			out, err = s.runner(s.dir, "bd", args...)
+			if err == nil || !shouldRetry(err) || attempt == bdTransientWriteAttempts {
+				return err
+			}
+			time.Sleep(time.Duration(attempt) * 25 * time.Millisecond)
 		}
-		time.Sleep(time.Duration(attempt) * 25 * time.Millisecond)
+		return err
 	}
+	if !doltlite {
+		return out, run()
+	}
+	err = withDoltliteWriteLock(filepath.Join(s.dir, ".beads"), filepath.Join(s.dir, ".beads", ".bd-write.lock"), run)
 	return out, err
 }
 
 func (s *BdStore) bdTransientWriteArgs(args []string) []string {
-	if !s.isDoltliteBackend() {
+	return s.bdTransientWriteArgsForBackend(args, s.isDoltliteBackend())
+}
+
+func (s *BdStore) bdTransientWriteArgsForBackend(args []string, doltlite bool) []string {
+	if !doltlite {
 		return args
 	}
 	out := []string{"--dolt-auto-commit", "off"}
@@ -1770,10 +1799,12 @@ func isBdTransientWriteError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "Error 1213 (40001): serialization failure") ||
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "error 1213 (40001): serialization failure") ||
 		strings.Contains(msg, "this transaction conflicts with a committed transaction") ||
 		strings.Contains(msg, "failed to prepare catalog") ||
+		strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "database table is locked") ||
 		isBdAmbiguousWriteError(err)
 }
 
@@ -2340,6 +2371,7 @@ func (s *BdStore) Children(parentID string, opts ...QueryOpt) ([]Bead, error) {
 // wisp-aware tier modes.
 func (s *BdStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 	q := readyQueryFromArgs(query)
+	assignees := readyQueryAssignees(q)
 	includeEphemeral := q.TierMode == TierBoth || q.TierMode == TierWisps
 	args := bdReadyArgs(q, includeEphemeral)
 	out, err := s.runner(s.dir, "bd", args...)
@@ -2354,7 +2386,7 @@ func (s *BdStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 		if !IsReadyCandidateForTier(bead, now, q.TierMode) {
 			continue
 		}
-		if q.Assignee != "" && bead.Assignee != q.Assignee {
+		if len(assignees) > 0 && !slices.Contains(assignees, bead.Assignee) {
 			continue
 		}
 		result = append(result, bead)
