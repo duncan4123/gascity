@@ -684,6 +684,59 @@ func TestEnsureBuiltinRuntimeAssetsSkipsShimForNonBdCity(t *testing.T) {
 	}
 }
 
+func TestBeadsDoltlitePackIncludesLibdoltliteBuildCommand(t *testing.T) {
+	packDir := bundledPackDirForTest(t, "beads-doltlite")
+	manifestPath := filepath.Join(packDir, "commands", "build", "command.toml")
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", manifestPath, err)
+	}
+	if !strings.Contains(string(manifest), "Build gc, bd, or the DoltLite client against libdoltlite") {
+		t.Fatalf("build command manifest missing libdoltlite description:\n%s", manifest)
+	}
+
+	scriptPath := filepath.Join(packDir, "commands", "build", "run.sh")
+	script, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", scriptPath, err)
+	}
+	text := string(script)
+	for _, want := range []string{
+		"usage: gc beads-doltlite build [gc|bd|client|all]",
+		"--gc-source",
+		"--bd-source",
+		"--gc-output",
+		"--bd-output",
+		"--install",
+		"--install-dir",
+		"--gc-install",
+		"--bd-install",
+		"CGO_ENABLED=1",
+		"-tags=${tags}",
+		"gascity_doltlite_lib,libsqlite3",
+		"common_env_prefix \"libsqlite3\"",
+		"install_binary",
+		"mv -f \"$tmp\" \"$dest\"",
+		"./cmd/gc",
+		"./cmd/bd",
+		"CGO_LDFLAGS",
+		"-ldoltlite",
+		"libdoltlite",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("build script missing %q:\n%s", want, text)
+		}
+	}
+	for _, forbidden := range []string{
+		"gascity_native_beads",
+		"CGO_ENABLED=0",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("build script must not use %q:\n%s", forbidden, text)
+		}
+	}
+}
+
 func TestEnsureBuiltinRuntimeAssetsPrunesRetiredSystemPacks(t *testing.T) {
 	city := t.TempDir()
 
