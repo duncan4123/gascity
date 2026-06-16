@@ -814,15 +814,14 @@ func (idx *orderDispatchTrackingIndex) lastRunFunc(
 				latest = last
 			}
 		}
-		// The in-memory history index (limit orderTrackingHistoryIndexLimit,
-		// newest-first) is authoritative for any recently-run order: a non-zero
-		// entry is that order's true last run. Only a genuine index miss pays
-		// the per-order fallback query. Without this gate, every cooldown/cron
-		// order runs the fallback on each cold-cache (post-reload) dispatch —
-		// N serial bd-queries that hang gc reload/gc doctor (#3201; residual of
-		// #3191, which #3197's per-query cap bounded but did not eliminate).
-		if latest.IsZero() && fallback != nil {
-			return fallback(scopedName)
+		if fallback != nil {
+			last, err := fallback(scopedName)
+			if err != nil {
+				return time.Time{}, err
+			}
+			if last.After(latest) {
+				latest = last
+			}
 		}
 		return latest, nil
 	}
@@ -977,12 +976,6 @@ func (m *memoryOrderDispatcher) rememberLastRun(orderName string, storeKeys []st
 	}
 }
 
-// carryLastRunCacheFrom copies warm last-run entries from a previous
-// dispatcher into this one, so a reload/rescan-triggered rebuild reuses them
-// instead of cold-starting and re-querying every order (#3201). last-run times
-// are historical truth unaffected by a config reload; entries only ever move
-// forward. Callers invoke this after draining the previous dispatcher, when no
-// goroutine still writes its cache.
 func (m *memoryOrderDispatcher) carryLastRunCacheFrom(prev *memoryOrderDispatcher) {
 	if m == nil || prev == nil {
 		return
@@ -998,7 +991,7 @@ func (m *memoryOrderDispatcher) carryLastRunCacheFrom(prev *memoryOrderDispatche
 		m.lastRunCache = make(map[string]time.Time, len(prev.lastRunCache))
 	}
 	for key, last := range prev.lastRunCache {
-		if existing, ok := m.lastRunCache[key]; !ok || last.After(existing) {
+		if existing, ok := m.lastRunCache[key]; !ok || existing.IsZero() || last.After(existing) {
 			m.lastRunCache[key] = last
 		}
 	}
@@ -1088,6 +1081,9 @@ func closeAndVerifyOrderTrackingBeads(ctx context.Context, store beads.Store, id
 		}
 		openIDs, err := openOrderTrackingIDs(store, ids)
 		if err != nil {
+			if errors.Is(err, beads.ErrStoreClosed) {
+				return closed, nil
+			}
 			lastErr = fmt.Errorf("verifying order-tracking close for %s: %w", strings.Join(ids, ", "), err)
 			if attempt < orderTrackingCloseVerifyAttempts {
 				if waitErr := waitOrderTrackingCloseRetry(ctx); waitErr != nil {
