@@ -1,4 +1,4 @@
-//go:build gascity_native_beads
+//go:build gascity_doltlite_lib
 
 package beads
 
@@ -13,11 +13,11 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	_ "modernc.org/sqlite" // pure-Go SQLite driver, CGO_ENABLED=0 safe
 )
 
 // DoltliteReadStore serves hot read paths in-process for bd/doltlite stores.
+// Real DoltLite databases require the gascity_doltlite_lib build tag, which
+// selects the C-backed sqlite3 driver used by libdoltlite builds.
 // Writes and less common operations delegate to the normal bd CLI store.
 type DoltliteReadStore struct {
 	*BdStore
@@ -32,6 +32,8 @@ type DoltliteReadStore struct {
 	readyMu         sync.Mutex
 	readyCache      map[string][]Bead
 	readyHash       string
+	columnsMu       sync.Mutex
+	columnsCache    map[string]map[string]bool
 }
 
 func (s *DoltliteReadStore) NeedsSessionTypeFallback() bool { return true }
@@ -65,11 +67,20 @@ func doltliteTableSetsForMode(mode TierMode) []doltliteTableSet {
 	}
 }
 
-func (s *DoltliteReadStore) doltliteReadyIssueWhere(tables doltliteTableSet) (string, []any) {
-	return doltliteReadyIssueWhere(tables, s.tableExists(doltliteWispTables.issues))
+func (s *DoltliteReadStore) doltliteReadyIssueWhere(tables doltliteTableSet) (string, []any, error) {
+	issueTarget, err := s.doltliteDependsOnExprForTable(tables.deps, "d")
+	if err != nil {
+		return "", nil, err
+	}
+	wispTarget, err := s.doltliteExprForColumns(tables.deps, "d", []string{"depends_on_wisp_id"})
+	if err != nil {
+		return "", nil, err
+	}
+	readyWhere, readyArgs := doltliteReadyIssueWhere(tables, s.tableExists(doltliteWispTables.issues), issueTarget, wispTarget)
+	return readyWhere, readyArgs, nil
 }
 
-func doltliteReadyIssueWhere(tables doltliteTableSet, includeWispTargets bool) (string, []any) {
+func doltliteReadyIssueWhere(tables doltliteTableSet, includeWispTargets bool, issueTarget, wispTarget string) (string, []any) {
 	typePredicate, args := doltliteIssueTypeNotInPredicate("i")
 	blockingTypes := make([]string, 0, len(readyBlockingDependencyTypes))
 	for typ := range readyBlockingDependencyTypes {
@@ -81,8 +92,6 @@ func doltliteReadyIssueWhere(tables doltliteTableSet, includeWispTargets bool) (
 		args = append(args, typ)
 	}
 
-	issueTarget := "COALESCE(NULLIF(d.depends_on_issue_id, ''), NULLIF(d.depends_on_id, ''), NULLIF(d.depends_on_external, ''), '')"
-	wispTarget := "NULLIF(d.depends_on_wisp_id, '')"
 	depType := "COALESCE(NULLIF(d.type, ''), 'blocks')"
 	blockerJoins := "LEFT JOIN " + tables.issues + " blocker_issue ON blocker_issue.id = " + issueTarget
 	blockerStatus := "COALESCE(blocker_issue.status, '')"
@@ -131,7 +140,7 @@ func NewDoltliteReadStore(dir string, backing *BdStore) (*DoltliteReadStore, err
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_busy_timeout=10000")
+	db, err := sql.Open(doltliteSQLDriverName, "file:"+dbPath+"?mode=rw&_busy_timeout=10000")
 	if err != nil {
 		return nil, err
 	}
@@ -152,9 +161,6 @@ func readDoltliteMetadata(dir string) (doltliteMetadata, error) {
 	}
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return meta, err
-	}
-	if !isDoltliteMetadata(meta.Backend, meta.Database) {
-		return meta, fmt.Errorf("not a doltlite beads store")
 	}
 	return meta, nil
 }
@@ -306,7 +312,10 @@ func (s *DoltliteReadStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 	if rq.Limit > 0 {
 		q.Limit = rq.Limit
 	}
-	readyWhere, readyArgs := s.doltliteReadyIssueWhere(doltliteIssueTables)
+	readyWhere, readyArgs, err := s.doltliteReadyIssueWhere(doltliteIssueTables)
+	if err != nil {
+		return nil, err
+	}
 	// The id tiebreaker keeps a LIMIT deterministic when rows share
 	// (priority, created_at) — same bug class as queryIssueTable (#3208).
 	out, err := s.queryIssuesOrdered(q, readyWhere, readyArgs, q.Limit, "ORDER BY COALESCE(i.priority, 2) ASC, i.created_at ASC, i.id ASC")
@@ -570,11 +579,40 @@ func (s *DoltliteReadStore) SetMetadataBatch(id string, kvs map[string]string) e
 	if len(changed) == 0 {
 		return nil
 	}
-	err = s.BdStore.SetMetadataBatch(id, changed)
-	if err == nil {
-		s.resetOrderRunCache()
+	if current.Metadata == nil {
+		current.Metadata = make(map[string]string, len(changed))
 	}
-	return err
+	for k, v := range changed {
+		current.Metadata[k] = v
+	}
+	metadataJSON, err := json.Marshal(current.Metadata)
+	if err != nil {
+		return fmt.Errorf("setting metadata on %q: %w", id, err)
+	}
+	table := doltliteIssueTables.issues
+	if current.Ephemeral {
+		table = doltliteWispTables.issues
+	}
+	if !s.tableExists(table) {
+		return fmt.Errorf("setting metadata on %q: %w", id, ErrNotFound)
+	}
+	now := doltliteSQLiteTime(time.Now())
+	var result sql.Result
+	if columns, colErr := s.tableColumns(table); colErr != nil {
+		return colErr
+	} else if columns["updated_at"] {
+		result, err = s.db.Exec("UPDATE "+table+" SET metadata = ?, updated_at = ? WHERE id = ?", string(metadataJSON), now, id)
+	} else {
+		result, err = s.db.Exec("UPDATE "+table+" SET metadata = ? WHERE id = ?", string(metadataJSON), id)
+	}
+	if err != nil {
+		return fmt.Errorf("setting metadata on %q: %w", id, err)
+	}
+	if rows, rowsErr := result.RowsAffected(); rowsErr == nil && rows == 0 {
+		return fmt.Errorf("setting metadata on %q: %w", id, ErrNotFound)
+	}
+	s.resetOrderRunCache()
+	return nil
 }
 
 func (s *DoltliteReadStore) SetMetadata(id, key, value string) error {
@@ -624,9 +662,15 @@ func cloneBeads(values []Bead) []Bead {
 
 func (s *DoltliteReadStore) DepList(id, direction string) ([]Dep, error) {
 	if direction == "up" {
-		return s.queryDeps(doltliteDependsOnExpr()+" = ?", id)
+		return s.queryDeps(func(table string) (string, error) {
+			expr, err := s.doltliteDependsOnExprForTable(table, "")
+			if err != nil {
+				return "", err
+			}
+			return expr + " = ?", nil
+		}, id)
 	}
-	return s.queryDeps("issue_id = ?", id)
+	return s.queryDeps(func(string) (string, error) { return "issue_id = ?", nil }, id)
 }
 
 func (s *DoltliteReadStore) DepListBatch(ids []string) (map[string][]Dep, error) {
@@ -648,7 +692,11 @@ func (s *DoltliteReadStore) DepListBatch(ids []string) (map[string][]Dep, error)
 			if table == "wisp_dependencies" && !s.tableExists(table) {
 				continue
 			}
-			rows, err := s.db.Query(`SELECT issue_id, `+doltliteDependsOnExpr()+`, type FROM `+table+` WHERE issue_id IN (`+placeholders+`)`, args...)
+			dependsOnExpr, err := s.doltliteDependsOnExprForTable(table, "")
+			if err != nil {
+				return result, err
+			}
+			rows, err := s.db.Query(`SELECT issue_id, `+dependsOnExpr+`, type FROM `+table+` WHERE issue_id IN (`+placeholders+`)`, args...)
 			if err != nil {
 				return result, err
 			}
@@ -686,13 +734,21 @@ func (s *DoltliteReadStore) enrichReadyProjectionForCache(items []Bead) ([]Bead,
 	return items, nil
 }
 
-func (s *DoltliteReadStore) queryDeps(where, value string) ([]Dep, error) {
+func (s *DoltliteReadStore) queryDeps(whereForTable func(string) (string, error), value string) ([]Dep, error) {
 	var deps []Dep
 	for _, table := range []string{"dependencies", "wisp_dependencies"} {
 		if table == "wisp_dependencies" && !s.tableExists(table) {
 			continue
 		}
-		rows, err := s.db.Query(`SELECT issue_id, `+doltliteDependsOnExpr()+`, type FROM `+table+` WHERE `+where, value)
+		dependsOnExpr, err := s.doltliteDependsOnExprForTable(table, "")
+		if err != nil {
+			return nil, err
+		}
+		where, err := whereForTable(table)
+		if err != nil {
+			return nil, err
+		}
+		rows, err := s.db.Query(`SELECT issue_id, `+dependsOnExpr+`, type FROM `+table+` WHERE `+where, value)
 		if err != nil {
 			return nil, err
 		}
@@ -715,16 +771,29 @@ func (s *DoltliteReadStore) queryDeps(where, value string) ([]Dep, error) {
 	return deps, nil
 }
 
-func doltliteDependsOnExpr() string {
-	return "COALESCE(NULLIF(depends_on_id, ''), NULLIF(depends_on_issue_id, ''), NULLIF(depends_on_wisp_id, ''), NULLIF(depends_on_external, ''), '')"
+func (s *DoltliteReadStore) doltliteDependsOnExprForTable(table, alias string) (string, error) {
+	return s.doltliteExprForColumns(table, alias, []string{"depends_on_id", "depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"})
 }
 
-func doltliteQualifiedDependsOnExpr(alias string) string {
+func (s *DoltliteReadStore) doltliteExprForColumns(table, alias string, columns []string) (string, error) {
+	available, err := s.tableColumns(table)
+	if err != nil {
+		return "", err
+	}
 	prefix := ""
 	if strings.TrimSpace(alias) != "" {
 		prefix = alias + "."
 	}
-	return "COALESCE(NULLIF(" + prefix + "depends_on_id, ''), NULLIF(" + prefix + "depends_on_issue_id, ''), NULLIF(" + prefix + "depends_on_wisp_id, ''), NULLIF(" + prefix + "depends_on_external, ''), '')"
+	parts := make([]string, 0, len(columns))
+	for _, column := range columns {
+		if available[column] {
+			parts = append(parts, "NULLIF("+prefix+column+", '')")
+		}
+	}
+	if len(parts) == 0 {
+		return "''", nil
+	}
+	return "COALESCE(" + strings.Join(parts, ", ") + ", '')", nil
 }
 
 func scanDep(rows interface{ Scan(...any) error }) (Dep, error) {
@@ -899,7 +968,11 @@ func (s *DoltliteReadStore) queryIssueTable(query ListQuery, tables doltliteTabl
 		}
 	}
 	if query.ParentID != "" {
-		where = append(where, doltliteQualifiedDependsOnExpr("pc")+" = ?")
+		parentExpr, err := s.doltliteDependsOnExprForTable(tables.deps, "pc")
+		if err != nil {
+			return nil, err
+		}
+		where = append(where, parentExpr+" = ?")
 		args = append(args, query.ParentID)
 	}
 	if query.Label != "" {
@@ -926,7 +999,11 @@ func (s *DoltliteReadStore) queryIssueTable(query ListQuery, tables doltliteTabl
 	parentColumn := "''"
 	parentJoin := ""
 	if needParent {
-		parentColumn = doltliteQualifiedDependsOnExpr("pc")
+		var err error
+		parentColumn, err = s.doltliteDependsOnExprForTable(tables.deps, "pc")
+		if err != nil {
+			return nil, err
+		}
 		parentJoin = " LEFT JOIN " + tables.deps + " pc ON pc.issue_id = i.id AND pc.type = 'parent-child'"
 	}
 	sqlText := `SELECT i.id, COALESCE(i.title, ''), COALESCE(i.status, ''), COALESCE(i.issue_type, ''), i.priority, i.created_at,
@@ -1074,6 +1151,46 @@ func (s *DoltliteReadStore) tableExists(name string) bool {
 	var found string
 	err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&found)
 	return err == nil
+}
+
+func (s *DoltliteReadStore) tableColumns(name string) (map[string]bool, error) {
+	s.columnsMu.Lock()
+	if s.columnsCache != nil {
+		if cached, ok := s.columnsCache[name]; ok {
+			s.columnsMu.Unlock()
+			return cached, nil
+		}
+	} else {
+		s.columnsCache = make(map[string]map[string]bool)
+	}
+	s.columnsMu.Unlock()
+
+	rows, err := s.db.Query(`PRAGMA table_info(` + name + `)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var column, typ string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &column, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return nil, err
+		}
+		columns[column] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	s.columnsMu.Lock()
+	s.columnsCache[name] = columns
+	s.columnsMu.Unlock()
+	return columns, nil
 }
 
 func (s *DoltliteReadStore) hydrateLabels(beads []Bead, labelTable string) error {

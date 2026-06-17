@@ -485,6 +485,9 @@ func normalizeCanonicalBdScopeFilesForInit(cityPath, dir, prefix, doltDatabase s
 	if strings.TrimSpace(doltDatabase) == "" {
 		doltDatabase = canonicalScopeDoltDatabase(cityPath, dir, prefix)
 	}
+	if backend.Name() == "doltlite" && !scopeOverridesCityBackend(cityPath, dir) {
+		return ensureCanonicalDoltliteScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase)
+	}
 	if isReservedManagedDoltDatabase(doltDatabase) {
 		// Preserve legacy probe metadata during startup normalization so old
 		// scopes can still boot and migrate deliberately. New init paths still
@@ -518,7 +521,7 @@ func initAndHookDir(cityPath, dir, prefix string) error {
 	if err := normalizeCanonicalBdScopeFilesForInit(cityPath, dir, prefix, doltDatabase); err != nil {
 		return err
 	}
-	if cityUsesBdStoreContract(cityPath) && currentResolvableManagedDoltPort(cityPath) != "" {
+	if cityUsesBdStoreContract(cityPath) && !cityUsesDoltliteBeadsBackend(cityPath) && currentResolvableManagedDoltPort(cityPath) != "" {
 		if err := syncManagedDoltPortMirrors(cityPath); err != nil {
 			return fmt.Errorf("sync managed dolt port mirrors after init: %w", err)
 		}

@@ -1,4 +1,4 @@
-//go:build gascity_native_beads
+//go:build gascity_doltlite_lib
 
 package beads
 
@@ -36,6 +36,36 @@ func TestDoltliteReadStoreListsSessionBeads(t *testing.T) {
 	if !slices.Contains(got.Labels, "gc:session") {
 		t.Fatalf("labels = %v, missing gc:session", got.Labels)
 	}
+}
+
+func TestDoltliteReadStoreOpensExistingDoltliteDBWithStaleDoltMetadata(t *testing.T) {
+	dir := t.TempDir()
+	beadsDir := filepath.Join(dir, ".beads")
+	if err := os.MkdirAll(filepath.Join(beadsDir, "doltlite"), 0o755); err != nil {
+		t.Fatalf("mkdir doltlite dir: %v", err)
+	}
+	meta := []byte(`{"backend":"dolt","database":"dolt","dolt_database":"hq","dolt_mode":"server"}`)
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), meta, 0o600); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	db, err := sql.Open(doltliteSQLDriverName, filepath.Join(beadsDir, "doltlite", "hq.db")+"?_busy_timeout=10000")
+	if err != nil {
+		t.Fatalf("open doltlite fixture db: %v", err)
+	}
+	createTestDoltliteSchema(t, db)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close fixture db: %v", err)
+	}
+
+	backing := NewBdStore(dir, func(string, string, ...string) ([]byte, error) {
+		t.Fatal("backing bd runner should not be called while opening doltlite read store")
+		return nil, nil
+	})
+	store, err := NewDoltliteReadStore(dir, backing)
+	if err != nil {
+		t.Fatalf("NewDoltliteReadStore: %v", err)
+	}
+	defer store.CloseStore() //nolint:errcheck // test cleanup
 }
 
 func TestDoltliteReadStoreSkipLabels(t *testing.T) {
@@ -416,10 +446,9 @@ func TestDoltliteReadStoreHandlesNullDescription(t *testing.T) {
 // cutoff. Timestamps are seeded in the store's canonical SQLite text format
 // (doltliteSQLiteTime) because the before-filters compare with SQLite julianday()
 // and parse with parseTimeString, both of which require ISO-8601 text. Binding a
-// raw time.Time instead delegates formatting to the SQL driver:
-// github.com/mattn/go-sqlite3 emitted ISO text, but modernc.org/sqlite emits
-// time.Time.String() (e.g. "2026-06-01 07:00:00 +0000 UTC"), which julianday()
-// cannot parse — the filter would then drop every row. See ga-p7ipsu.
+// raw time.Time instead delegates formatting to the SQL driver. The explicit
+// doltliteSQLiteTime formatting keeps this independent of driver details and
+// preserves julianday() compatibility. See ga-p7ipsu.
 func TestDoltliteReadStoreBeforeFiltersRespectCutoff(t *testing.T) {
 	store, closeStore := newTestDoltliteReadStore(t)
 	defer closeStore()
@@ -660,7 +689,7 @@ func TestDoltliteReadStoreMetadataFilterFindsMatchBehindLimit(t *testing.T) {
 }
 
 func TestDoltliteMetadataFilterPredicatesMatchStringValues(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := sql.Open(doltliteSQLDriverName, ":memory:")
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -899,7 +928,7 @@ func newTestDoltliteReadStore(t *testing.T) (*DoltliteReadStore, func()) {
 		t.Fatalf("mkdir doltlite dir: %v", err)
 	}
 	dbPath := filepath.Join(dbDir, "hq.db")
-	db, err := sql.Open("sqlite", dbPath+"?_busy_timeout=10000")
+	db, err := sql.Open(doltliteSQLDriverName, dbPath+"?_busy_timeout=10000")
 	if err != nil {
 		t.Fatalf("open doltlite fixture db: %v", err)
 	}
@@ -1261,7 +1290,7 @@ func openTestDoltliteWriter(t *testing.T, readDB *sql.DB) *sql.DB {
 		t.Fatal("main database path not found")
 	}
 
-	writer, err := sql.Open("sqlite", "file:"+dbPath+"?mode=rw&_busy_timeout=10000")
+	writer, err := sql.Open(doltliteSQLDriverName, "file:"+dbPath+"?mode=rw&_busy_timeout=10000")
 	if err != nil {
 		t.Fatalf("open writable doltlite db: %v", err)
 	}

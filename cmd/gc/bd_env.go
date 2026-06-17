@@ -361,6 +361,15 @@ func applyCanonicalScopeBackendEnv(env map[string]string, cityPath, scopeRoot st
 	if metaErr != nil {
 		return true, metaErr
 	}
+	if backend.Name() == "doltlite" &&
+		(samePath(cityPath, scopeRoot) || resolved.State.EndpointOrigin == contract.EndpointOriginInheritedCity) {
+		clearProjectedDoltEnv(env)
+		clearProjectedPostgresEnv(env)
+		env["GC_BEADS_BACKEND"] = "doltlite"
+		env["BEADS_BACKEND"] = "doltlite"
+		mirrorBeadsDoltEnv(env)
+		return true, nil
+	}
 	if resolved.State.EndpointOrigin == contract.EndpointOriginInheritedCity && meta.Backend == "" {
 		if usedPostgres, err := applyCityPostgresBackendEnv(env, cityPath); err != nil {
 			return true, err
@@ -433,6 +442,15 @@ func applyCityPostgresBackendEnv(env map[string]string, cityPath string) (bool, 
 }
 
 func scopeBackendIsDoltlite(cityPath, scopeRoot string) bool {
+	if samePath(cityPath, scopeRoot) && cityUsesDoltliteBeadsBackend(cityPath) {
+		return true
+	}
+	resolved, err := contract.ResolveScopeConfigState(fsys.OSFS{}, cityPath, scopeRoot, "")
+	if err == nil && resolved.Kind == contract.ScopeConfigAuthoritative &&
+		resolved.State.EndpointOrigin == contract.EndpointOriginInheritedCity &&
+		cityUsesDoltliteBeadsBackend(cityPath) {
+		return true
+	}
 	meta, ok, err := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(scopeRoot))
 	if err == nil && ok && meta.Backend != "" {
 		return meta.Backend == "doltlite"
@@ -440,7 +458,6 @@ func scopeBackendIsDoltlite(cityPath, scopeRoot string) bool {
 	if samePath(cityPath, scopeRoot) {
 		return cityUsesDoltliteBeadsBackend(cityPath)
 	}
-	resolved, err := contract.ResolveScopeConfigState(fsys.OSFS{}, cityPath, scopeRoot, "")
 	if err != nil || resolved.Kind != contract.ScopeConfigAuthoritative {
 		return false
 	}
@@ -452,15 +469,12 @@ func scopeOverridesCityBackend(cityPath, scopeRoot string) bool {
 	if samePath(cityPath, scopeRoot) {
 		return false
 	}
-	meta, ok, err := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(scopeRoot))
-	if err == nil && ok && strings.TrimSpace(meta.Backend) != "" {
-		return true
-	}
 	resolved, err := contract.ResolveScopeConfigState(fsys.OSFS{}, cityPath, scopeRoot, "")
-	if err != nil || resolved.Kind != contract.ScopeConfigAuthoritative {
-		return false
+	if err == nil && resolved.Kind == contract.ScopeConfigAuthoritative {
+		return resolved.State.EndpointOrigin != contract.EndpointOriginInheritedCity
 	}
-	return resolved.State.EndpointOrigin != contract.EndpointOriginInheritedCity
+	meta, ok, err := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(scopeRoot))
+	return err == nil && ok && strings.TrimSpace(meta.Backend) != ""
 }
 
 // scopeMetadataJSONPath returns the absolute path to a scope's

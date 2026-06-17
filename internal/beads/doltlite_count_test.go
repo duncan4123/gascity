@@ -1,4 +1,4 @@
-//go:build gascity_native_beads
+//go:build gascity_doltlite_lib
 
 package beads
 
@@ -32,7 +32,7 @@ func newDoltliteStoreWithIssues(t testing.TB, issues []testDoltliteIssue) *Doltl
 		t.Fatalf("mkdir doltlite dir: %v", err)
 	}
 	dbPath := filepath.Join(dbDir, "hq.db")
-	db, err := sql.Open("sqlite", dbPath+"?_busy_timeout=10000")
+	db, err := sql.Open(doltliteSQLDriverName, dbPath+"?_busy_timeout=10000")
 	if err != nil {
 		t.Fatalf("open doltlite fixture db: %v", err)
 	}
@@ -201,7 +201,7 @@ func containsTestString(values []string, target string) bool {
 // BenchmarkDoltliteMoleculeRead compares the full-history molecule read against
 // the bounded read + hydration-free Count that backs the gascity#3253 fix. Run:
 //
-//	go test -tags gascity_native_beads -run '^$' \
+//	go test -tags gascity_doltlite_lib -run '^$' \
 //	  -bench BenchmarkDoltliteMoleculeRead -benchmem ./internal/beads
 func BenchmarkDoltliteMoleculeRead(b *testing.B) {
 	const total = 5000
