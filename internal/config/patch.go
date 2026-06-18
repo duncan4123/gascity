@@ -28,6 +28,10 @@ type AgentPatch struct {
 	Name string `toml:"name" jsonschema:"required"`
 	// WorkDir overrides the agent's session working directory.
 	WorkDir *string `toml:"work_dir,omitempty"`
+	// Pack overrides the pack/workspace route key exposed as {{.Pack}}.
+	Pack *string `toml:"pack,omitempty"`
+	// PackRoot overrides the target pack directory exposed as {{.PackRoot}}.
+	PackRoot *string `toml:"pack_root,omitempty"`
 	// TmuxAlias overrides the tmux session name template
 	// (see Agent.TmuxAlias for semantics).
 	TmuxAlias *string `toml:"tmux_alias,omitempty"`
@@ -276,6 +280,8 @@ type GitHubPRMonitorPatch struct {
 	NotifyAppend []string `toml:"notify_append,omitempty"`
 	// RepairRoute overrides the repair route target.
 	RepairRoute *string `toml:"repair_route,omitempty"`
+	// RepairWorkflow overrides the formula attached to repair beads.
+	RepairWorkflow *string `toml:"repair_workflow,omitempty"`
 	// WebhookSecretEnv overrides the env var containing the webhook secret.
 	WebhookSecretEnv *string `toml:"webhook_secret_env,omitempty"`
 	// WebhookSecretKey overrides the stable webhook secret key.
@@ -426,6 +432,12 @@ func applyAgentPatch(cfg *City, patch *AgentPatch) error {
 func applyAgentPatchFields(a *Agent, p *AgentPatch) {
 	if p.WorkDir != nil {
 		a.WorkDir = *p.WorkDir
+	}
+	if p.Pack != nil {
+		a.Pack = *p.Pack
+	}
+	if p.PackRoot != nil {
+		a.PackRoot = *p.PackRoot
 	}
 	if p.TmuxAlias != nil {
 		a.TmuxAlias = *p.TmuxAlias
@@ -677,6 +689,9 @@ func applyGitHubPRMonitorPatch(cfg *City, patch *GitHubPRMonitorPatch) error {
 		}
 		if patch.RepairRoute != nil {
 			monitor.RepairRoute = *patch.RepairRoute
+		}
+		if patch.RepairWorkflow != nil {
+			monitor.RepairWorkflow = *patch.RepairWorkflow
 		}
 		if patch.WebhookSecretEnv != nil {
 			monitor.WebhookSecretEnv = *patch.WebhookSecretEnv

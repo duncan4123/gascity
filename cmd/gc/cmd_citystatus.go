@@ -617,6 +617,10 @@ func processBinaryForPID(pid int) string {
 	return path
 }
 
+func pidBinarySuffix(binary string) string {
+	return processDetailsSuffix(binary, nil)
+}
+
 func controllerAliveWithin(cityPath string, timeout time.Duration) int {
 	if timeout <= 0 {
 		return controllerAlive(cityPath)
