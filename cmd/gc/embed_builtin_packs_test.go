@@ -561,17 +561,25 @@ func TestBuiltinImportsForInit(t *testing.T) {
 			{provider: "exec:/tmp/custom-store", want: "core"},
 			{provider: "exec:/tmp/gc-beads-bd", want: "core,bd"},
 		} {
-			_, ordered := builtinImportsForInit(tt.provider)
+			_, ordered := builtinImportsForInit(tt.provider, "")
 			if got := strings.Join(ordered, ","); got != tt.want {
 				t.Errorf("builtinImportsForInit(%q) = %v, want %s", tt.provider, ordered, tt.want)
 			}
 		}
 	})
 
+	t.Run("backend_required_packs", func(t *testing.T) {
+		clearGCEnv(t)
+		_, ordered := builtinImportsForInit("bd", "doltlite")
+		if got := strings.Join(ordered, ","); got != "core,bd,beads-doltlite" {
+			t.Errorf("builtinImportsForInit bd/doltlite = %v, want core,bd,beads-doltlite", ordered)
+		}
+	})
+
 	t.Run("gc_beads_env_wins_over_city_provider", func(t *testing.T) {
 		clearGCEnv(t)
 		t.Setenv("GC_BEADS", "file")
-		_, ordered := builtinImportsForInit("bd")
+		_, ordered := builtinImportsForInit("bd", "doltlite")
 		if got := strings.Join(ordered, ","); got != "core" {
 			t.Errorf("builtinImportsForInit with GC_BEADS=file = %v, want core only", ordered)
 		}

@@ -22,6 +22,7 @@ import (
 	"github.com/gastownhall/gascity/internal/beads/contract"
 	"github.com/gastownhall/gascity/internal/citylayout"
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/doctor"
 	"github.com/gastownhall/gascity/internal/fsys"
 	"github.com/gastownhall/gascity/internal/pidutil"
 )
@@ -994,11 +995,96 @@ func finalizeCanonicalBdScopeInit(cityPath, dir, prefix, doltDatabase string) er
 	} else if err := enforceCanonicalScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase); err != nil {
 		return err
 	}
+	if err := ensureRequiredCustomTypesForInit(dir); err != nil {
+		return err
+	}
 	store, err := openStoreAtForCity(dir, cityPath)
 	if err != nil {
 		return err
 	}
 	return verifyCanonicalBdScopeStoreReady(store)
+}
+
+func ensureRequiredCustomTypesForInit(dir string) error {
+	configPath := filepath.Join(dir, ".beads", "config.yaml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return err
+	}
+	next, changed := mergeTypesCustomConfig(data, doctor.RequiredCustomTypes)
+	if !changed {
+		return nil
+	}
+	if err := os.WriteFile(configPath, next, 0o644); err != nil {
+		return fmt.Errorf("write required custom bead types: %w", err)
+	}
+	return nil
+}
+
+func mergeTypesCustomConfig(data []byte, required []string) ([]byte, bool) {
+	lines := strings.Split(string(data), "\n")
+	typeLine := -1
+	current := make([]string, 0, len(required))
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "types.custom:") {
+			continue
+		}
+		if typeLine < 0 {
+			typeLine = i
+			raw := strings.TrimSpace(strings.TrimPrefix(trimmed, "types.custom:"))
+			current = append(current, splitCustomTypeList(raw)...)
+		}
+	}
+
+	merged := mergeCustomTypeLists(current, required)
+	nextLine := "types.custom: " + strings.Join(merged, ",")
+	if typeLine >= 0 {
+		if strings.TrimSpace(lines[typeLine]) == nextLine {
+			return data, false
+		}
+		lines[typeLine] = nextLine
+		return []byte(strings.Join(lines, "\n")), true
+	}
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines[len(lines)-1] = nextLine
+		lines = append(lines, "")
+	} else {
+		lines = append(lines, nextLine)
+	}
+	return []byte(strings.Join(lines, "\n")), true
+}
+
+func splitCustomTypeList(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func mergeCustomTypeLists(current, required []string) []string {
+	seen := make(map[string]struct{}, len(current)+len(required))
+	merged := make([]string, 0, len(current)+len(required))
+	for _, value := range append(current, required...) {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		merged = append(merged, trimmed)
+	}
+	return merged
 }
 
 func verifyCanonicalBdScopeStoreReady(store beads.Store) error {

@@ -1059,8 +1059,8 @@ func applyInitPackTemplateExtras(dst *initPackConfig, src initPackConfig) {
 // addBuiltinImportsToInitPack merges the required bundled-pack imports
 // into the init pack manifest, preserving any imports the template (or a
 // preserved pack.toml) already declares.
-func addBuiltinImportsToInitPack(packCfg *initPackConfig, cityProvider string) {
-	imports, names := builtinImportsForInit(cityProvider)
+func addBuiltinImportsToInitPack(packCfg *initPackConfig, cityProvider, cityBackend string) {
+	imports, names := builtinImportsForInit(cityProvider, cityBackend)
 	if len(names) == 0 {
 		return
 	}
@@ -1192,7 +1192,7 @@ func cmdInitFromTOMLFileWithOptionsInternal(fs fsys.FS, tomlSrc, cityPath, nameO
 	// canonical bundled-source entries for this city's providers into
 	// pack.toml (mirrors doInit; the builtin-pack-imports doctor check
 	// repairs them later).
-	addBuiltinImportsToInitPack(&packCfg, cityCfg.Beads.Provider)
+	addBuiltinImportsToInitPack(&packCfg, cityCfg.Beads.Provider, cityCfg.Beads.Backend)
 	var rigSiteBindings []config.Rig
 	if hasInitRigSiteBindings(cityCfg.Rigs) {
 		rigSiteBindings = append([]config.Rig(nil), cityCfg.Rigs...)
@@ -1391,7 +1391,7 @@ func doInit(fs fsys.FS, cityPath string, wiz wizardConfig, nameOverride string, 
 	// canonical bundled-source entries for this city's providers into
 	// pack.toml. The builtin-pack-imports doctor check repairs them if
 	// they go missing.
-	addBuiltinImportsToInitPack(&packCfg, cityCfg.Beads.Provider)
+	addBuiltinImportsToInitPack(&packCfg, cityCfg.Beads.Provider, cityCfg.Beads.Backend)
 	content, err := cityCfg.Marshal()
 	if err != nil {
 		fmt.Fprintf(stderr, "gc init: %v\n", err) //nolint:errcheck // best-effort stderr

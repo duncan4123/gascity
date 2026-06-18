@@ -1,10 +1,10 @@
-//go:build gascity_native_beads
+//go:build gascity_doltlite_lib
 
 package main
 
 import "testing"
 
-func TestNativeDoltliteBeadsEnabled(t *testing.T) {
+func TestDoltliteReadFastPathEnabled(t *testing.T) {
 	tests := []struct {
 		name    string
 		native  string
@@ -22,10 +22,10 @@ func TestNativeDoltliteBeadsEnabled(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cityPath := t.TempDir()
-			t.Setenv(nativeDoltliteBeadsEnv, tt.native)
+			t.Setenv(doltliteReadFastPathEnv, tt.native)
 			t.Setenv("GC_BEADS_BACKEND", tt.backend)
-			if got := nativeDoltliteBeadsEnabled(cityPath, cityPath); got != tt.want {
-				t.Fatalf("nativeDoltliteBeadsEnabled() = %v, want %v", got, tt.want)
+			if got := doltliteReadFastPathEnabled(cityPath, cityPath); got != tt.want {
+				t.Fatalf("doltliteReadFastPathEnabled() = %v, want %v", got, tt.want)
 			}
 		})
 	}

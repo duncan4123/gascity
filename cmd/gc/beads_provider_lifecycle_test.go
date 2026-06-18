@@ -57,6 +57,30 @@ func mustProviderLifecycleProcessEnv(t *testing.T, cityPath, provider string) []
 	return env
 }
 
+func TestMergeTypesCustomConfigAddsRequiredTypes(t *testing.T) {
+	input := []byte("issue_prefix: gc\ntypes.custom: pack_only,agent\n")
+	out, changed := mergeTypesCustomConfig(input, []string{"molecule", "agent", "step"})
+	if !changed {
+		t.Fatal("mergeTypesCustomConfig changed = false, want true")
+	}
+	got := string(out)
+	want := "types.custom: pack_only,agent,molecule,step"
+	if !strings.Contains(got, want) {
+		t.Fatalf("merged config missing %q:\n%s", want, got)
+	}
+}
+
+func TestMergeTypesCustomConfigIsIdempotent(t *testing.T) {
+	input := []byte("issue_prefix: gc\ntypes.custom: molecule,agent,step\n")
+	out, changed := mergeTypesCustomConfig(input, []string{"molecule", "agent", "step"})
+	if changed {
+		t.Fatalf("mergeTypesCustomConfig changed = true, want false:\n%s", out)
+	}
+	if string(out) != string(input) {
+		t.Fatalf("mergeTypesCustomConfig output changed:\n%s", out)
+	}
+}
+
 // TestEnsureBeadsProvider_file verifies that file provider is a no-op.
 func TestEnsureBeadsProvider_file(t *testing.T) {
 	t.Setenv("GC_BEADS", "file")

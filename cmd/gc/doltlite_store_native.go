@@ -1,4 +1,4 @@
-//go:build gascity_native_beads || gascity_doltlite_lib
+//go:build gascity_doltlite_lib
 
 package main
 
@@ -10,10 +10,10 @@ import (
 	"github.com/gastownhall/gascity/internal/beads"
 )
 
-const nativeDoltliteBeadsEnv = "GC_NATIVE_DOLTLITE_BEADS"
+const doltliteReadFastPathEnv = "GC_DOLTLITE_READ_FASTPATH"
 
 func openOptimizedDoltliteStore(storePath, cityPath string, store *beads.BdStore) (beads.Store, bool) {
-	if !nativeDoltliteBeadsEnabled(cityPath, storePath) {
+	if !doltliteReadFastPathEnabled(cityPath, storePath) {
 		return nil, false
 	}
 	direct, err := beads.NewDoltliteReadStore(storePath, store)
@@ -23,8 +23,8 @@ func openOptimizedDoltliteStore(storePath, cityPath string, store *beads.BdStore
 	return nil, false
 }
 
-func nativeDoltliteBeadsEnabled(cityPath, storePath string) bool {
-	raw := strings.TrimSpace(os.Getenv(nativeDoltliteBeadsEnv))
+func doltliteReadFastPathEnabled(cityPath, storePath string) bool {
+	raw := strings.TrimSpace(os.Getenv(doltliteReadFastPathEnv))
 	if raw != "" {
 		enabled, err := strconv.ParseBool(raw)
 		return err == nil && enabled
