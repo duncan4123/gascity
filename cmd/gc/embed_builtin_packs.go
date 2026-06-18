@@ -159,11 +159,11 @@ func requiredBuiltinImports(cityPath string) (map[string]config.Import, []string
 	return builtinImportsForNames(requiredBuiltinPackNames(cityPath))
 }
 
-// builtinImportsForInit resolves the beads provider the same way
-// command-time store selection does — GC_BEADS env first, then the
-// about-to-be-written city.toml provider — so init writes exactly the
-// imports the builtin-pack-imports doctor check will later enforce.
-func builtinImportsForInit(cityProvider string) (map[string]config.Import, []string) {
+// builtinImportsForInit resolves the beads provider and backend the same way
+// command-time store selection does — env first, then the about-to-be-written
+// city.toml values — so init writes exactly the imports the
+// builtin-pack-imports doctor check will later enforce.
+func builtinImportsForInit(cityProvider, cityBackend string) (map[string]config.Import, []string) {
 	provider := strings.TrimSpace(os.Getenv("GC_BEADS"))
 	if provider == "" {
 		provider = strings.TrimSpace(cityProvider)
@@ -171,9 +171,18 @@ func builtinImportsForInit(cityProvider string) (map[string]config.Import, []str
 	if provider == "" {
 		provider = "bd" // matches the rawBeadsProvider default
 	}
+	backend := strings.TrimSpace(os.Getenv("GC_BEADS_BACKEND"))
+	if backend == "" {
+		backend = strings.TrimSpace(cityBackend)
+	}
 	names := []string{"core"}
 	if providerUsesBdStoreContract(provider) {
 		names = append(names, "bd")
+		if backend != "" {
+			for _, name := range resolveBeadsBackendName(backend).RequiredBuiltinPacks() {
+				names = appendRequiredBuiltinPack(names, name)
+			}
+		}
 	}
 	return builtinImportsForNames(names)
 }
