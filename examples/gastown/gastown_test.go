@@ -457,10 +457,10 @@ func TestRefineryFormulaChainsMergeMetadataWithClose(t *testing.T) {
 	// that gates gc bd close must appear after --unset-metadata.
 	assertContainsInOrder(t, body,
 		"--set-metadata merge_result=merged",
-		"--set-metadata merged_sha=$MERGED_SHA",
-		"--set-metadata merged_target=$TARGET",
+		`--set-metadata merged_sha="$MERGED_SHA"`,
+		`--set-metadata merged_target="$TARGET"`,
 		"--unset-metadata rejection_reason &&",
-		`gc bd close $WORK --reason "Merged to $TARGET at $MERGED_SHORT"`,
+		`gc bd close "$WORK" --reason "Merged to $TARGET at $MERGED_SHORT"`,
 	)
 
 	// mr/pr handoff path: same chained shape, different metadata fields.
@@ -530,8 +530,8 @@ func TestRefineryFormulaRefusesZeroDiffMerge(t *testing.T) {
 	assertContainsInOrder(t, body,
 		`**If MERGE_STRATEGY = "direct" (default):**`,
 		`branch_has_real_change "origin/$TARGET" temp ||`,
-		"git merge --ff-only temp",
-		`gc bd close $WORK --reason "Merged to $TARGET at $MERGED_SHORT"`,
+		`git -C "$MERGE_WT" merge --ff-only "$TEMP_SHA"`,
+		`gc bd close "$WORK" --reason "Merged to $TARGET at $MERGED_SHORT"`,
 	)
 
 	// mr/pr publication path: guard precedes the push and the close.
@@ -2095,18 +2095,13 @@ func TestNonDogStartupPromptsUseAssignedInProgressQuery(t *testing.T) {
 			want:   "{{ .AssignedInProgressQuery }}",
 			forbid: []string{`gc bd list --assignee=$GC_AGENT --status=in_progress`},
 		},
-		{
-			rel:     "packs/gastown/agents/polecat/prompt.template.md",
-			start:   "## Startup Protocol",
-			end:     "## Context Exhaustion",
-			want:    "{{ .AssignedInProgressQuery }}",
-			forbid:  []string{`gc bd list --assignee="$GC_SESSION_NAME" --status=in_progress`},
-			render:  true,
-			agent:   "gastown/polecat",
-			tmpl:    "polecat",
-			rig:     "gastown",
-			binding: "gastown.",
-		},
+		// The polecat Startup Protocol deliberately does NOT use the bare
+		// AssignedInProgressQuery template: since gastown 0.1.10 polecat
+		// uses `gc hook --claim --json`, which internally checks for existing
+		// in-progress assigned work via hookClaimExistingOrAssigned before
+		// falling through to unassigned pool work. The assigned-in-progress
+		// check is still present; it is now inside gc hook rather than a
+		// bare bd query rendered into the prompt.
 		{
 			rel:     "packs/gastown/agents/deacon/prompt.template.md",
 			start:   "## Startup Protocol",

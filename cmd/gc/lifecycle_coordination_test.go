@@ -605,6 +605,52 @@ func TestLifecycleCoordination_InitDirIfReady_BdDeferredPreservesExistingDoltDat
 	}
 }
 
+func TestNormalizeCanonicalBdScopeFilesForInit_DoltliteInheritedRigRewritesStaleDoltMetadata(t *testing.T) {
+	cityPath := t.TempDir()
+	rigPath := filepath.Join(cityPath, "gascity")
+	if err := os.MkdirAll(filepath.Join(rigPath, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[workspace]\nname = \"demo\"\n\n[beads]\nbackend = \"doltlite\"\n\n[[rigs]]\nname = \"gascity\"\npath = \"gascity\"\nprefix = \"gc\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rigPath, ".beads", "config.yaml"), []byte(`issue_prefix: gc
+gc.endpoint_origin: inherited_city
+gc.endpoint_status: verified
+dolt.auto-start: false
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rigPath, ".beads", "metadata.json"), []byte(`{"backend":"dolt","database":"dolt","dolt_database":"gc","dolt_mode":"server"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := normalizeCanonicalBdScopeFilesForInit(cityPath, rigPath, "gc", "gc"); err != nil {
+		t.Fatalf("normalizeCanonicalBdScopeFilesForInit: %v", err)
+	}
+
+	metaData, err := os.ReadFile(filepath.Join(rigPath, ".beads", "metadata.json"))
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(metaData, &meta); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	if got := strings.TrimSpace(fmt.Sprint(meta["backend"])); got != "doltlite" {
+		t.Fatalf("backend = %q, want doltlite; metadata=%s", got, metaData)
+	}
+	if got := strings.TrimSpace(fmt.Sprint(meta["database"])); got != "doltlite" {
+		t.Fatalf("database = %q, want doltlite; metadata=%s", got, metaData)
+	}
+	if got := strings.TrimSpace(fmt.Sprint(meta["dolt_database"])); got != "gc" {
+		t.Fatalf("dolt_database = %q, want gc; metadata=%s", got, metaData)
+	}
+	if _, ok := meta["dolt_mode"]; ok {
+		t.Fatalf("metadata should remove dolt_mode for doltlite: %s", metaData)
+	}
+}
+
 func TestSeedDeferredManagedBeadsUsesExplicitDoltDatabase(t *testing.T) {
 	dir := t.TempDir()
 

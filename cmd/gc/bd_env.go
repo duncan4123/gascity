@@ -362,6 +362,15 @@ func applyCanonicalScopeBackendEnv(env map[string]string, cityPath, scopeRoot st
 	if metaErr != nil {
 		return true, metaErr
 	}
+	if backend.Name() == "doltlite" &&
+		(samePath(cityPath, scopeRoot) || resolved.State.EndpointOrigin == contract.EndpointOriginInheritedCity) {
+		clearProjectedDoltEnv(env)
+		clearProjectedPostgresEnv(env)
+		env["GC_BEADS_BACKEND"] = "doltlite"
+		env["BEADS_BACKEND"] = "doltlite"
+		mirrorBeadsDoltEnv(env)
+		return true, nil
+	}
 	if resolved.State.EndpointOrigin == contract.EndpointOriginInheritedCity && meta.Backend == "" {
 		if usedPostgres, err := applyCityPostgresBackendEnv(env, cityPath); err != nil {
 			return true, err
@@ -435,15 +444,21 @@ func applyCityPostgresBackendEnv(env map[string]string, cityPath string) (bool, 
 
 func scopeBackendIsDoltlite(cityPath, scopeRoot string) bool {
 	backend := resolveBeadsBackend(cityPath)
+	if samePath(cityPath, scopeRoot) {
+		return backend.Name() == "doltlite"
+	}
+	resolved, resolvedErr := contract.ResolveScopeConfigState(fsys.OSFS{}, cityPath, scopeRoot, "")
+	if resolvedErr == nil &&
+		resolved.Kind == contract.ScopeConfigAuthoritative &&
+		resolved.State.EndpointOrigin == contract.EndpointOriginInheritedCity &&
+		backend.Name() == "doltlite" {
+		return true
+	}
 	meta, ok, err := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(scopeRoot))
 	if err == nil && ok && meta.Backend != "" {
 		return meta.Backend == "doltlite"
 	}
-	if samePath(cityPath, scopeRoot) {
-		return backend.Name() == "doltlite"
-	}
-	resolved, err := contract.ResolveScopeConfigState(fsys.OSFS{}, cityPath, scopeRoot, "")
-	if err != nil || resolved.Kind != contract.ScopeConfigAuthoritative {
+	if resolvedErr != nil || resolved.Kind != contract.ScopeConfigAuthoritative {
 		return false
 	}
 	return resolved.State.EndpointOrigin == contract.EndpointOriginInheritedCity &&
@@ -454,15 +469,12 @@ func scopeOverridesCityBackend(cityPath, scopeRoot string) bool {
 	if samePath(cityPath, scopeRoot) {
 		return false
 	}
-	meta, ok, err := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(scopeRoot))
-	if err == nil && ok && strings.TrimSpace(meta.Backend) != "" {
-		return true
-	}
 	resolved, err := contract.ResolveScopeConfigState(fsys.OSFS{}, cityPath, scopeRoot, "")
-	if err != nil || resolved.Kind != contract.ScopeConfigAuthoritative {
-		return false
+	if err == nil && resolved.Kind == contract.ScopeConfigAuthoritative {
+		return resolved.State.EndpointOrigin != contract.EndpointOriginInheritedCity
 	}
-	return resolved.State.EndpointOrigin != contract.EndpointOriginInheritedCity
+	meta, ok, err := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(scopeRoot))
+	return err == nil && ok && strings.TrimSpace(meta.Backend) != ""
 }
 
 // scopeMetadataJSONPath returns the absolute path to a scope's
@@ -737,6 +749,35 @@ func appendBdAutoBackupOptOutEnvKeys(keys []string) []string {
 	return keys
 }
 
+// bdContributorRoutingOptOutEnvKeys disables bd's fork/contributor
+// auto-routing for gc-managed bd invocations. When a gcy-style store has
+// routing.mode=auto and routing.contributor=~/.beads-planning persisted in
+// its .beads config, upstream bd silently routes `create`/`list`/`update`
+// to that out-of-band "planning" store while `show` (prefix-routed) and gc's
+// in-process dispatch (sling/scale-check/hook pickup, which open the scope
+// store directly via openCityStoreAt) keep reading the scope store. The
+// result is a three-way split brain: a bead that `bd list --rig` shows is
+// invisible to `bd show` and unresolvable by `gc sling`. gc owns scope→store
+// resolution itself (BEADS_DIR + the rig registry), so contributor routing is
+// pure downside here. Forcing routing.mode=off via the env override (which
+// beadslib's getRoutingConfigValue / resolveRoutingConfigValue honor ahead of
+// the persisted DB value) makes every gc-managed bd subcommand operate on the
+// scope's own store — the same store sling and show already use.
+//
+// BD_ROUTING_MODE is the key bd's BD-prefixed Viper env binding consumes;
+// BEADS_ROUTING_MODE is kept as a compatibility alias only.
+var bdContributorRoutingOptOutEnvKeys = [...]string{
+	"BD_ROUTING_MODE",
+	"BEADS_ROUTING_MODE",
+}
+
+func appendBdContributorRoutingOptOutEnvKeys(keys []string) []string {
+	for _, key := range bdContributorRoutingOptOutEnvKeys {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
 var (
 	beadsExecCommandRunnerWithEnv             = beads.ExecCommandRunnerWithEnv
 	processEnvSnapshotExcludingNativeDoltOpen = beads.ProcessEnvSnapshotExcludingNativeDoltOpen
@@ -748,6 +789,7 @@ var recoverManagedBDCommand = func(cityPath string) error {
 	setProjectedDoltEnvEmpty(overrides)
 	applyBdCLIRemoteSyncOptOut(overrides)
 	applyBdAutoBackupOptOut(overrides)
+	applyBdContributorRoutingOptOut(overrides)
 	environ := mergeRuntimeEnv(processEnvSnapshotExcludingNativeDoltOpen(), overrides)
 	environ = append(environ, providerLifecycleDoltPathEnv(cityPath)...)
 	if gcBin := resolveProviderLifecycleGCBinary(); gcBin != "" {
@@ -1306,6 +1348,12 @@ func bdRuntimeEnvWithError(cityPath string) (map[string]string, error) {
 	// stall bd create / gc mail send for the full 2m subprocess timeout on
 	// large datasets.
 	env["BD_EXPORT_AUTO"] = "false"
+	// Disable bd's fork/contributor auto-routing. Without this, a store with
+	// routing.mode=auto + routing.contributor (gcy's ~/.beads-planning) sends
+	// bd create/list/update to that out-of-band store while gc's in-process
+	// dispatch (sling) and bd show read the scope store — a three-way split
+	// brain. See bdContributorRoutingOptOutEnvKeys.
+	applyBdContributorRoutingOptOut(env)
 	applyBdCLIRemoteSyncOptOut(env)
 	// Suppress bd's PersistentPostRun auto-backup (the "backup_export" Dolt
 	// remote). Like BD_EXPORT_AUTO above, the env var is the bulletproof
@@ -1369,6 +1417,7 @@ func cityRuntimeProcessEnvWithError(cityPath string) ([]string, error) {
 	var projectionErr error
 	if cityUsesBdStoreContract(cityPath) {
 		source := map[string]string{"BEADS_DOLT_AUTO_START": "0"}
+		applyBdContributorRoutingOptOut(source)
 		applyBdCLIRemoteSyncOptOut(source)
 		applyBdAutoBackupOptOut(source)
 		if usedPostgres, err := applyCityPostgresBackendEnv(source, cityPath); err != nil {
@@ -1412,6 +1461,20 @@ func applyBdAutoBackupOptOut(env map[string]string) {
 	}
 	for _, key := range bdAutoBackupOptOutEnvKeys {
 		env[key] = "false"
+	}
+}
+
+// applyBdContributorRoutingOptOut forces bd's fork/contributor auto-routing
+// off for gc-managed bd invocations. It overrides any ambient or per-scope
+// routing.mode=auto config so a gcy-style store cannot siphon create/list/
+// update to ~/.beads-planning while sling/show read the scope store — the
+// three-way split brain documented on bdContributorRoutingOptOutEnvKeys.
+func applyBdContributorRoutingOptOut(env map[string]string) {
+	if env == nil {
+		return
+	}
+	for _, key := range bdContributorRoutingOptOutEnvKeys {
+		env[key] = "off"
 	}
 }
 
@@ -1515,6 +1578,7 @@ func mergeRuntimeEnv(environ []string, overrides map[string]string) []string {
 	}
 	keys = appendBdCLIRemoteSyncOptOutEnvKeys(keys)
 	keys = appendBdAutoBackupOptOutEnvKeys(keys)
+	keys = appendBdContributorRoutingOptOutEnvKeys(keys)
 	if len(overrides) > 0 {
 		for key := range overrides {
 			if !containsString(keys, key) {

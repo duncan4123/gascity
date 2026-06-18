@@ -114,48 +114,51 @@ func TestOpenStoreAtForCityContextDriftFallsBackWithPreflightDiagnostic(t *testi
 	}
 }
 
-func TestOpenStoreAtForCityDoltliteSkipsNativePreflight(t *testing.T) {
+func TestOpenStoreAtForCityDoltliteOpensNativeStore(t *testing.T) {
 	scope := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(scope, ".beads"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(scope, ".beads", "metadata.json"), []byte(`{"backend":"doltlite","database":"doltlite","dolt_database":"gascity"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	var bdOpened bool
+	files := fsys.NewFake()
+	files.Dirs[filepath.Join(scope, ".beads")] = true
+	files.Files[filepath.Join(scope, ".beads", "metadata.json")] = []byte(factoryPreflightDoltliteMetadata())
+	nativeStore := NewMemStore()
+	var nativeOpened bool
 
 	result, err := OpenStoreAtForCity(context.Background(), StoreOpenOptions{
 		ScopeRoot: scope,
 		Provider:  "bd",
 		PreflightChecker: contract.PreflightChecker{
+			FS:                  files,
+			Provider:            "bd",
+			BeadsLibraryVersion: "1.0.5",
 			BDContext: func(string) (contract.PreflightBDContext, error) {
-				t.Fatal("BDContext preflight called for doltlite scope")
-				return contract.PreflightBDContext{}, nil
+				return contract.PreflightBDContext{Backend: "doltlite", DoltMode: "embedded", BDVersion: "1.0.5", SchemaVersion: 1}, nil
+			},
+			DatabaseProjectID: func(string) (string, bool, error) {
+				return "", false, nil
 			},
 		},
 		OpenBdStore: func() (Store, error) {
-			bdOpened = true
-			return NewMemStore(), nil
+			t.Fatal("OpenBdStore called for doltlite scope")
+			return nil, nil
 		},
 		OpenNativeStore: func() (Store, error) {
-			t.Fatal("OpenNativeStore called for doltlite scope")
-			return nil, nil
+			nativeOpened = true
+			return nativeStore, nil
 		},
 	})
 	if err != nil {
 		t.Fatalf("OpenStoreAtForCity() error = %v", err)
 	}
-	if !bdOpened {
-		t.Fatal("OpenBdStore was not called")
+	if !nativeOpened {
+		t.Fatal("OpenNativeStore was not called")
 	}
-	if result.Diagnostic.Store != storeNameBdStore {
-		t.Fatalf("diagnostic store = %q, want %q", result.Diagnostic.Store, storeNameBdStore)
+	if result.Store != nativeStore {
+		t.Fatalf("Store = %T, want native store", result.Store)
 	}
-	if result.Diagnostic.NativeStoreEligible {
-		t.Fatal("diagnostic native_store_eligible = true, want false")
+	if result.Diagnostic.Store != storeNameNativeDoltStore {
+		t.Fatalf("diagnostic store = %q, want %q", result.Diagnostic.Store, storeNameNativeDoltStore)
 	}
-	if result.Diagnostic.PreflightGate != "doltlite_fallback" {
-		t.Fatalf("diagnostic preflight_gate = %q, want doltlite_fallback", result.Diagnostic.PreflightGate)
+	if !result.Diagnostic.NativeStoreEligible {
+		t.Fatal("diagnostic native_store_eligible = false, want true")
 	}
 }
 
@@ -416,5 +419,13 @@ func factoryPreflightDoltMetadata() string {
 		"dolt_mode": "server",
 		"dolt_database": "gascity",
 		"project_id": "gc-local"
+	}`
+}
+
+func factoryPreflightDoltliteMetadata() string {
+	return `{
+		"backend": "doltlite",
+		"database": "doltlite",
+		"dolt_database": "gascity"
 	}`
 }
