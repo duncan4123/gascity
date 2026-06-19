@@ -3650,6 +3650,26 @@ func TestRealizePoolDesiredSessionsBindsTriggerBeadToFreshSession(t *testing.T) 
 	if got := stored.Metadata["work_dir"]; got != wantWorkDir {
 		t.Fatalf("work_dir = %q, want %q", got, wantWorkDir)
 	}
+	if len(desired) != 1 {
+		t.Fatalf("desired sessions = %d, want 1", len(desired))
+	}
+	for _, tp := range desired {
+		if got := tp.Env["GC_TRIGGER_BEAD_ID"]; got != "gp-59q" {
+			t.Fatalf("GC_TRIGGER_BEAD_ID = %q, want gp-59q", got)
+		}
+		if got := tp.Env["GC_TRIGGER_WORK_BEAD_ID"]; got != "gp-59q" {
+			t.Fatalf("GC_TRIGGER_WORK_BEAD_ID = %q, want gp-59q", got)
+		}
+		if got := tp.Env["GC_TRIGGER_BEAD_STORE_REF"]; got != "rig:gascity-packs" {
+			t.Fatalf("GC_TRIGGER_BEAD_STORE_REF = %q, want rig:gascity-packs", got)
+		}
+		if got := tp.Env["GC_TRIGGER_WORK_STORE_REF"]; got != "rig:gascity-packs" {
+			t.Fatalf("GC_TRIGGER_WORK_STORE_REF = %q, want rig:gascity-packs", got)
+		}
+		if got := tp.Env["GC_PACKER_PACK"]; got != "packer" {
+			t.Fatalf("GC_PACKER_PACK = %q, want packer", got)
+		}
+	}
 }
 
 func TestRealizePoolDesiredSessionsBudgetExhaustionStillAllowsLaterReuse(t *testing.T) {
@@ -4796,7 +4816,7 @@ func TestCreatePoolSessionBeadWithGuardedAliasSerializesResolvedTmuxAlias(t *tes
 		err  error
 	}, 2)
 	create := func(qualifiedInstance string, slot int) {
-		bead, err := createPoolSessionBeadWithGuardedAlias(bp, cfgAgent, "worker", qualifiedInstance, slot)
+		bead, err := createPoolSessionBeadWithGuardedAlias(bp, cfgAgent, "worker", qualifiedInstance, slot, nil)
 		results <- struct {
 			bead beads.Bead
 			err  error
@@ -4873,7 +4893,7 @@ func TestCreatePoolSessionBeadWithGuardedAliasDropsTmuxAliasWhenIdentifierLockFa
 	bp := newAgentBuildParams("test-city", cityPath, cfg, runtime.NewFake(), time.Now().UTC(), store, &stderr)
 	bp.sessionBeads = newSessionBeadSnapshot(nil)
 
-	bead, err := createPoolSessionBeadWithGuardedAlias(bp, &cfg.Agents[0], "worker", "worker-1", 1)
+	bead, err := createPoolSessionBeadWithGuardedAlias(bp, &cfg.Agents[0], "worker", "worker-1", 1, nil)
 	if err != nil {
 		t.Fatalf("createPoolSessionBeadWithGuardedAlias: %v", err)
 	}
@@ -5039,7 +5059,7 @@ func TestCreatePoolSessionBeadWithGuardedAlias_LogsAliasLockSetupFailure(t *test
 		stderr:       &stderr,
 	}
 
-	bead, err := createPoolSessionBeadWithGuardedAlias(bp, nil, "claude", "claude-1", 1)
+	bead, err := createPoolSessionBeadWithGuardedAlias(bp, nil, "claude", "claude-1", 1, nil)
 	if err != nil {
 		t.Fatalf("createPoolSessionBeadWithGuardedAlias: %v", err)
 	}
@@ -5076,7 +5096,7 @@ func TestCreatePoolSessionBeadWithGuardedAliasRejectsUnsupportedTransport(t *tes
 	sp := &acpOnlyDesiredStateProvider{Fake: runtime.NewFake()}
 	bp := newAgentBuildParams("test-city", t.TempDir(), cfg, sp, time.Now().UTC(), store, io.Discard)
 
-	_, err := createPoolSessionBeadWithGuardedAlias(bp, &cfg.Agents[0], "worker", "worker", 0)
+	_, err := createPoolSessionBeadWithGuardedAlias(bp, &cfg.Agents[0], "worker", "worker", 0, nil)
 	if err == nil || !strings.Contains(err.Error(), "cannot route tmux sessions") {
 		t.Fatalf("createPoolSessionBeadWithGuardedAlias error = %v, want tmux routing rejection", err)
 	}
