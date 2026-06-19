@@ -122,6 +122,8 @@ const (
 	ParentConvoyIDMetadataKey            = "gc.parent_convoy_id"
 	PartialFragmentMetadataKey           = "gc.partial_fragment"
 	PartialRetryMetadataKey              = "gc.partial_retry"
+	PackMetadataKey                      = "gc.pack"
+	PackRootMetadataKey                  = "gc.pack_root"
 	PerDispatchModelMetadataKey          = "gc.per_dispatch_model"
 	PhaseHistoryMetadataKey              = "gc.phase_history"
 	PhaseMetadataKey                     = "gc.phase"
@@ -162,6 +164,8 @@ const (
 	TallyResultMetadataKey               = "gc.tally_result"
 	TemplateMetadataKey                  = "gc.template"
 	TerminalMetadataKey                  = "gc.terminal"
+	TriggerBeadIDMetadataKey             = "gc.trigger_bead_id"
+	TriggerBeadStoreRefMetadataKey       = "gc.trigger_bead_store_ref"
 	TruncatedMetadataKey                 = "gc.truncated"
 	VoteFieldMetadataKey                 = "gc.vote_field"
 	WorkDirMetadataKey                   = "gc.work_dir"
@@ -281,6 +285,8 @@ var KnownMetadataKeys = []string{
 	ParentConvoyIDMetadataKey,
 	PartialFragmentMetadataKey,
 	PartialRetryMetadataKey,
+	PackMetadataKey,
+	PackRootMetadataKey,
 	PerDispatchModelMetadataKey,
 	PhaseHistoryMetadataKey,
 	PhaseMetadataKey,
@@ -321,6 +327,8 @@ var KnownMetadataKeys = []string{
 	TallyResultMetadataKey,
 	TemplateMetadataKey,
 	TerminalMetadataKey,
+	TriggerBeadIDMetadataKey,
+	TriggerBeadStoreRefMetadataKey,
 	TruncatedMetadataKey,
 	VoteFieldMetadataKey,
 	WorkDirMetadataKey,
