@@ -124,6 +124,7 @@ const (
 	PartialRetryMetadataKey              = "gc.partial_retry"
 	PackMetadataKey                      = "gc.pack"
 	PackRootMetadataKey                  = "gc.pack_root"
+	PackWorkspaceMetadataKey             = "gc.pack_workspace"
 	PerDispatchModelMetadataKey          = "gc.per_dispatch_model"
 	PhaseHistoryMetadataKey              = "gc.phase_history"
 	PhaseMetadataKey                     = "gc.phase"
@@ -287,6 +288,7 @@ var KnownMetadataKeys = []string{
 	PartialRetryMetadataKey,
 	PackMetadataKey,
 	PackRootMetadataKey,
+	PackWorkspaceMetadataKey,
 	PerDispatchModelMetadataKey,
 	PhaseHistoryMetadataKey,
 	PhaseMetadataKey,

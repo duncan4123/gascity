@@ -22,6 +22,7 @@ type SessionRequest struct {
 	WorkBeadID    string // the work bead driving this request
 	WorkBeadTitle string // title of the work bead driving this request, when known
 	WorkPack      string // pack route key from the work bead, when known
+	WorkWorkspace string // explicit pack workspace route key from the work bead, when known
 	WorkStoreRef  string // city or rig:<name> store reference for WorkBeadID when known
 	// FloorGuarantee marks a "new" request created to satisfy an agent's
 	// min_active_sessions floor (as opposed to elastic scale-check demand).
@@ -192,6 +193,7 @@ func computePoolDesiredStates(
 					SessionBeadID: sessionBeadID,
 					WorkBeadID:    wb.ID,
 					WorkPack:      strings.TrimSpace(wb.Metadata[beadmeta.PackMetadataKey]),
+					WorkWorkspace: strings.TrimSpace(wb.Metadata[beadmeta.PackWorkspaceMetadataKey]),
 				})
 				continue
 			}
@@ -209,11 +211,12 @@ func computePoolDesiredStates(
 			}
 			wakeRequestedTemplates[template] = struct{}{}
 			resumeRequests = append(resumeRequests, SessionRequest{
-				Template:     template,
-				BeadPriority: beadPriority(wb),
-				Tier:         "wake-known-identity",
-				WorkBeadID:   wb.ID,
-				WorkPack:     strings.TrimSpace(wb.Metadata[beadmeta.PackMetadataKey]),
+				Template:      template,
+				BeadPriority:  beadPriority(wb),
+				Tier:          "wake-known-identity",
+				WorkBeadID:    wb.ID,
+				WorkPack:      strings.TrimSpace(wb.Metadata[beadmeta.PackMetadataKey]),
+				WorkWorkspace: strings.TrimSpace(wb.Metadata[beadmeta.PackWorkspaceMetadataKey]),
 			})
 			if trace != nil {
 				trace.recordDecision(string(TraceSitePoolWakeKnownIdentity), template, "", "assigned_work", "scheduled", traceRecordPayload{
@@ -272,6 +275,7 @@ func computePoolDesiredStates(
 				workBeadID := ""
 				workBeadTitle := ""
 				workPack := ""
+				workWorkspace := ""
 				workStoreRef := ""
 				if demand := scaleCheckDemand[template]; len(demand.WorkBeadIDs) > j {
 					workBeadID = strings.TrimSpace(demand.WorkBeadIDs[j])
@@ -280,6 +284,9 @@ func computePoolDesiredStates(
 					}
 					if demand.Packs != nil {
 						workPack = strings.TrimSpace(demand.Packs[workBeadID])
+					}
+					if demand.Workspaces != nil {
+						workWorkspace = strings.TrimSpace(demand.Workspaces[workBeadID])
 					}
 					if demand.StoreRefs != nil {
 						workStoreRef = strings.TrimSpace(demand.StoreRefs[workBeadID])
@@ -291,6 +298,7 @@ func computePoolDesiredStates(
 					WorkBeadID:    workBeadID,
 					WorkBeadTitle: workBeadTitle,
 					WorkPack:      workPack,
+					WorkWorkspace: workWorkspace,
 					WorkStoreRef:  workStoreRef,
 				}
 				allRequests = append(allRequests, req)
