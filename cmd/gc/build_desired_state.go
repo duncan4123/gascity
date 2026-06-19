@@ -92,6 +92,7 @@ type scaleCheckDemand struct {
 	WorkBeadIDs []string
 	Titles      map[string]string
 	Packs       map[string]string
+	Workspaces  map[string]string
 	StoreRefs   map[string]string
 }
 
@@ -1374,6 +1375,12 @@ func defaultScaleCheckCountsAndDemand(targets []defaultScaleCheckTarget) (map[st
 				}
 				entry.Packs[b.ID] = pack
 			}
+			if workspace := strings.TrimSpace(b.Metadata[beadmeta.PackWorkspaceMetadataKey]); workspace != "" {
+				if entry.Workspaces == nil {
+					entry.Workspaces = make(map[string]string)
+				}
+				entry.Workspaces[b.ID] = workspace
+			}
 			if entry.StoreRefs == nil {
 				entry.StoreRefs = make(map[string]string)
 			}
@@ -1401,6 +1408,9 @@ func mergeScaleCheckDemand(existing, incoming scaleCheckDemand, count int) scale
 	if existing.Packs == nil && len(incoming.Packs) > 0 {
 		existing.Packs = make(map[string]string, len(incoming.Packs))
 	}
+	if existing.Workspaces == nil && len(incoming.Workspaces) > 0 {
+		existing.Workspaces = make(map[string]string, len(incoming.Workspaces))
+	}
 	for _, id := range incoming.WorkBeadIDs[:limit] {
 		if strings.TrimSpace(id) == "" {
 			continue
@@ -1411,6 +1421,9 @@ func mergeScaleCheckDemand(existing, incoming scaleCheckDemand, count int) scale
 		}
 		if incoming.Packs != nil {
 			existing.Packs[id] = incoming.Packs[id]
+		}
+		if incoming.Workspaces != nil {
+			existing.Workspaces[id] = incoming.Workspaces[id]
 		}
 		if incoming.StoreRefs != nil {
 			existing.StoreRefs[id] = incoming.StoreRefs[id]
@@ -2425,10 +2438,87 @@ func poolTriggerWorkDir(bp *agentBuildParams, cfgAgent *config.Agent, qualifiedN
 	if err != nil || strings.TrimSpace(base) == "" {
 		return ""
 	}
-	if pack := strings.TrimSpace(request.WorkPack); pack != "" {
-		return filepath.Join(filepath.Dir(base), pack)
+	slug := packWorkspaceSlug(request)
+	if slug == "" {
+		return ""
 	}
-	return base
+	if pack := strings.TrimSpace(request.WorkPack); pack != "" {
+		return filepath.Join(filepath.Dir(base), pack, slug)
+	}
+	return filepath.Join(base, slug)
+}
+
+func packWorkspaceSlug(request SessionRequest) string {
+	if explicit := safeWorkspaceName(request.WorkWorkspace, 96); explicit != "" {
+		return explicit
+	}
+	return triggerBeadPathSlug(request.WorkBeadID, request.WorkBeadTitle)
+}
+
+func triggerBeadPathSlug(beadID, title string) string {
+	id := safePathSlug(beadID, 32)
+	titleSlug := safePathSlug(title, 72)
+	switch {
+	case id != "" && titleSlug != "":
+		return id + "-" + titleSlug
+	case id != "":
+		return id
+	default:
+		return titleSlug
+	}
+}
+
+func safeWorkspaceName(value string, maxLen int) string {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "." || value == ".." || strings.ContainsAny(value, `/\`) {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			return ""
+		}
+		if maxLen > 0 && b.Len() >= maxLen {
+			break
+		}
+	}
+	return strings.Trim(b.String(), ".-_")
+}
+
+func safePathSlug(value string, maxLen int) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range value {
+		var out rune
+		switch {
+		case r >= 'a' && r <= 'z':
+			out = r
+		case r >= '0' && r <= '9':
+			out = r
+		default:
+			out = '-'
+		}
+		if out == '-' {
+			if b.Len() == 0 || lastDash {
+				continue
+			}
+			lastDash = true
+		} else {
+			lastDash = false
+		}
+		b.WriteRune(out)
+		if maxLen > 0 && b.Len() >= maxLen {
+			break
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 func poolDesiredRequestIdentity(cfgAgent *config.Agent, slot int) (*config.Agent, string, int) {

@@ -635,8 +635,9 @@ func TestDefaultScaleCheckDemandCarriesTriggerBeadID(t *testing.T) {
 		Type:   "task",
 		Status: "open",
 		Metadata: map[string]string{
-			beadmeta.PackMetadataKey: "packer",
-			"gc.routed_to":           template,
+			beadmeta.PackMetadataKey:          "packer",
+			beadmeta.PackWorkspaceMetadataKey: "existing-workspace",
+			"gc.routed_to":                    template,
 		},
 	})
 	if err != nil {
@@ -662,6 +663,9 @@ func TestDefaultScaleCheckDemandCarriesTriggerBeadID(t *testing.T) {
 	}
 	if got := demand[template].Packs[work.ID]; got != "packer" {
 		t.Fatalf("Packs[%s] = %q, want packer", work.ID, got)
+	}
+	if got := demand[template].Workspaces[work.ID]; got != "existing-workspace" {
+		t.Fatalf("Workspaces[%s] = %q, want existing-workspace", work.ID, got)
 	}
 	if got := demand[template].StoreRefs[work.ID]; got != "rig:gascity" {
 		t.Fatalf("StoreRefs[%s] = %q, want rig:gascity", work.ID, got)
@@ -3642,7 +3646,7 @@ func TestRealizePoolDesiredSessionsBindsTriggerBeadToFreshSession(t *testing.T) 
 	if got := stored.Metadata[beadmeta.TriggerBeadStoreRefMetadataKey]; got != "rig:gascity-packs" {
 		t.Fatalf("trigger store metadata = %q, want rig:gascity-packs", got)
 	}
-	wantWorkDir := filepath.Join(bp.cityPath, ".gc", "workspaces", "packer")
+	wantWorkDir := filepath.Join(bp.cityPath, ".gc", "workspaces", "packer", "gp-59q-fix-pack-route-templates")
 	if got := stored.Metadata["work_dir"]; got != wantWorkDir {
 		t.Fatalf("work_dir = %q, want %q", got, wantWorkDir)
 	}
