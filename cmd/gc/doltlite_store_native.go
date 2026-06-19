@@ -3,17 +3,11 @@
 package main
 
 import (
-	"os"
-	"strconv"
-	"strings"
-
 	"github.com/gastownhall/gascity/internal/beads"
 )
 
-const doltliteReadFastPathEnv = "GC_DOLTLITE_READ_FASTPATH"
-
 func openOptimizedDoltliteStore(storePath, cityPath string, store *beads.BdStore) (beads.Store, bool) {
-	if !doltliteReadFastPathEnabled(cityPath, storePath) {
+	if !doltliteFastPathScope(cityPath, storePath) {
 		return nil, false
 	}
 	direct, err := beads.NewDoltliteReadStore(storePath, store)
@@ -23,11 +17,6 @@ func openOptimizedDoltliteStore(storePath, cityPath string, store *beads.BdStore
 	return nil, false
 }
 
-func doltliteReadFastPathEnabled(cityPath, storePath string) bool {
-	raw := strings.TrimSpace(os.Getenv(doltliteReadFastPathEnv))
-	if raw != "" {
-		enabled, err := strconv.ParseBool(raw)
-		return err == nil && enabled
-	}
+func doltliteFastPathScope(cityPath, storePath string) bool {
 	return scopeBackendIsDoltlite(cityPath, resolveStoreScopeRoot(cityPath, storePath))
 }
