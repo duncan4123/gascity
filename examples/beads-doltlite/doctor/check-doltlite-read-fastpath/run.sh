@@ -39,11 +39,11 @@ trap 'rm -f "$out" "$err"' EXIT
 
 if ! (
   cd "$city_root"
-  GC_DOLTLITE_READ_FASTPATH=1 timeout 10s gc beads show "$candidate" >"$out" 2>"$err"
+  timeout 10s gc beads show "$candidate" >"$out" 2>"$err"
 ); then
   echo "doltlite read path failed for bead $candidate"
   sed -n '1,10p' "$err"
   exit 1
 fi
 
-echo "doltlite read path OK with GC_DOLTLITE_READ_FASTPATH=1: gc beads show $candidate"
+echo "doltlite read path OK: gc beads show $candidate"

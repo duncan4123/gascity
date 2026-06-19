@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -742,6 +743,92 @@ func TestDoltliteReadStoreWispDependenciesStayInProcess(t *testing.T) {
 	}
 	if hasTestDep(deps, "gc-tier-wisp", "gc-tier-issue", "relates-to") {
 		t.Fatalf("deps after DepRemove = %#v, still has removed dependency", deps)
+	}
+}
+
+func TestDoltliteReadStoreDurableWritesStayInProcess(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStore(t)
+	defer closeStore()
+	store.BdStore = NewBdStore(t.TempDir(), func(_, _ string, args ...string) ([]byte, error) {
+		t.Fatalf("DoltliteReadStore durable mutation shelled out to bd %s", strings.Join(args, " "))
+		return nil, nil
+	})
+
+	title := "tier issue updated"
+	status := "in_progress"
+	assignee := "rig/durable-worker"
+	if err := store.Update("gc-tier-issue", UpdateOpts{
+		Title:        &title,
+		Status:       &status,
+		Assignee:     &assignee,
+		Labels:       []string{"durable-fastpath"},
+		RemoveLabels: []string{"tier-test"},
+		Metadata:     map[string]string{"state": "running"},
+	}); err != nil {
+		t.Fatalf("Update durable issue: %v", err)
+	}
+	got, err := store.Get("gc-tier-issue")
+	if err != nil {
+		t.Fatalf("Get updated durable issue: %v", err)
+	}
+	if got.Title != title || got.Status != status || got.Assignee != assignee || got.Metadata["state"] != "running" {
+		t.Fatalf("updated durable issue = %#v", got)
+	}
+	if !slices.Contains(got.Labels, "durable-fastpath") || slices.Contains(got.Labels, "tier-test") {
+		t.Fatalf("updated durable labels = %v", got.Labels)
+	}
+
+	if err := store.SetMetadataBatch("gc-tier-issue", map[string]string{
+		"state": "done",
+		"phase": "metadata",
+	}); err != nil {
+		t.Fatalf("SetMetadataBatch durable issue: %v", err)
+	}
+	got, err = store.Get("gc-tier-issue")
+	if err != nil {
+		t.Fatalf("Get metadata-updated durable issue: %v", err)
+	}
+	if got.Metadata["state"] != "done" || got.Metadata["phase"] != "metadata" {
+		t.Fatalf("metadata-updated durable issue = %#v", got.Metadata)
+	}
+
+	if err := store.Close("gc-tier-issue"); err != nil {
+		t.Fatalf("Close durable issue: %v", err)
+	}
+	got, err = store.Get("gc-tier-issue")
+	if err != nil {
+		t.Fatalf("Get closed durable issue: %v", err)
+	}
+	if got.Status != "closed" {
+		t.Fatalf("closed durable issue status = %q", got.Status)
+	}
+
+	if err := store.Reopen("gc-tier-issue"); err != nil {
+		t.Fatalf("Reopen durable issue: %v", err)
+	}
+	got, err = store.Get("gc-tier-issue")
+	if err != nil {
+		t.Fatalf("Get reopened durable issue: %v", err)
+	}
+	if got.Status != "open" {
+		t.Fatalf("reopened durable issue status = %q", got.Status)
+	}
+
+	if err := store.DepAdd("gc-tier-wisp", "gc-tier-issue", "relates-to"); err != nil {
+		t.Fatalf("seed cross-tier dependency: %v", err)
+	}
+	if err := store.Delete("gc-tier-issue"); err != nil {
+		t.Fatalf("Delete durable issue: %v", err)
+	}
+	if _, err := store.Get("gc-tier-issue"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get deleted durable issue err = %v, want ErrNotFound", err)
+	}
+	deps, err := store.DepList("gc-tier-wisp", "down")
+	if err != nil {
+		t.Fatalf("DepList after durable Delete: %v", err)
+	}
+	if hasTestDep(deps, "gc-tier-wisp", "gc-tier-issue", "relates-to") {
+		t.Fatalf("deps after durable Delete = %#v, still references deleted issue", deps)
 	}
 }
 
