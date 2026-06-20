@@ -2500,8 +2500,19 @@ func bindPoolSessionTriggerBead(bp *agentBuildParams, cfgAgent *config.Agent, qu
 	} else if workStoreRef == "" && oldWorkBeadID != workBeadID && strings.TrimSpace(sessionBead.Metadata[beadmeta.TriggerBeadStoreRefMetadataKey]) != "" {
 		metadata[beadmeta.TriggerBeadStoreRefMetadataKey] = ""
 	}
-	if workDir := poolTriggerWorkDir(bp, cfgAgent, qualifiedName, request); workDir != "" && strings.TrimSpace(sessionBead.Metadata["work_dir"]) != workDir {
-		metadata["work_dir"] = workDir
+	if pack := strings.TrimSpace(request.WorkPack); strings.TrimSpace(sessionBead.Metadata[beadmeta.PackMetadataKey]) != pack {
+		metadata[beadmeta.PackMetadataKey] = pack
+	}
+	if workspace := packWorkspaceSlug(request); strings.TrimSpace(sessionBead.Metadata[beadmeta.PackWorkspaceMetadataKey]) != workspace {
+		metadata[beadmeta.PackWorkspaceMetadataKey] = workspace
+	}
+	if workDir := poolTriggerWorkDir(bp, cfgAgent, qualifiedName, request); workDir != "" {
+		if strings.TrimSpace(sessionBead.Metadata[beadmeta.WorkDirMetadataKey]) != workDir {
+			metadata[beadmeta.WorkDirMetadataKey] = workDir
+		}
+		if strings.TrimSpace(sessionBead.Metadata[beadmeta.LegacyWorkDirMetadataKey]) != workDir {
+			metadata[beadmeta.LegacyWorkDirMetadataKey] = workDir
+		}
 	}
 	if len(metadata) == 0 {
 		return sessionBead, nil
@@ -2529,21 +2540,27 @@ func poolTriggerWorkDir(bp *agentBuildParams, cfgAgent *config.Agent, qualifiedN
 	if err != nil || strings.TrimSpace(base) == "" {
 		return ""
 	}
-	slug := packWorkspaceSlug(request)
-	if slug == "" {
-		return ""
-	}
 	if pack := strings.TrimSpace(request.WorkPack); pack != "" {
-		return filepath.Join(filepath.Dir(base), pack, slug)
+		packDir := filepath.Join(filepath.Dir(base), pack)
+		if workspace := packWorkspaceSlug(request); workspace != "" {
+			return filepath.Join(packDir, workspace)
+		}
+		return packDir
 	}
-	return filepath.Join(base, slug)
+	if workspace := packWorkspaceSlug(request); workspace != "" {
+		return filepath.Join(base, workspace)
+	}
+	if slug := triggerBeadPathSlug(request.WorkBeadID, request.WorkBeadTitle); slug != "" {
+		return filepath.Join(base, slug)
+	}
+	return ""
 }
 
 func packWorkspaceSlug(request SessionRequest) string {
 	if explicit := safeWorkspaceName(request.WorkWorkspace, 96); explicit != "" {
 		return explicit
 	}
-	return triggerBeadPathSlug(request.WorkBeadID, request.WorkBeadTitle)
+	return ""
 }
 
 func triggerBeadPathSlug(beadID, title string) string {

@@ -3725,7 +3725,10 @@ func TestRealizePoolDesiredSessionsBindsTriggerBeadToFreshSession(t *testing.T) 
 	if got := stored.Metadata[beadmeta.TriggerBeadStoreRefMetadataKey]; got != "rig:gascity-packs" {
 		t.Fatalf("trigger store metadata = %q, want rig:gascity-packs", got)
 	}
-	wantWorkDir := filepath.Join(bp.cityPath, ".gc", "workspaces", "packer", "gp-59q-fix-pack-route-templates")
+	if got := stored.Metadata[beadmeta.PackWorkspaceMetadataKey]; got != "" {
+		t.Fatalf("pack workspace metadata = %q, want empty default pack workspace", got)
+	}
+	wantWorkDir := filepath.Join(bp.cityPath, ".gc", "workspaces", "packer")
 	if got := stored.Metadata["work_dir"]; got != wantWorkDir {
 		t.Fatalf("work_dir = %q, want %q", got, wantWorkDir)
 	}
@@ -3748,6 +3751,130 @@ func TestRealizePoolDesiredSessionsBindsTriggerBeadToFreshSession(t *testing.T) 
 		if got := tp.Env["GC_PACKER_PACK"]; got != "packer" {
 			t.Fatalf("GC_PACKER_PACK = %q, want packer", got)
 		}
+	}
+}
+
+func TestRealizePoolDesiredSessionsHonorsExplicitPackWorkspace(t *testing.T) {
+	store := beads.NewMemStore()
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:              "worker",
+			StartCommand:      "true",
+			WorkDir:           ".gc/workspaces/{{.AgentBase}}",
+			MinActiveSessions: intPtr(0),
+			MaxActiveSessions: intPtr(1),
+		}},
+	}
+	var stderr bytes.Buffer
+	bp := newAgentBuildParams("test-city", t.TempDir(), cfg, runtime.NewFake(), time.Now().UTC(), store, &stderr)
+	bp.sessionBeads = &sessionBeadSnapshot{}
+	workspace := "gp-59q-fix-pack-route-templates"
+
+	realizePoolDesiredSessions(bp, &cfg.Agents[0], PoolDesiredState{
+		Template: "worker",
+		Requests: []SessionRequest{{
+			Template:      "worker",
+			Tier:          "new",
+			WorkBeadID:    "gp-59q",
+			WorkBeadTitle: "Fix pack route templates!",
+			WorkPack:      "packer",
+			WorkWorkspace: workspace,
+			WorkStoreRef:  "rig:gascity-packs",
+		}},
+	}, map[string]TemplateParams{}, &stderr)
+
+	sessions := bp.sessionBeads.Open()
+	if len(sessions) != 1 {
+		t.Fatalf("created session beads = %d, want 1; stderr=%q", len(sessions), stderr.String())
+	}
+	stored, err := store.Get(sessions[0].ID)
+	if err != nil {
+		t.Fatalf("Get(session): %v", err)
+	}
+	if got := stored.Metadata[beadmeta.PackWorkspaceMetadataKey]; got != workspace {
+		t.Fatalf("pack workspace metadata = %q, want %q", got, workspace)
+	}
+	wantWorkDir := filepath.Join(bp.cityPath, ".gc", "workspaces", "packer", workspace)
+	if got := stored.Metadata["work_dir"]; got != wantWorkDir {
+		t.Fatalf("work_dir = %q, want %q", got, wantWorkDir)
+	}
+}
+
+func TestRealizePoolDesiredSessionsRebindUpdatesPackWorkspaceMetadata(t *testing.T) {
+	store := beads.NewMemStore()
+	oldWorkDir := filepath.Join(t.TempDir(), "old")
+	reusable, err := store.Create(beads.Bead{
+		Title:  "worker reusable",
+		Type:   sessionBeadType,
+		Status: "open",
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"template":                              "worker",
+			"agent_name":                            "worker-7",
+			"alias":                                 "worker-7",
+			"session_name":                          "worker-reusable",
+			"state":                                 "awake",
+			"pool_slot":                             "7",
+			poolManagedMetadataKey:                  boolMetadata(true),
+			beadmeta.TriggerBeadIDMetadataKey:       "gp-old",
+			beadmeta.TriggerBeadStoreRefMetadataKey: "rig:gascity-packs",
+			beadmeta.PackMetadataKey:                "packer",
+			beadmeta.PackWorkspaceMetadataKey:       "old-workspace",
+			beadmeta.WorkDirMetadataKey:             oldWorkDir,
+			beadmeta.LegacyWorkDirMetadataKey:       oldWorkDir,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:              "worker",
+			StartCommand:      "true",
+			WorkDir:           ".gc/workspaces/{{.AgentBase}}",
+			MinActiveSessions: intPtr(0),
+			MaxActiveSessions: intPtr(1),
+		}},
+	}
+	snapshot := &sessionBeadSnapshot{}
+	snapshot.add(reusable)
+	var stderr bytes.Buffer
+	bp := newAgentBuildParams("test-city", t.TempDir(), cfg, runtime.NewFake(), time.Now().UTC(), store, &stderr)
+	bp.sessionBeads = snapshot
+	workspace := "route-smoke"
+
+	realizePoolDesiredSessions(bp, &cfg.Agents[0], PoolDesiredState{
+		Template: "worker",
+		Requests: []SessionRequest{{
+			Template:      "worker",
+			Tier:          "resume",
+			SessionBeadID: reusable.ID,
+			WorkBeadID:    "gp-new",
+			WorkBeadTitle: "Route smoke",
+			WorkPack:      "packer",
+			WorkWorkspace: workspace,
+			WorkStoreRef:  "rig:gascity-packs",
+		}},
+	}, map[string]TemplateParams{}, &stderr)
+
+	stored, err := store.Get(reusable.ID)
+	if err != nil {
+		t.Fatalf("Get(session): %v", err)
+	}
+	wantWorkDir := filepath.Join(bp.cityPath, ".gc", "workspaces", "packer", workspace)
+	if got := stored.Metadata[beadmeta.TriggerBeadIDMetadataKey]; got != "gp-new" {
+		t.Fatalf("trigger bead metadata = %q, want gp-new", got)
+	}
+	if got := stored.Metadata[beadmeta.PackWorkspaceMetadataKey]; got != workspace {
+		t.Fatalf("pack workspace metadata = %q, want %q", got, workspace)
+	}
+	if got := stored.Metadata[beadmeta.WorkDirMetadataKey]; got != wantWorkDir {
+		t.Fatalf("gc.work_dir = %q, want %q", got, wantWorkDir)
+	}
+	if got := stored.Metadata[beadmeta.LegacyWorkDirMetadataKey]; got != wantWorkDir {
+		t.Fatalf("work_dir = %q, want %q", got, wantWorkDir)
 	}
 }
 
