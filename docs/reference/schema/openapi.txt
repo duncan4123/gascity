@@ -6644,6 +6644,9 @@
           },
           "title": {
             "type": "string"
+          },
+          "work_dir": {
+            "type": "string"
           }
         },
         "required": [

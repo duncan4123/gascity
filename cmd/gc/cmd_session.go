@@ -765,7 +765,7 @@ func renderSessionListFromAPI(cr api.CachedRead[[]SessionView], jsonOutput bool,
 	}
 
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tTEMPLATE\tSTATE\tREASON\tTARGET\tTITLE\tAGE\tLAST ACTIVE") //nolint:errcheck // best-effort stdout
+	fmt.Fprintln(w, "ID\tTEMPLATE\tSTATE\tREASON\tTARGET\tTITLE\tWORKDIR\tAGE\tLAST ACTIVE") //nolint:errcheck // best-effort stdout
 	for _, s := range cr.Body {
 		state := s.State
 		if state == "" {
@@ -777,9 +777,10 @@ func renderSessionListFromAPI(cr api.CachedRead[[]SessionView], jsonOutput bool,
 		}
 		target := sessionViewTarget(s)
 		title := sessionViewTitle(s)
+		workDir := sessionViewWorkDir(s)
 		age := sessionViewAge(s.CreatedAt)
 		lastActive := sessionViewLastActive(s.LastActive)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Template, state, reason, target, title, age, lastActive) //nolint:errcheck // best-effort stdout
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Template, state, reason, target, title, workDir, age, lastActive) //nolint:errcheck // best-effort stdout
 	}
 	_ = w.Flush() //nolint:errcheck // best-effort stdout
 
@@ -811,6 +812,10 @@ func sessionViewTitle(s SessionView) string {
 		return title[:27] + "..."
 	}
 	return title
+}
+
+func sessionViewWorkDir(s SessionView) string {
+	return sessionListDisplayValue(s.WorkDir)
 }
 
 // sessionViewAge formats a CreatedAt RFC3339 string the same way the
@@ -952,7 +957,7 @@ func doSessionListFallback(stateFilter, templateFilter string, jsonOutput bool, 
 	cachedSP := &attachmentCachingProvider{Provider: sp, cache: attachedSet}
 
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tTEMPLATE\tSTATE\tREASON\tTARGET\tTITLE\tAGE\tLAST ACTIVE\tLAST NUDGE") //nolint:errcheck // best-effort stdout
+	fmt.Fprintln(w, "ID\tTEMPLATE\tSTATE\tREASON\tTARGET\tTITLE\tWORKDIR\tAGE\tLAST ACTIVE\tLAST NUDGE") //nolint:errcheck // best-effort stdout
 	for _, s := range sessions {
 		state := string(s.State)
 		if s.State == "" {
@@ -961,6 +966,7 @@ func doSessionListFallback(stateFilter, templateFilter string, jsonOutput bool, 
 		reason := sessionReason(s, beadIndex, cfg, cachedSP, poolDesired, readyWaitSet)
 		target := sessionListTarget(s)
 		title := sessionListTitle(s)
+		workDir := sessionListWorkDir(s)
 		age := formatDuration(time.Since(s.CreatedAt))
 		lastActive := "-"
 		if !s.LastActive.IsZero() {
@@ -970,7 +976,7 @@ func doSessionListFallback(stateFilter, templateFilter string, jsonOutput bool, 
 		if !s.LastNudgeDeliveredAt.IsZero() {
 			lastNudge = formatDuration(time.Since(s.LastNudgeDeliveredAt)) + " ago"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Template, state, reason, target, title, age, lastActive, lastNudge) //nolint:errcheck // best-effort stdout
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Template, state, reason, target, title, workDir, age, lastActive, lastNudge) //nolint:errcheck // best-effort stdout
 	}
 	_ = w.Flush() //nolint:errcheck // best-effort stdout
 	return 0
@@ -1142,6 +1148,18 @@ func sessionListTitle(s session.Info) string {
 		title = title[:27] + "..."
 	}
 	return title
+}
+
+func sessionListWorkDir(s session.Info) string {
+	return sessionListDisplayValue(s.WorkDir)
+}
+
+func sessionListDisplayValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	return value
 }
 
 // attachmentCachingProvider wraps a runtime.Provider and caches IsAttached
