@@ -164,6 +164,14 @@ verify_linked_binary() {
   fi
 }
 
+verify_gc_binary() {
+  local output="$1"
+  verify_linked_binary "$output" "gc"
+  if ! go tool nm "$output" 2>/dev/null | grep -Fq 'github.com/gastownhall/gascity/internal/beads.(*DoltliteReadStore)'; then
+    die "built gc binary is missing native DoltLite read-store symbols"
+  fi
+}
+
 path_under_home() {
   local path="$1"
   [ -n "$path" ] && [ -n "${HOME:-}" ] && [[ "$path" == "$HOME"/* ]]
@@ -577,8 +585,8 @@ build_gc() {
       ./cmd/gc
   )
 
-  verify_linked_binary "$GC_OUTPUT" "gc"
-  echo "built libdoltlite-linked gc: $GC_OUTPUT"
+  verify_gc_binary "$GC_OUTPUT"
+  echo "built libdoltlite-linked native DoltLite beads gc: $GC_OUTPUT"
 
   local installed_to=""
   if [ "$INSTALL_BUILT" = "1" ]; then

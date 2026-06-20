@@ -1204,7 +1204,7 @@ func openStoreResultAtForCity(storePath, cityPath string) (beads.StoreOpenResult
 			return beads.StoreOpenResult{
 				Store: wrapStoreWithBeadPolicies(optimized, cfg),
 				Diagnostic: beads.BeadsDiagnostic{
-					Store:               beads.BeadsStoreNameNativeDoltStore,
+					Store:               beads.BeadsStoreNameDoltliteReadStore,
 					NativeStoreEligible: true,
 				},
 			}, nil
