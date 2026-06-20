@@ -1169,6 +1169,34 @@ func TestDoltliteReadStoreSetMetadataBatchUpdatesWisp(t *testing.T) {
 	}
 }
 
+func TestDoltliteReadStoreSetMetadataBatchCoercesNonStringWispMetadata(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStore(t)
+	defer closeStore()
+	writer := openTestDoltliteWriter(t, store.db)
+	defer writer.Close() //nolint:errcheck // test cleanup
+
+	if _, err := writer.Exec(
+		`UPDATE wisps SET metadata = ? WHERE id = ?`,
+		`{"kind":"wisp","gc.control_epoch":3,"configured_named_session":true}`,
+		"gc-tier-wisp",
+	); err != nil {
+		t.Fatalf("seed raw wisp metadata: %v", err)
+	}
+	if err := store.SetMetadataBatch("gc-tier-wisp", map[string]string{"state": "running"}); err != nil {
+		t.Fatalf("SetMetadataBatch wisp: %v", err)
+	}
+	got, err := store.Get("gc-tier-wisp")
+	if err != nil {
+		t.Fatalf("Get wisp: %v", err)
+	}
+	if got.Metadata["kind"] != "wisp" ||
+		got.Metadata["gc.control_epoch"] != "3" ||
+		got.Metadata["configured_named_session"] != "true" ||
+		got.Metadata["state"] != "running" {
+		t.Fatalf("wisp metadata = %#v, want coerced existing values and new state", got.Metadata)
+	}
+}
+
 func TestDoltliteReadStoreConcurrentMetadataWritesPreserveBothKeys(t *testing.T) {
 	store, closeStore := newTestDoltliteReadStore(t)
 	defer closeStore()
