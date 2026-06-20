@@ -1325,8 +1325,13 @@ func (s *DoltliteReadStore) loadDoltliteMetadata(tx *sql.Tx, table, id string) (
 	}
 	metadata := make(map[string]string)
 	if raw.Valid && strings.TrimSpace(raw.String) != "" {
-		if err := json.Unmarshal([]byte(raw.String), &metadata); err != nil {
+		var decoded StringMap
+		if err := json.Unmarshal([]byte(raw.String), &decoded); err != nil {
 			return nil, fmt.Errorf("parsing wisp metadata: %w", err)
+		}
+		metadata = map[string]string(decoded)
+		if metadata == nil {
+			metadata = make(map[string]string)
 		}
 	}
 	return metadata, nil
