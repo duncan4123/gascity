@@ -988,7 +988,11 @@ func finalizeCanonicalBdScopeInit(cityPath, dir, prefix, doltDatabase string) er
 	if strings.TrimSpace(doltDatabase) == "" {
 		doltDatabase = defaultScopeDoltDatabase(cityPath, dir, prefix)
 	}
-	if isReservedManagedDoltDatabase(doltDatabase) {
+	if scopeBackendIsDoltlite(cityPath, dir) {
+		if err := enforceCanonicalDoltliteScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase); err != nil {
+			return err
+		}
+	} else if isReservedManagedDoltDatabase(doltDatabase) {
 		if err := ensureCanonicalScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase); err != nil {
 			return err
 		}

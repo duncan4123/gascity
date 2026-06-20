@@ -22,6 +22,8 @@ const (
 	BeadsStoreNameExecStore = "ExecStore"
 	// BeadsStoreNameNativeDoltStore is the diagnostic store name for native Dolt stores.
 	BeadsStoreNameNativeDoltStore = "NativeDoltStore"
+	// BeadsStoreNameDoltliteReadStore is the diagnostic store name for optimized DoltLite stores.
+	BeadsStoreNameDoltliteReadStore = "DoltliteReadStore"
 
 	storeNameBdStore         = BeadsStoreNameBdStore
 	storeNameFileStore       = BeadsStoreNameFileStore

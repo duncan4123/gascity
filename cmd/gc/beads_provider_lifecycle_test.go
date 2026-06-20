@@ -1223,6 +1223,49 @@ backend = "doltlite"
 	}
 }
 
+func TestNormalizeCanonicalBdScopeFilesForInitUsesDoltliteMetadata(t *testing.T) {
+	cityPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cityPath, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte(`[workspace]
+name = "demo"
+
+[beads]
+provider = "bd"
+backend = "doltlite"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, ".beads", "metadata.json"), []byte(`{
+  "backend": "dolt",
+  "database": "dolt",
+  "dolt_database": "hq",
+  "dolt_mode": "server"
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := normalizeCanonicalBdScopeFilesForInit(cityPath, cityPath, "dg", "hq"); err != nil {
+		t.Fatalf("normalizeCanonicalBdScopeFilesForInit: %v", err)
+	}
+
+	meta, err := os.ReadFile(filepath.Join(cityPath, ".beads", "metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	metaText := string(meta)
+	for _, want := range []string{`"backend": "doltlite"`, `"database": "doltlite"`, `"dolt_database": "hq"`} {
+		if !strings.Contains(metaText, want) {
+			t.Fatalf("metadata missing %q:\n%s", want, metaText)
+		}
+	}
+	if strings.Contains(metaText, `"dolt_mode": "server"`) {
+		t.Fatalf("metadata retained server mode:\n%s", metaText)
+	}
+}
+
 func TestEnsureBeadsProvider_bdAcceptsHealthyServerAfterStartError(t *testing.T) {
 	dir := t.TempDir()
 	script := gcBeadsBdScriptPath(dir)
@@ -7461,6 +7504,46 @@ func TestGcBeadsBdInitDoltliteInitializesDelegatedBdWrites(t *testing.T) {
 	}
 	if createdIssue.Title != "probe task" {
 		t.Fatalf("created issue title = %q, want probe task", createdIssue.Title)
+	}
+}
+
+func TestGcBeadsBdStartDoltliteDoesNotStartManagedDolt(t *testing.T) {
+	cityPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cityPath, ".gc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[workspace]\nname = \"demo\"\n\n[beads]\nprovider = \"bd\"\nbackend = \"doltlite\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	materializeBuiltinPacksForTest(t, cityPath)
+	script := gcBeadsBdScriptPath(cityPath)
+
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "dolt-called")
+	fakeDolt := filepath.Join(binDir, "dolt")
+	if err := os.WriteFile(fakeDolt, []byte("#!/bin/sh\necho called >\""+marker+"\"\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(script, "start")
+	cmd.Env = sanitizedBaseEnv(append(gcBeadsBdTestHomeEnv(t),
+		"GC_CITY_PATH="+cityPath,
+		"GC_BEADS_BACKEND=doltlite",
+		"BEADS_BACKEND=doltlite",
+		"PATH="+strings.Join([]string{binDir, os.Getenv("PATH")}, string(os.PathListSeparator)),
+	)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("gc-beads-bd doltlite start failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("doltlite start invoked dolt, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cityPath, ".gc", "runtime", "packs", "dolt", "dolt-provider-state.json")); !os.IsNotExist(err) {
+		t.Fatalf("doltlite start wrote managed Dolt runtime state, stat err = %v", err)
 	}
 }
 

@@ -825,7 +825,7 @@ func doSling(opts slingOpts, deps slingDeps, querier BeadQuerier, stdout, stderr
 		return dryRunSingle(opts, deps, querier, stdout, stderr)
 	}
 	if result.NudgeAgent != nil {
-		doSlingNudge(result.NudgeAgent, deps.CityName, deps.CityPath, deps.Cfg, deps.SP, deps.Store, stdout, stderr)
+		doSlingNudge(result.NudgeAgent, deps.CityName, deps.CityPath, deps.Cfg, deps.SP, deps.Store, result.BeadID, stdout, stderr)
 	}
 	return 0
 }
@@ -929,7 +929,7 @@ func doSlingBatchWithJSON(opts slingOpts, deps slingDeps, querier BeadChildQueri
 		return dryRunSingle(opts, deps, querier, humanStdout, stderr)
 	}
 	if result.NudgeAgent != nil {
-		doSlingNudge(result.NudgeAgent, deps.CityName, deps.CityPath, deps.Cfg, deps.SP, deps.Store, humanStdout, stderr)
+		doSlingNudge(result.NudgeAgent, deps.CityName, deps.CityPath, deps.Cfg, deps.SP, deps.Store, result.BeadID, humanStdout, stderr)
 	}
 	if jsonOutput {
 		return writeSlingJSONResult(result, jsonStdout, stderr)
@@ -1429,7 +1429,7 @@ func checkBeadState(q BeadQuerier, beadID string, a config.Agent) beadCheckResul
 // running, pokes the controller to trigger an immediate reconciler tick
 // so WakeWork can wake the session without waiting for the next patrol.
 func doSlingNudge(a *config.Agent, cityName, cityPath string, cfg *config.City,
-	sp runtime.Provider, store beads.Store, stdout, stderr io.Writer,
+	sp runtime.Provider, store beads.Store, routedBeadID string, stdout, stderr io.Writer,
 ) {
 	st := cfg.Workspace.SessionTemplate
 
@@ -1438,23 +1438,37 @@ func doSlingNudge(a *config.Agent, cityName, cityPath string, cfg *config.City,
 		return
 	}
 
+	routedBead, hasRoutedBead := slingNudgeRoutedBead(store, routedBeadID)
+
 	if a.SupportsInstanceExpansion() {
 		sp0 := scaleParamsFor(a)
+		deliverRef := func(sessionStore beads.Store, ref poolSessionRef) bool {
+			member := *a
+			if ref.qualifiedInstance != "" {
+				if resolved, ok := resolveAgentIdentity(cfg, ref.qualifiedInstance, currentRigContext(cfg)); ok {
+					member = resolved
+				} else {
+					fmt.Fprintf(stderr, "gc sling: agent %q not found in config\n", ref.qualifiedInstance) //nolint:errcheck // best-effort
+					return true
+				}
+			}
+			target := buildSlingNudgeTarget(member, cityName, cityPath, cfg, sessionStore, ref.sessionName)
+			deliverSlingNudge(target, sp, sessionStore, cityPath, stdout, stderr)
+			return true
+		}
 		tryNudgeStore := func(sessionStore beads.Store) bool {
 			refs := resolvePoolSessionRefs(sessionStore, cfg, a.Name, a.Dir, sp0, a, cityName, st, sp, stderr)
+			if hasRoutedBead {
+				if ref, ok := resolvePackRoutedSlingNudgeRef(sessionStore, a, routedBead, refs); ok {
+					return deliverRef(sessionStore, ref)
+				}
+			}
 			for _, ref := range refs {
 				running, err := workerSessionTargetRunningWithConfig(cityPath, sessionStore, sp, cfg, ref.sessionName)
 				if err != nil || !running {
 					continue
 				}
-				member, ok := resolveAgentIdentity(cfg, ref.qualifiedInstance, currentRigContext(cfg))
-				if !ok {
-					fmt.Fprintf(stderr, "gc sling: agent %q not found in config\n", ref.qualifiedInstance) //nolint:errcheck // best-effort
-					return true
-				}
-				target := buildSlingNudgeTarget(member, cityName, cityPath, cfg, sessionStore, ref.sessionName)
-				deliverSlingNudge(target, sp, sessionStore, cityPath, stdout, stderr)
-				return true
+				return deliverRef(sessionStore, ref)
 			}
 			return false
 		}
@@ -1481,6 +1495,96 @@ func doSlingNudge(a *config.Agent, cityName, cityPath string, cfg *config.City,
 	sn := lookupSessionNameOrLegacy(store, cityName, a.QualifiedName(), st)
 	target := buildSlingNudgeTarget(*a, cityName, cityPath, cfg, store, sn)
 	deliverSlingNudge(target, sp, store, cityPath, stdout, stderr)
+}
+
+func slingNudgeRoutedBead(store beads.Store, beadID string) (beads.Bead, bool) {
+	if store == nil || strings.TrimSpace(beadID) == "" {
+		return beads.Bead{}, false
+	}
+	bead, err := store.Get(strings.TrimSpace(beadID))
+	if err != nil {
+		return beads.Bead{}, false
+	}
+	return bead, true
+}
+
+func resolvePackRoutedSlingNudgeRef(store beads.Store, a *config.Agent, routedBead beads.Bead, refs []poolSessionRef) (poolSessionRef, bool) {
+	if store == nil || a == nil {
+		return poolSessionRef{}, false
+	}
+	pack := strings.TrimSpace(routedBead.Metadata[beadmeta.PackMetadataKey])
+	workspace := strings.TrimSpace(routedBead.Metadata[beadmeta.PackWorkspaceMetadataKey])
+	if pack == "" && workspace == "" {
+		return poolSessionRef{}, false
+	}
+	bySessionName := make(map[string]poolSessionRef, len(refs))
+	for _, ref := range refs {
+		if ref.sessionName != "" {
+			bySessionName[ref.sessionName] = ref
+		}
+	}
+	sessions, err := session.ListAllSessionBeads(store, beads.ListQuery{})
+	if err != nil {
+		return poolSessionRef{}, false
+	}
+	template := a.QualifiedName()
+	for _, sessionBead := range sessions {
+		if strings.TrimSpace(sessionBead.Metadata["template"]) != template {
+			continue
+		}
+		if !slingNudgeSessionMatchesPackWorkspace(sessionBead, pack, workspace) {
+			continue
+		}
+		sessionName := strings.TrimSpace(sessionBead.Metadata["session_name"])
+		if sessionName == "" {
+			continue
+		}
+		if ref, ok := bySessionName[sessionName]; ok {
+			return ref, true
+		}
+		qualified := strings.TrimSpace(sessionBead.Metadata["agent_name"])
+		if qualified == "" {
+			qualified = strings.TrimSpace(sessionBead.Metadata["alias"])
+		}
+		if qualified == "" {
+			qualified = template
+		}
+		return poolSessionRef{qualifiedInstance: qualified, sessionName: sessionName}, true
+	}
+	return poolSessionRef{}, false
+}
+
+func slingNudgeSessionMatchesPackWorkspace(sessionBead beads.Bead, pack, workspace string) bool {
+	if strings.TrimSpace(sessionBead.Metadata[beadmeta.PackMetadataKey]) == pack &&
+		strings.TrimSpace(sessionBead.Metadata[beadmeta.PackWorkspaceMetadataKey]) == workspace {
+		return true
+	}
+	for _, key := range []string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
+		if slingNudgeWorkDirMatchesPackWorkspace(sessionBead.Metadata[key], pack, workspace) {
+			return true
+		}
+	}
+	return false
+}
+
+func slingNudgeWorkDirMatchesPackWorkspace(workDir, pack, workspace string) bool {
+	workDir = filepath.ToSlash(strings.TrimSpace(workDir))
+	pack = strings.TrimSpace(pack)
+	workspace = strings.Trim(strings.TrimSpace(workspace), "/")
+	if workDir == "" || pack == "" {
+		return false
+	}
+	parts := strings.Split(workDir, "/")
+	for i := 0; i+4 < len(parts); i++ {
+		if parts[i] != ".gc" || parts[i+1] != "workspaces" || parts[i+3] != "packs" {
+			continue
+		}
+		if parts[i+4] != pack {
+			continue
+		}
+		return strings.Join(parts[i+5:], "/") == workspace
+	}
+	return false
 }
 
 // pokeController sends a "poke" command to the controller socket to
