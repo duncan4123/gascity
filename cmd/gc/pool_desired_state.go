@@ -347,6 +347,8 @@ func poolInFlightNewRequests(cfg *config.City, sessionBeads []beads.Bead, resume
 				SessionBeadID: sb.ID,
 				WorkBeadID:    strings.TrimSpace(sb.Metadata[beadmeta.TriggerBeadIDMetadataKey]),
 				WorkStoreRef:  strings.TrimSpace(sb.Metadata[beadmeta.TriggerBeadStoreRefMetadataKey]),
+				WorkPack:      strings.TrimSpace(sb.Metadata[beadmeta.PackMetadataKey]),
+				WorkWorkspace: strings.TrimSpace(sb.Metadata[beadmeta.PackWorkspaceMetadataKey]),
 			})
 		}
 	}
