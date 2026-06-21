@@ -3799,6 +3799,100 @@ func TestRealizePoolDesiredSessionsRebindUpdatesPackWorkspaceMetadata(t *testing
 	}
 }
 
+func TestRealizePoolDesiredSessionsDoesNotReuseMismatchedPackWorkspace(t *testing.T) {
+	store := beads.NewMemStore()
+	oldWorkDir := filepath.Join(t.TempDir(), ".gc", "workspaces", "megamerge-workflow")
+	reusable, err := store.Create(beads.Bead{
+		Title:  "worker reusable",
+		Type:   sessionBeadType,
+		Status: "open",
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"template":                        "worker",
+			"agent_name":                      "worker-7",
+			"alias":                           "worker-7",
+			"session_name":                    "worker-reusable",
+			"state":                           "awake",
+			"pool_slot":                       "7",
+			poolManagedMetadataKey:            boolMetadata(true),
+			beadmeta.PackMetadataKey:          "megamerge-workflow",
+			beadmeta.WorkDirMetadataKey:       oldWorkDir,
+			beadmeta.LegacyWorkDirMetadataKey: oldWorkDir,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:              "worker",
+			StartCommand:      "true",
+			WorkDir:           ".gc/workspaces/{{.AgentBase}}",
+			MinActiveSessions: intPtr(0),
+			MaxActiveSessions: intPtr(10),
+		}},
+	}
+	snapshot := &sessionBeadSnapshot{}
+	snapshot.add(reusable)
+	var stderr bytes.Buffer
+	bp := newAgentBuildParams("test-city", t.TempDir(), cfg, runtime.NewFake(), time.Now().UTC(), store, &stderr)
+	bp.sessionBeads = snapshot
+	desired := map[string]TemplateParams{}
+
+	realizePoolDesiredSessions(bp, &cfg.Agents[0], PoolDesiredState{
+		Template: "worker",
+		Requests: []SessionRequest{{
+			Template:      "worker",
+			Tier:          "new",
+			WorkBeadID:    "gp-new",
+			WorkBeadTitle: "Align jjw pack",
+			WorkPack:      "jjw",
+			WorkStoreRef:  "rig:gascity-packs",
+		}},
+	}, desired, &stderr)
+
+	sessions := bp.sessionBeads.Open()
+	if len(sessions) != 2 {
+		t.Fatalf("open session beads = %d, want existing plus fresh routed session; stderr=%q", len(sessions), stderr.String())
+	}
+	oldStored, err := store.Get(reusable.ID)
+	if err != nil {
+		t.Fatalf("Get(old session): %v", err)
+	}
+	if got := oldStored.Metadata[beadmeta.PackMetadataKey]; got != "megamerge-workflow" {
+		t.Fatalf("old session pack = %q, want megamerge-workflow", got)
+	}
+	if got := oldStored.Metadata[beadmeta.TriggerBeadIDMetadataKey]; got != "" {
+		t.Fatalf("old session trigger bead = %q, want unchanged empty", got)
+	}
+	if _, ok := desired["worker-reusable"]; ok {
+		t.Fatalf("desired sessions included mismatched reusable session; keys=%v", mapKeys(desired))
+	}
+
+	var fresh beads.Bead
+	for _, session := range sessions {
+		if session.ID != reusable.ID {
+			fresh = session
+			break
+		}
+	}
+	if fresh.ID == "" {
+		t.Fatalf("fresh session not found in %#v", sessions)
+	}
+	freshStored, err := store.Get(fresh.ID)
+	if err != nil {
+		t.Fatalf("Get(fresh session): %v", err)
+	}
+	if got := freshStored.Metadata[beadmeta.PackMetadataKey]; got != "jjw" {
+		t.Fatalf("fresh session pack = %q, want jjw", got)
+	}
+	wantWorkDir := filepath.Join(bp.cityPath, ".gc", "workspaces", "jjw")
+	if got := freshStored.Metadata[beadmeta.WorkDirMetadataKey]; got != wantWorkDir {
+		t.Fatalf("fresh gc.work_dir = %q, want %q", got, wantWorkDir)
+	}
+}
+
 func TestRealizePoolDesiredSessionsBudgetExhaustionStillAllowsLaterReuse(t *testing.T) {
 	maxWakes := 1
 	store := beads.NewMemStore()

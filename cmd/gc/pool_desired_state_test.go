@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 )
@@ -790,6 +791,39 @@ func TestComputePoolDesiredStates_CapsNewDemandBeforeMaterializingRequests(t *te
 		trace.decisionCounts[string(TraceSitePoolWorkspaceCap)]
 	if capRejections != 0 {
 		t.Fatalf("cap rejections = %d, want 0; new demand should be capped before request materialization", capRejections)
+	}
+}
+
+func TestComputePoolDesiredStates_InFlightNewPreservesPackWorkspace(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{poolAgent("claude", "", intPtr(3), 0)},
+	}
+	session := poolSessionBeadWithState("sess-1", "creating", boolMetadata(true))
+	session.Metadata[beadmeta.TriggerBeadIDMetadataKey] = "gp-qmh.5"
+	session.Metadata[beadmeta.TriggerBeadStoreRefMetadataKey] = "rig:gascity-packs"
+	session.Metadata[beadmeta.PackMetadataKey] = "jjw"
+	session.Metadata[beadmeta.PackWorkspaceMetadataKey] = "gp-qmh-5-jjw-align-workspace-pack-structure-with-upstream-packs"
+
+	result := computePoolDesiredStates(cfg, nil, []beads.Bead{session}, map[string]int{"claude": 1}, nil, nil)
+
+	if len(result) != 1 || len(result[0].Requests) != 1 {
+		t.Fatalf("requests = %#v, want one in-flight new request", result)
+	}
+	req := result[0].Requests[0]
+	if req.SessionBeadID != "sess-1" {
+		t.Fatalf("SessionBeadID = %q, want sess-1", req.SessionBeadID)
+	}
+	if req.WorkBeadID != "gp-qmh.5" {
+		t.Fatalf("WorkBeadID = %q, want gp-qmh.5", req.WorkBeadID)
+	}
+	if req.WorkStoreRef != "rig:gascity-packs" {
+		t.Fatalf("WorkStoreRef = %q, want rig:gascity-packs", req.WorkStoreRef)
+	}
+	if req.WorkPack != "jjw" {
+		t.Fatalf("WorkPack = %q, want jjw", req.WorkPack)
+	}
+	if req.WorkWorkspace != "gp-qmh-5-jjw-align-workspace-pack-structure-with-upstream-packs" {
+		t.Fatalf("WorkWorkspace = %q, want task workspace", req.WorkWorkspace)
 	}
 }
 

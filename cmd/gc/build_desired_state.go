@@ -3159,7 +3159,7 @@ func selectOrPlanPoolSessionBead(
 		bead, err := normalizeNonExpandingPoolSessionBeadForSelection(bp, cfgAgent, *preferred)
 		return bead, slot, nil, err
 	}
-	if canonical, ok := findReusableCanonicalNonExpandingPoolSessionBead(bp, cfgAgent, template, used); ok {
+	if canonical, ok := findReusableCanonicalNonExpandingPoolSessionBead(bp, cfgAgent, template, request, used); ok {
 		slot := claimDesiredPoolSlot(bp.city, cfgAgent, canonical, usedSlots)
 		bead, err := normalizeNonExpandingPoolSessionBeadForSelection(bp, cfgAgent, canonical)
 		return bead, slot, nil, err
@@ -3167,7 +3167,7 @@ func selectOrPlanPoolSessionBead(
 	// Reuse an existing active/creating session bead. Skip drained, closed,
 	// and asleep — asleep ephemerals are not restarted; a fresh session is
 	// created instead. The reconciler closes orphaned asleep beads.
-	for _, bead := range reusablePoolSessionBeads(bp, cfgAgent, template, used) {
+	for _, bead := range reusablePoolSessionBeads(bp, cfgAgent, template, request, used) {
 		if desiredName := strings.TrimSpace(bead.Metadata["session_name"]); desiredName != "" {
 			slot := claimDesiredPoolSlot(bp.city, cfgAgent, bead, usedSlots)
 			if slot == 0 && !cfgAgent.UsesCanonicalSingletonPoolIdentity() {
@@ -3244,7 +3244,7 @@ func claimDesiredPoolSlot(cfg *config.City, cfgAgent *config.Agent, sessionBead 
 	return claimPoolSlotWithConfig(cfg, cfgAgent, sessionBead, used)
 }
 
-func reusablePoolSessionBead(bp *agentBuildParams, cfgAgent *config.Agent, template string, bead beads.Bead, used map[string]bool) bool {
+func reusablePoolSessionBead(bp *agentBuildParams, cfgAgent *config.Agent, template string, request SessionRequest, bead beads.Bead, used map[string]bool) bool {
 	if bp == nil {
 		return false
 	}
@@ -3269,19 +3269,30 @@ func reusablePoolSessionBead(bp *agentBuildParams, cfgAgent *config.Agent, templ
 	if sessionBeadHasAssignedWork(bp.assignedWorkBeads, bead) {
 		return false
 	}
+	if !poolSessionMatchesRequestedPackWorkspace(bead, request) {
+		return false
+	}
 	if used != nil && used[bead.ID] {
 		return false
 	}
 	return resolvedSessionTemplate(bead, reuseTemplateConfig(bp)) == template
 }
 
-func reusablePoolSessionBeads(bp *agentBuildParams, cfgAgent *config.Agent, template string, used map[string]bool) []beads.Bead {
+func poolSessionMatchesRequestedPackWorkspace(bead beads.Bead, request SessionRequest) bool {
+	pack := strings.TrimSpace(request.WorkPack)
+	if pack == "" {
+		return true
+	}
+	return slingNudgeSessionMatchesPackWorkspace(bead, pack, packWorkspaceSlug(request))
+}
+
+func reusablePoolSessionBeads(bp *agentBuildParams, cfgAgent *config.Agent, template string, request SessionRequest, used map[string]bool) []beads.Bead {
 	if bp == nil || bp.sessionBeads == nil {
 		return nil
 	}
 	candidates := []beads.Bead{}
 	for _, bead := range bp.sessionBeads.Open() {
-		if reusablePoolSessionBead(bp, cfgAgent, template, bead, used) {
+		if reusablePoolSessionBead(bp, cfgAgent, template, request, bead, used) {
 			candidates = append(candidates, bead)
 		}
 	}
@@ -3302,13 +3313,14 @@ func findReusableCanonicalNonExpandingPoolSessionBead(
 	bp *agentBuildParams,
 	cfgAgent *config.Agent,
 	template string,
+	request SessionRequest,
 	used map[string]bool,
 ) (beads.Bead, bool) {
 	if bp == nil || bp.sessionBeads == nil || !cfgAgent.UsesCanonicalSingletonPoolIdentity() {
 		return beads.Bead{}, false
 	}
 	canonical := cfgAgent.QualifiedName()
-	for _, bead := range reusablePoolSessionBeads(bp, cfgAgent, template, used) {
+	for _, bead := range reusablePoolSessionBeads(bp, cfgAgent, template, request, used) {
 		if strings.TrimSpace(bead.Metadata["session_name"]) == "" {
 			continue
 		}
