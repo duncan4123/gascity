@@ -57,13 +57,12 @@ maintenance commands used by DoltLite health/maintenance orders, and the
 pack-local doctor entrypoint that `gc doctor` can discover during builtin pack
 materialization. That is stronger than a normal optional workflow pack.
 
-The weak point in the current case for builtin status is that the source pack
-does not yet own much doctor coverage: it has only `check-sqlite3`, while the
-operationally interesting checks are either in the `bd` source doctor package,
-in Gas City's `gc bd` bridge, or in a runtime/imported pack copy. The audit
-should decide whether to move those checks into this builtin source pack,
-whether to rely on `bd doctor`, or whether the pack can later become a normal
-import once install/bootstrap no longer depends on embedded availability.
+The source pack now owns the minimum operational doctor coverage for a
+DoltLite-backed city: metadata contract validation, bounded store-health
+execution, read-path smoke testing, `gc`/libdoltlite link verification, and
+sqlite3 availability. Deeper storage checks still belong in `bd doctor` or the
+DoltLite library itself, but Gas City doctor should no longer pass when the
+active backend metadata is malformed or the doltlite store cannot be opened.
 
 Reasons it may need to stay builtin:
 
@@ -80,6 +79,12 @@ Reasons it may not need to stay builtin:
   DoltLite-backed bead operation, builtin status may be unnecessary.
 - If `gc bd` no longer depends on this pack's assets to operate, the pack can
   potentially be externalized.
+
+Core order note: core still ships generic maintenance orders such as
+`jsonl-export` and `reaper`. Those scripts are Dolt-server-specific and must
+honor `.beads/metadata.json` before treating leftover `.beads/dolt` directories
+as proof of a live Dolt target. DoltLite cities should run the
+`doltlite-health` and `doltlite-maintenance` orders instead.
 
 The audit should identify which startup/install/doctor paths truly require
 builtin availability and which can move to normal pack import later.
@@ -143,8 +148,9 @@ output rather than moving logic into unrelated Gas City core doctor code.
   points at a readable pack checkout, and the active pack contains expected
   command and doctor directories.
 - Backend metadata: verify the active `.beads/metadata.json` selects
-  `backend = "doltlite"` or `database = "doltlite"` when the city expects the
-  DoltLite backend.
+  `backend = "doltlite"` when the city expects the DoltLite backend, and that
+  identity fields such as `database`, `dolt_database`, and `project_id` remain
+  non-empty strings.
 - `gc bd` bridge: verify `gc bd` operations run with
   `GC_BEADS_BACKEND=doltlite` / `BEADS_BACKEND=doltlite` and do not fall back
   to an unrelated global bd database.
@@ -160,6 +166,9 @@ output rather than moving logic into unrelated Gas City core doctor code.
   are present in the configured or discovered build/install location.
 - Safe read smoke: run a read-only bd status/list style check against the active
   DoltLite store and report actionable errors.
+- Store health smoke: run a bounded `bd status --json` with
+  `BEADS_BACKEND=doltlite` and fail when the command reports an error or cannot
+  open the store within the timeout.
 - Optional write smoke: provide an opt-in disposable-scope write/read/update
   smoke check so routine doctor runs do not mutate production work.
 - Maintenance safety: warn before `flatten` or `VACUUM` style maintenance runs
