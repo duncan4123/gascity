@@ -264,7 +264,7 @@ install_binary() {
   echo "installed $name: $dest"
 
   current="$(command -v "$name" 2>/dev/null || true)"
-  if [ -n "$current" ] && [ "$current" != "$dest" ]; then
+  if [ -n "$current" ] && [ "$current" != "$dest" ] && ! [[ "$current" -ef "$dest" ]]; then
     echo "note: current $name resolves to $current; ensure $dest is earlier on PATH"
   fi
 }
