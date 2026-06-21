@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -249,12 +250,41 @@ func supervisorSocketPathForDir(dir string) string {
 }
 
 func supervisorSocketPathCandidates() []string {
-	paths := []string{supervisorSocketPathForDir(supervisor.RuntimeDir())}
-	defaultPath := supervisorSocketPathForDir(supervisor.DefaultHome())
-	if defaultPath != paths[0] {
-		paths = append(paths, defaultPath)
+	paths := make([]string, 0, 3)
+	paths = appendSupervisorSocketPath(paths, supervisorSocketPathForDir(supervisor.RuntimeDir()))
+	for _, dir := range inferredSupervisorRuntimeDirs() {
+		paths = appendSupervisorSocketPath(paths, supervisorSocketPathForDir(dir))
 	}
+	paths = appendSupervisorSocketPath(paths, supervisorSocketPathForDir(supervisor.DefaultHome()))
 	return paths
+}
+
+func appendSupervisorSocketPath(paths []string, path string) []string {
+	for _, existing := range paths {
+		if filepath.Clean(existing) == filepath.Clean(path) {
+			return paths
+		}
+	}
+	return append(paths, path)
+}
+
+var (
+	supervisorRunUserRuntimeRoot     = "/run/user"
+	supervisorInferRuntimeDirsInTest = false
+)
+
+func inferredSupervisorRuntimeDirs() []string {
+	if (isTestBinary() && !supervisorInferRuntimeDirsInTest) || supervisor.UsesIsolatedGCHomeOverride() || os.Getenv("XDG_RUNTIME_DIR") != "" {
+		return nil
+	}
+	if goruntime.GOOS != "linux" {
+		return nil
+	}
+	dir := filepath.Join(supervisorRunUserRuntimeRoot, strconv.Itoa(os.Getuid()), "gc")
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		return []string{dir}
+	}
+	return nil
 }
 
 // supervisorSocketPath returns the path to the supervisor control socket.
