@@ -745,6 +745,22 @@ func TestBeadsDoltlitePackIncludesLibdoltliteBuildCommand(t *testing.T) {
 	}
 }
 
+func TestBeadsDoltlitePackIncludesDoltliteSkill(t *testing.T) {
+	skill := readBundledPackFileForTest(t, "beads-doltlite", "skills/doltlite/SKILL.md")
+	for _, want := range []string{
+		"name: doltlite",
+		"doltlite-client",
+		"<city-root>/doltlite/README.md",
+		"../../../../../doltlite/README.md",
+		"SELECT dolt_gc();",
+		"PRAGMA wal_checkpoint(TRUNCATE)",
+	} {
+		if !strings.Contains(skill, want) {
+			t.Fatalf("doltlite skill missing %q:\n%s", want, skill)
+		}
+	}
+}
+
 func TestEnsureBuiltinRuntimeAssetsPrunesRetiredSystemPacks(t *testing.T) {
 	city := t.TempDir()
 

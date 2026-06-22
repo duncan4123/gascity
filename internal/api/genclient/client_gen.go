@@ -437,6 +437,8 @@ type AgentPatch struct {
 	Nudge                   *string           `json:"Nudge"`
 	OptionDefaults          map[string]string `json:"OptionDefaults"`
 	OverlayDir              *string           `json:"OverlayDir"`
+	Pack                    *string           `json:"Pack"`
+	PackRoot                *string           `json:"PackRoot"`
 	Pool                    PoolOverride      `json:"Pool"`
 	PreStart                *[]string         `json:"PreStart"`
 	PreStartAppend          *[]string         `json:"PreStartAppend"`
