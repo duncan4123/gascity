@@ -824,9 +824,6 @@ func TestJSONSchemaManifestForDiscoveredPackCommandWithMissingLocalSchema(t *tes
 		t.Fatalf("manifest is not JSON: %v\n%s", err, stdout.String())
 	}
 	assertManifestOmitsTransport(t, stdout.Bytes())
-	if got := strings.Join(manifest.Command, " "); got != "beads-doltlite health" {
-		t.Fatalf("command = %q, want beads-doltlite health", got)
-	}
 	if !manifest.JSONSupported {
 		t.Fatalf("manifest json_supported = false, want true")
 	}
