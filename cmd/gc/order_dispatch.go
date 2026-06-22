@@ -284,7 +284,6 @@ type memoryOrderDispatcher struct {
 	cfg                  *config.City
 	cityName             string
 	cityPath             string
-	checkRoleConfigured  func(string) error
 	storeRetryAttempts   int
 	storeRetryDelay      time.Duration
 	cacheMu              sync.Mutex
@@ -416,7 +415,6 @@ func buildOrderDispatcherFromOrderSet(cityPath string, cfg *config.City, allAA [
 		stderr:               lockedStderr(stderr),
 		maxTimeout:           cfg.Orders.MaxTimeoutDuration(),
 		maxDispatchesPerTick: defaultMaxOrderDispatchesPerTick,
-		checkRoleConfigured:  ensureBeadsRoleConfigured,
 		storeRetryAttempts:   orderDispatchStoreRetryAttempts,
 		storeRetryDelay:      orderDispatchStoreRetryDelay,
 		cfg:                  cfg,
@@ -425,51 +423,6 @@ func buildOrderDispatcherFromOrderSet(cityPath string, cfg *config.City, allAA [
 		dispatchCtx:          dispatchCtx,
 		dispatchCancel:       dispatchCancel,
 	}
-}
-
-func ensureBeadsRoleConfigured(scopeRoot string) error {
-	role, err := readBeadsRole(scopeRoot)
-	if err == nil && validBeadsRole(role) {
-		return nil
-	}
-	cmd := exec.Command("git", "config", "beads.role", "maintainer")
-	if scopeRoot != "" {
-		cmd.Dir = scopeRoot
-	}
-	if out, setErr := cmd.CombinedOutput(); setErr != nil {
-		if err != nil {
-			return fmt.Errorf("configuring beads.role after read failed (%w): %s: %w", err, strings.TrimSpace(string(out)), setErr)
-		}
-		return fmt.Errorf("configuring beads.role after invalid value %q: %s: %w", role, strings.TrimSpace(string(out)), setErr)
-	}
-	role, err = readBeadsRole(scopeRoot)
-	if err != nil {
-		return err
-	}
-	if !validBeadsRole(role) {
-		return fmt.Errorf("invalid beads.role %q", role)
-	}
-	return nil
-}
-
-func readBeadsRole(scopeRoot string) (string, error) {
-	cmd := exec.Command("git", "config", "--get", "beads.role")
-	if scopeRoot != "" {
-		cmd.Dir = scopeRoot
-	}
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("checking beads.role: %w", err)
-	}
-	role := strings.TrimSpace(string(out))
-	if role == "" {
-		return "", fmt.Errorf("beads.role not configured")
-	}
-	return role, nil
-}
-
-func validBeadsRole(role string) bool {
-	return role == "maintainer" || role == "contributor"
 }
 
 func isRetryableBeadsStoreError(err error) bool {
@@ -588,12 +541,6 @@ func (m *memoryOrderDispatcher) dispatch(ctx context.Context, cityPath string, n
 		if err != nil {
 			logDispatchError(m.stderr, "gc: order dispatch: resolving target for %s: %v", a.ScopedName(), err)
 			continue
-		}
-		if m.checkRoleConfigured != nil {
-			if err := m.checkRoleConfigured(target.ScopeRoot); err != nil {
-				logDispatchError(m.stderr, "gc: order dispatch: validating beads role for %s: %v", a.ScopedName(), err)
-				continue
-			}
 		}
 
 		storeKey := orderStoreTargetKey(target)
