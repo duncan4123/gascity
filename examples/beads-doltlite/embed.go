@@ -5,5 +5,5 @@ import "embed"
 
 // PackFS contains the DoltLite beads provider pack files.
 //
-//go:embed pack.toml doctor commands formulas orders all:assets
+//go:embed pack.toml doctor commands formulas orders skills all:assets
 var PackFS embed.FS
