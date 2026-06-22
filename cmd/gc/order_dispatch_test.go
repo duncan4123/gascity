@@ -202,6 +202,32 @@ func (s eventCursorUpdateFailStore) Update(id string, opts beads.UpdateOpts) err
 	return s.Store.Update(id, opts)
 }
 
+type retryableCreateFailStore struct {
+	beads.Store
+	failCount int
+}
+
+func (s *retryableCreateFailStore) Create(b beads.Bead) (beads.Bead, error) {
+	if s.failCount > 0 {
+		s.failCount--
+		return beads.Bead{}, fmt.Errorf("database is locked")
+	}
+	return s.Store.Create(b)
+}
+
+type retryableUpdateFailStore struct {
+	beads.Store
+	failCount int
+}
+
+func (s *retryableUpdateFailStore) Update(id string, opts beads.UpdateOpts) error {
+	if s.failCount > 0 {
+		s.failCount--
+		return fmt.Errorf("database is locked")
+	}
+	return s.Store.Update(id, opts)
+}
+
 func (p latestSeqFailProvider) LatestSeq() (uint64, error) {
 	return 0, fmt.Errorf("latest seq failed")
 }
@@ -809,6 +835,177 @@ func TestOrderDispatchEventExecLatestSeqErrorDoesNotRunExec(t *testing.T) {
 		if !slicesContain(all[0].Labels, want) {
 			t.Fatalf("tracking bead labels after retry = %v, want %s", all[0].Labels, want)
 		}
+	}
+}
+
+func TestOrderDispatchRoleCheckPreventsDispatchWithoutRole(t *testing.T) {
+	store := beads.NewMemStore()
+	var rec memRecorder
+	var stderr bytes.Buffer
+	cityDir := t.TempDir()
+	ad := buildOrderDispatcherFromListExec([]orders.Order{{
+		Name:     "nudge-on-route",
+		Trigger:  "cooldown",
+		Interval: "2m",
+		Exec:     "scripts/release.sh",
+	}}, store, nil, successfulExec, &rec)
+	if ad == nil {
+		t.Fatal("expected non-nil dispatcher")
+	}
+
+	mad := ad.(*memoryOrderDispatcher)
+	mad.stderr = &stderr
+	var checkedScope string
+	mad.checkRoleConfigured = func(scopeRoot string) error {
+		checkedScope = scopeRoot
+		return fmt.Errorf("beads.role not configured")
+	}
+
+	ad.dispatch(context.Background(), cityDir, time.Now())
+	ad.drain(context.Background())
+
+	if checkedScope != cityDir {
+		t.Fatalf("role check scope = %q, want %q", checkedScope, cityDir)
+	}
+	all := trackingBeads(t, store, "order-run:nudge-on-route")
+	if len(all) != 0 {
+		t.Fatalf("tracking beads for %q = %d, want 0", "nudge-on-route", len(all))
+	}
+	if rec.hasType(events.OrderCompleted) {
+		t.Fatal("unexpected order.completed with missing beads.role")
+	}
+	if !strings.Contains(stderr.String(), "beads.role not configured") {
+		t.Fatalf("stderr = %q, want beads.role not configured", stderr.String())
+	}
+}
+
+func TestEnsureBeadsRoleConfiguredUsesTargetRepoConfig(t *testing.T) {
+	repoDir := t.TempDir()
+	if out, err := exec.Command("git", "init", repoDir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	cmd := exec.Command("git", "config", "beads.role", "contributor")
+	cmd.Dir = repoDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git config beads.role: %v\n%s", err, out)
+	}
+
+	globalConfig := filepath.Join(t.TempDir(), "global.gitconfig")
+	if err := os.WriteFile(globalConfig, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	if err := ensureBeadsRoleConfigured(repoDir); err != nil {
+		t.Fatalf("ensureBeadsRoleConfigured(): %v", err)
+	}
+}
+
+func TestEnsureBeadsRoleConfiguredRepairsInvalidGlobalRoleLocally(t *testing.T) {
+	repoDir := t.TempDir()
+	if out, err := exec.Command("git", "init", repoDir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+
+	globalConfig := filepath.Join(t.TempDir(), "global.gitconfig")
+	if err := os.WriteFile(globalConfig, []byte("[beads]\n\trole = refinery\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	if err := ensureBeadsRoleConfigured(repoDir); err != nil {
+		t.Fatalf("ensureBeadsRoleConfigured(): %v", err)
+	}
+	cmd := exec.Command("git", "config", "--local", "--get", "beads.role")
+	cmd.Dir = repoDir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git config --local --get beads.role: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "maintainer" {
+		t.Fatalf("local beads.role = %q, want maintainer", got)
+	}
+}
+
+func TestOrderDispatchCreateTrackingBeadRetriesOnTransientLock(t *testing.T) {
+	base := beads.NewMemStore()
+	store := &retryableCreateFailStore{
+		Store:     base,
+		failCount: 1,
+	}
+	var calls int
+	execRun := func(context.Context, string, string, []string) ([]byte, error) {
+		calls++
+		return []byte("ok"), nil
+	}
+
+	ad := buildOrderDispatcherFromListExec([]orders.Order{{
+		Name:     "nudge-on-route",
+		Trigger:  "cooldown",
+		Interval: "2m",
+		Exec:     "scripts/release.sh",
+	}}, store, nil, execRun, nil)
+	if ad == nil {
+		t.Fatal("expected non-nil dispatcher")
+	}
+
+	mad := ad.(*memoryOrderDispatcher)
+	mad.checkRoleConfigured = nil
+
+	ad.dispatch(context.Background(), t.TempDir(), time.Now())
+	ad.drain(context.Background())
+
+	all := trackingBeads(t, base, "order-run:nudge-on-route")
+	if len(all) != 1 {
+		t.Fatalf("tracking beads for %q = %d, want 1", "nudge-on-route", len(all))
+	}
+	if calls != 1 {
+		t.Fatalf("exec calls = %d, want 1", calls)
+	}
+}
+
+func TestOrderDispatchExecTrackingUpdateRetriesOnTransientLock(t *testing.T) {
+	base := beads.NewMemStore()
+	store := &retryableUpdateFailStore{
+		Store:     base,
+		failCount: 1,
+	}
+	var rec memRecorder
+	var calls int
+	execRun := func(context.Context, string, string, []string) ([]byte, error) {
+		calls++
+		return []byte("ok"), nil
+	}
+
+	ad := buildOrderDispatcherFromListExec([]orders.Order{{
+		Name:     "release-exec",
+		Trigger:  "cooldown",
+		Interval: "2m",
+		Exec:     "scripts/release.sh",
+	}}, store, nil, execRun, &rec)
+	if ad == nil {
+		t.Fatal("expected non-nil dispatcher")
+	}
+	mad := ad.(*memoryOrderDispatcher)
+	mad.checkRoleConfigured = nil
+
+	ad.dispatch(context.Background(), t.TempDir(), time.Now())
+	ad.drain(context.Background())
+
+	if calls != 1 {
+		t.Fatalf("exec calls = %d, want 1", calls)
+	}
+	all := trackingBeads(t, base, "order-run:release-exec")
+	if len(all) != 1 {
+		t.Fatalf("tracking beads with order-run label = %d, want 1", len(all))
+	}
+	if !slicesContain(all[0].Labels, "exec") {
+		t.Fatalf("tracking bead labels = %v, want exec", all[0].Labels)
+	}
+	if !rec.hasType(events.OrderCompleted) {
+		t.Fatalf("missing order.completed event")
 	}
 }
 
