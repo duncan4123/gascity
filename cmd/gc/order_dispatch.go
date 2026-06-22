@@ -1206,11 +1206,17 @@ func (m *memoryOrderDispatcher) dispatchExec(ctx context.Context, store beads.St
 		output, err = m.execRun(ctx, a.Exec, target.ScopeRoot, env)
 		if err != nil {
 			redactionEnv := append(os.Environ(), env...)
-			execErrMsg = execenv.RedactText(err.Error(), redactionEnv)
-			labels = []string{"exec-failed"}
-			logDispatchError(m.stderr, "gc: order exec %s failed: %s", scoped, execErrMsg)
-			if len(output) > 0 {
-				logDispatchError(m.stderr, "gc: order exec %s output: %s", scoped, execenv.RedactText(string(output), redactionEnv))
+			if shouldSkipWorkspaceReportExec(a, output, err) {
+				reason := workspaceReportSkipOutcome(a.Name, output)
+				labels = []string{"exec-skipped"}
+				logDispatchError(m.stderr, "gc: order %s skipped: %s", scoped, reason)
+			} else {
+				execErrMsg = execenv.RedactText(err.Error(), redactionEnv)
+				labels = []string{"exec-failed"}
+				logDispatchError(m.stderr, "gc: order exec %s failed: %s", scoped, execErrMsg)
+				if len(output) > 0 {
+					logDispatchError(m.stderr, "gc: order exec %s output: %s", scoped, execenv.RedactText(string(output), redactionEnv))
+				}
 			}
 		}
 	}
@@ -1248,6 +1254,33 @@ func (m *memoryOrderDispatcher) dispatchExec(ctx context.Context, store beads.St
 		Actor:   "controller",
 		Subject: scoped,
 	})
+}
+
+func shouldSkipWorkspaceReportExec(a orders.Order, output []byte, err error) bool {
+	if strings.TrimSpace(a.Name) != "workspace-report" {
+		return false
+	}
+	if err == nil {
+		return false
+	}
+	return strings.Contains(string(output), "not in a jjw-enabled repository")
+}
+
+func workspaceReportSkipOutcome(orderName string, output []byte) string {
+	payload := map[string]string{
+		"order":        orderName,
+		"outcome":      "skipped",
+		"reason":       "not-a-jjw-enabled-repository",
+		"log_fragment": strings.TrimSpace(string(output)),
+	}
+	if payload["log_fragment"] == "" {
+		payload["log_fragment"] = "not in a jjw-enabled repository"
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Sprintf(`{"order":"%s","outcome":"skipped","reason":"not-a-jjw-enabled-repository"}`, orderName)
+	}
+	return string(b)
 }
 
 func prepareOrderWispRecipe(ctx context.Context, store beads.Store, a orders.Order, searchPaths []string) (*formula.Recipe, error) {

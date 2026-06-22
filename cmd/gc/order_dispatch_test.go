@@ -1669,6 +1669,60 @@ func TestOrderDispatchExecFailure(t *testing.T) {
 	}
 }
 
+func TestOrderDispatchWorkspaceReportExecSkipForNonJJWRepo(t *testing.T) {
+	store := beads.NewMemStore()
+	var rec memRecorder
+	var stderr bytes.Buffer
+	tracking, err := store.Create(beads.Bead{
+		Title:  "order:workspace-report",
+		Labels: []string{"order-run:workspace-report", labelOrderTracking},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fakeExec := func(_ context.Context, _, _ string, _ []string) ([]byte, error) {
+		return []byte("Error: not in a jjw-enabled repository: file does not exist\n"), fmt.Errorf("exit status 1")
+	}
+
+	aa := []orders.Order{{
+		Name:     "workspace-report",
+		Trigger:  "cooldown",
+		Interval: "2m",
+		Exec:     "scripts/report.sh",
+	}}
+	ad := buildOrderDispatcherFromListExec(aa, store, nil, fakeExec, &rec)
+	mad := ad.(*memoryOrderDispatcher)
+	mad.stderr = &stderr
+
+	logs := captureCmdOrderLogs(t, func() {
+		mad.dispatchExec(context.Background(), store, execStoreTarget{ScopeRoot: t.TempDir()}, aa[0], t.TempDir(), tracking.ID)
+	})
+
+	all := trackingBeads(t, store, "order-run:workspace-report")
+	hasSkipped := false
+	for _, b := range all {
+		for _, l := range b.Labels {
+			if l == "exec-skipped" {
+				hasSkipped = true
+			}
+		}
+	}
+	if !hasSkipped {
+		t.Error("tracking bead missing exec-skipped label")
+	}
+
+	if rec.hasType(events.OrderFailed) {
+		t.Error("unexpected order.failed event for non-jjw workspace-report")
+	}
+	if !rec.hasType(events.OrderCompleted) {
+		t.Error("missing order.completed event")
+	}
+	if !strings.Contains(logs, `"outcome":"skipped"`) {
+		t.Fatalf("logs = %q, want structured skip outcome JSON", logs)
+	}
+}
+
 func TestOrderDispatchExecEnvFailureUsesEnvFailureLabel(t *testing.T) {
 	clearAmbientPostgresEnv(t)
 	t.Setenv("GC_BEADS", "bd")
