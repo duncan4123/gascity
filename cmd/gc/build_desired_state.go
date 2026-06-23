@@ -2272,7 +2272,7 @@ func realizePoolDesiredSessions(
 					prefer = &bead
 				}
 			}
-			sessionBead, slot, plan, err := selectOrPlanPoolSessionBead(bp, cfgAgent, qualifiedName, prefer, used, usedSlots)
+			sessionBead, slot, plan, err := selectOrPlanPoolSessionBead(bp, cfgAgent, qualifiedName, prefer, request, used, usedSlots)
 			if err != nil {
 				if errors.Is(err, errPoolSessionCreateBudgetExhausted) {
 					fmt.Fprintf(stderr, "buildDesiredState: pool %q request: %v (fresh create deferred)\n", qualifiedName, err) //nolint:errcheck
@@ -2366,6 +2366,12 @@ func realizePoolDesiredSessions(
 			used[item.sessionBead.ID] = true
 		}
 		sessionBead := item.sessionBead
+		if bound, err := bindPoolSessionTriggerBead(bp, cfgAgent, qualifiedName, sessionBead, item.request); err != nil {
+			fmt.Fprintf(stderr, "buildDesiredState: pool %q session %s trigger bead %s: %v (continuing without trigger env)\n", qualifiedName, sessionBead.ID, item.request.WorkBeadID, err) //nolint:errcheck
+		} else {
+			sessionBead = bound
+			item.sessionBead = bound
+		}
 		slot := item.slot
 		manualSession := isManualSessionBeadForAgent(sessionBead, cfgAgent)
 		var (
@@ -2407,6 +2413,172 @@ func realizePoolDesiredSessions(
 		installAgentSideEffects(bp, resolveAgent, tp, stderr)
 		desired[tp.SessionName] = tp
 	}
+}
+
+func bindPoolSessionTriggerBead(bp *agentBuildParams, cfgAgent *config.Agent, qualifiedName string, sessionBead beads.Bead, request SessionRequest) (beads.Bead, error) {
+	workBeadID := strings.TrimSpace(request.WorkBeadID)
+	if sessionBead.ID == "" {
+		return sessionBead, nil
+	}
+	metadata := map[string]string{}
+	if workBeadID == "" {
+		if strings.TrimSpace(sessionBead.Metadata[beadmeta.TriggerBeadIDMetadataKey]) != "" {
+			metadata[beadmeta.TriggerBeadIDMetadataKey] = ""
+		}
+		if strings.TrimSpace(sessionBead.Metadata[beadmeta.TriggerBeadStoreRefMetadataKey]) != "" {
+			metadata[beadmeta.TriggerBeadStoreRefMetadataKey] = ""
+		}
+		if len(metadata) == 0 {
+			return sessionBead, nil
+		}
+		if bp != nil && bp.beadStore != nil {
+			if err := bp.beadStore.Update(sessionBead.ID, beads.UpdateOpts{Metadata: metadata}); err != nil {
+				return sessionBead, err
+			}
+		}
+		sessionBead.Metadata = cloneStringMap(sessionBead.Metadata)
+		for key, value := range metadata {
+			sessionBead.Metadata[key] = value
+		}
+		return sessionBead, nil
+	}
+	oldWorkBeadID := strings.TrimSpace(sessionBead.Metadata[beadmeta.TriggerBeadIDMetadataKey])
+	if oldWorkBeadID != workBeadID {
+		metadata[beadmeta.TriggerBeadIDMetadataKey] = workBeadID
+	}
+	workStoreRef := strings.TrimSpace(request.WorkStoreRef)
+	if workStoreRef != "" && strings.TrimSpace(sessionBead.Metadata[beadmeta.TriggerBeadStoreRefMetadataKey]) != workStoreRef {
+		metadata[beadmeta.TriggerBeadStoreRefMetadataKey] = workStoreRef
+	} else if workStoreRef == "" && oldWorkBeadID != workBeadID && strings.TrimSpace(sessionBead.Metadata[beadmeta.TriggerBeadStoreRefMetadataKey]) != "" {
+		metadata[beadmeta.TriggerBeadStoreRefMetadataKey] = ""
+	}
+	if pack := strings.TrimSpace(request.WorkPack); strings.TrimSpace(sessionBead.Metadata[beadmeta.PackMetadataKey]) != pack {
+		metadata[beadmeta.PackMetadataKey] = pack
+	}
+	if workspace := packWorkspaceSlug(request); strings.TrimSpace(sessionBead.Metadata[beadmeta.PackWorkspaceMetadataKey]) != workspace {
+		metadata[beadmeta.PackWorkspaceMetadataKey] = workspace
+	}
+	if workDir := poolTriggerWorkDir(bp, cfgAgent, qualifiedName, request); workDir != "" {
+		if strings.TrimSpace(sessionBead.Metadata[beadmeta.WorkDirMetadataKey]) != workDir {
+			metadata[beadmeta.WorkDirMetadataKey] = workDir
+		}
+		if strings.TrimSpace(sessionBead.Metadata[beadmeta.LegacyWorkDirMetadataKey]) != workDir {
+			metadata[beadmeta.LegacyWorkDirMetadataKey] = workDir
+		}
+	}
+	if len(metadata) == 0 {
+		return sessionBead, nil
+	}
+	if bp != nil && bp.beadStore != nil {
+		if err := bp.beadStore.Update(sessionBead.ID, beads.UpdateOpts{Metadata: metadata}); err != nil {
+			return sessionBead, err
+		}
+	}
+	sessionBead.Metadata = cloneStringMap(sessionBead.Metadata)
+	if sessionBead.Metadata == nil {
+		sessionBead.Metadata = map[string]string{}
+	}
+	for key, value := range metadata {
+		sessionBead.Metadata[key] = value
+	}
+	return sessionBead, nil
+}
+
+func poolTriggerWorkDir(bp *agentBuildParams, cfgAgent *config.Agent, qualifiedName string, request SessionRequest) string {
+	if bp == nil || cfgAgent == nil || strings.TrimSpace(request.WorkBeadID) == "" {
+		return ""
+	}
+	base, err := resolveConfiguredWorkDir(bp.cityPath, bp.cityName, qualifiedName, cfgAgent, bp.rigs)
+	if err != nil || strings.TrimSpace(base) == "" {
+		return ""
+	}
+	if pack := strings.TrimSpace(request.WorkPack); pack != "" {
+		packDir := filepath.Join(filepath.Dir(base), pack)
+		if workspace := packWorkspaceSlug(request); workspace != "" {
+			return filepath.Join(packDir, workspace)
+		}
+		return packDir
+	}
+	if workspace := packWorkspaceSlug(request); workspace != "" {
+		return filepath.Join(base, workspace)
+	}
+	if slug := triggerBeadPathSlug(request.WorkBeadID, request.WorkBeadTitle); slug != "" {
+		return filepath.Join(base, slug)
+	}
+	return ""
+}
+
+func packWorkspaceSlug(request SessionRequest) string {
+	if explicit := safeWorkspaceName(request.WorkWorkspace, 96); explicit != "" {
+		return explicit
+	}
+	return ""
+}
+
+func triggerBeadPathSlug(beadID, title string) string {
+	id := safePathSlug(beadID, 32)
+	titleSlug := safePathSlug(title, 72)
+	switch {
+	case id != "" && titleSlug != "":
+		return id + "-" + titleSlug
+	case id != "":
+		return id
+	default:
+		return titleSlug
+	}
+}
+
+func safeWorkspaceName(value string, maxLen int) string {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "." || value == ".." || strings.ContainsAny(value, `/\`) {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			return ""
+		}
+		if maxLen > 0 && b.Len() >= maxLen {
+			break
+		}
+	}
+	return strings.Trim(b.String(), ".-_")
+}
+
+func safePathSlug(value string, maxLen int) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range value {
+		var out rune
+		switch {
+		case r >= 'a' && r <= 'z':
+			out = r
+		case r >= '0' && r <= '9':
+			out = r
+		default:
+			out = '-'
+		}
+		if out == '-' {
+			if b.Len() == 0 || lastDash {
+				continue
+			}
+			lastDash = true
+		} else {
+			lastDash = false
+		}
+		b.WriteRune(out)
+		if maxLen > 0 && b.Len() >= maxLen {
+			break
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 func poolDesiredRequestIdentity(cfgAgent *config.Agent, slot int) (*config.Agent, string, int) {
@@ -2946,6 +3118,7 @@ type poolSessionCreatePlan struct {
 	qualifiedInstance string
 	slot              int
 	poolSlot          int
+	metadata          map[string]string
 }
 
 func selectOrCreatePoolSessionBead(
@@ -2956,7 +3129,7 @@ func selectOrCreatePoolSessionBead(
 	used map[string]bool,
 	usedSlots map[int]bool,
 ) (beads.Bead, int, error) {
-	bead, slot, plan, err := selectOrPlanPoolSessionBead(bp, cfgAgent, template, preferred, used, usedSlots)
+	bead, slot, plan, err := selectOrPlanPoolSessionBead(bp, cfgAgent, template, preferred, SessionRequest{}, used, usedSlots)
 	if err != nil {
 		return beads.Bead{}, 0, err
 	}
@@ -2989,6 +3162,7 @@ func selectOrPlanPoolSessionBead(
 	cfgAgent *config.Agent,
 	template string,
 	preferred *beads.Bead,
+	request SessionRequest,
 	used map[string]bool,
 	usedSlots map[int]bool,
 ) (beads.Bead, int, *poolSessionCreatePlan, error) {
@@ -3030,6 +3204,7 @@ func selectOrPlanPoolSessionBead(
 	}
 	slot := claimDesiredPoolSlot(bp.city, cfgAgent, beads.Bead{}, usedSlots)
 	_, qualifiedInstance, poolSlot := poolDesiredRequestIdentity(cfgAgent, slot)
+	metadata := poolTriggerMetadata(bp, cfgAgent, qualifiedInstance, request)
 
 	if !bp.tryClaimPoolSessionCreate(template) {
 		delete(usedSlots, slot)
@@ -3040,8 +3215,33 @@ func selectOrPlanPoolSessionBead(
 		qualifiedInstance: qualifiedInstance,
 		slot:              slot,
 		poolSlot:          poolSlot,
+		metadata:          metadata,
 	}
 	return beads.Bead{}, 0, plan, nil
+}
+
+func poolTriggerMetadata(bp *agentBuildParams, cfgAgent *config.Agent, qualifiedName string, request SessionRequest) map[string]string {
+	workID := strings.TrimSpace(request.WorkBeadID)
+	if workID == "" {
+		return nil
+	}
+	metadata := map[string]string{
+		beadmeta.TriggerBeadIDMetadataKey: workID,
+	}
+	if storeRef := strings.TrimSpace(request.WorkStoreRef); storeRef != "" {
+		metadata[beadmeta.TriggerBeadStoreRefMetadataKey] = storeRef
+	}
+	if pack := strings.TrimSpace(request.WorkPack); pack != "" {
+		metadata[beadmeta.PackMetadataKey] = pack
+	}
+	if workspace := packWorkspaceSlug(request); workspace != "" {
+		metadata[beadmeta.PackWorkspaceMetadataKey] = workspace
+	}
+	if workDir := poolTriggerWorkDir(bp, cfgAgent, qualifiedName, request); workDir != "" {
+		metadata[beadmeta.WorkDirMetadataKey] = workDir
+		metadata[beadmeta.LegacyWorkDirMetadataKey] = workDir
+	}
+	return metadata
 }
 
 // executePlannedPoolSessionBeadCreate materializes a pool session bead from a
@@ -3055,7 +3255,7 @@ func executePlannedPoolSessionBeadCreate(
 	template string,
 	plan poolSessionCreatePlan,
 ) (beads.Bead, error) {
-	bead, err := createPoolSessionBeadWithGuardedAlias(bp, cfgAgent, template, plan.qualifiedInstance, plan.slot)
+	bead, err := createPoolSessionBeadWithGuardedAlias(bp, cfgAgent, template, plan.qualifiedInstance, plan.slot, plan.metadata)
 	if err != nil {
 		bp.releasePoolSessionCreate()
 	}
@@ -3228,6 +3428,7 @@ func createPoolSessionBeadWithGuardedAlias(
 	template string,
 	qualifiedInstance string,
 	slot int,
+	metadata map[string]string,
 ) (beads.Bead, error) {
 	if bp == nil {
 		return beads.Bead{}, fmt.Errorf("creating pool session for %q: build params unavailable", template)
@@ -3246,6 +3447,7 @@ func createPoolSessionBeadWithGuardedAlias(
 	identity := poolSessionCreateIdentity{
 		AgentName: qualifiedInstance,
 		Slot:      slot,
+		Metadata:  metadata,
 	}
 	alias := strings.TrimSpace(qualifiedInstance)
 	if bp.beadStore == nil {
@@ -3680,7 +3882,7 @@ func selectOrCreateDependencyPoolSessionBead(
 	// Dependency floors are bounded prerequisites for already-realized roots,
 	// so they bypass the ordinary fresh pool create budget. The wake budget
 	// still caps when those floor sessions can actually start.
-	return createPoolSessionBeadWithGuardedAlias(bp, cfgAgent, template, qualifiedInstance, poolSlot)
+	return createPoolSessionBeadWithGuardedAlias(bp, cfgAgent, template, qualifiedInstance, poolSlot, nil)
 }
 
 func reusableDependencyPoolSessionBeads(bp *agentBuildParams, template string) []beads.Bead {

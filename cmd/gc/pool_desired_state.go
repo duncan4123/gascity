@@ -270,39 +270,12 @@ func computePoolDesiredStates(
 			}
 			for j := 0; j < inFlightCount; j++ {
 				req := inFlight[j]
+				req = hydrateInFlightNewRequest(req, scaleCheckDemand[template], j)
 				allRequests = append(allRequests, req)
 				usage.accept(req, limits)
 			}
 			for j := inFlightCount; j < newCount; j++ {
-				workBeadID := ""
-				workBeadTitle := ""
-				workPack := ""
-				workWorkspace := ""
-				workStoreRef := ""
-				if demand := scaleCheckDemand[template]; len(demand.WorkBeadIDs) > j {
-					workBeadID = strings.TrimSpace(demand.WorkBeadIDs[j])
-					if demand.Titles != nil {
-						workBeadTitle = strings.TrimSpace(demand.Titles[workBeadID])
-					}
-					if demand.Packs != nil {
-						workPack = strings.TrimSpace(demand.Packs[workBeadID])
-					}
-					if demand.Workspaces != nil {
-						workWorkspace = strings.TrimSpace(demand.Workspaces[workBeadID])
-					}
-					if demand.StoreRefs != nil {
-						workStoreRef = strings.TrimSpace(demand.StoreRefs[workBeadID])
-					}
-				}
-				req := SessionRequest{
-					Template:      template,
-					Tier:          "new",
-					WorkBeadID:    workBeadID,
-					WorkBeadTitle: workBeadTitle,
-					WorkPack:      workPack,
-					WorkWorkspace: workWorkspace,
-					WorkStoreRef:  workStoreRef,
-				}
+				req := scaleCheckDemandSessionRequest(template, scaleCheckDemand[template], j)
 				allRequests = append(allRequests, req)
 				usage.accept(req, limits)
 			}
@@ -310,6 +283,57 @@ func computePoolDesiredStates(
 	}
 
 	return applyNestedCaps(cfg, allRequests, trace)
+}
+
+func scaleCheckDemandSessionRequest(template string, demand scaleCheckDemand, index int) SessionRequest {
+	req := SessionRequest{
+		Template: template,
+		Tier:     "new",
+	}
+	if len(demand.WorkBeadIDs) <= index {
+		return req
+	}
+	workBeadID := strings.TrimSpace(demand.WorkBeadIDs[index])
+	req.WorkBeadID = workBeadID
+	if demand.Titles != nil {
+		req.WorkBeadTitle = strings.TrimSpace(demand.Titles[workBeadID])
+	}
+	if demand.Packs != nil {
+		req.WorkPack = strings.TrimSpace(demand.Packs[workBeadID])
+	}
+	if demand.Workspaces != nil {
+		req.WorkWorkspace = strings.TrimSpace(demand.Workspaces[workBeadID])
+	}
+	if demand.StoreRefs != nil {
+		req.WorkStoreRef = strings.TrimSpace(demand.StoreRefs[workBeadID])
+	}
+	return req
+}
+
+func hydrateInFlightNewRequest(req SessionRequest, demand scaleCheckDemand, index int) SessionRequest {
+	demandReq := scaleCheckDemandSessionRequest(req.Template, demand, index)
+	if demandReq.WorkBeadID == "" {
+		return req
+	}
+	if req.WorkBeadID != "" && req.WorkBeadID != demandReq.WorkBeadID {
+		return req
+	}
+	if req.WorkBeadID == "" {
+		req.WorkBeadID = demandReq.WorkBeadID
+	}
+	if req.WorkBeadTitle == "" {
+		req.WorkBeadTitle = demandReq.WorkBeadTitle
+	}
+	if req.WorkPack == "" {
+		req.WorkPack = demandReq.WorkPack
+	}
+	if req.WorkWorkspace == "" {
+		req.WorkWorkspace = demandReq.WorkWorkspace
+	}
+	if req.WorkStoreRef == "" {
+		req.WorkStoreRef = demandReq.WorkStoreRef
+	}
+	return req
 }
 
 func poolInFlightNewRequests(cfg *config.City, sessionBeads []beads.Bead, resumeSessionBeadIDs map[string]struct{}) map[string][]SessionRequest {
