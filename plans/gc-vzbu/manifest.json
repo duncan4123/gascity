@@ -1,0 +1,13 @@
+{
+  "root_bead_id": "gc-514m",
+  "workspace": "default",
+  "workspace_path": "/data/projects/doltlite-gascity/gascity",
+  "base_revset": "default@",
+  "artifact_root": "plans/gc-vzbu",
+  "manifest_path": "plans/gc-vzbu/manifest.json",
+  "change_id": "oxyuytokpnwslovplwrtzmrnzxornzmm",
+  "source_workspace": "",
+  "source_workspace_path": "",
+  "source_change_id": "",
+  "documents": {}
+}
