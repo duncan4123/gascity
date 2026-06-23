@@ -5,6 +5,7 @@ set -euo pipefail
 BEADS_DIR="${BEADS_DIR:-${GC_CITY_PATH:-.}/.beads}"
 SCOPE_DIR="${BEADS_DIR%/.*}"
 OUTPUT_FILE="${TMPDIR:-/tmp}/beads-doltlite-health-$$.json"
+ERROR_FILE="${TMPDIR:-/tmp}/beads-doltlite-health-err-$$.txt"
 
 if command -v bd >/dev/null 2>&1; then
   cd "$SCOPE_DIR" || exit 1
@@ -27,7 +28,7 @@ if command -v bd >/dev/null 2>&1; then
 
   if [ "$status" -ne 0 ]; then
     cat "$OUTPUT_FILE"
-    rm -f "$OUTPUT_FILE"
+    rm -f "$OUTPUT_FILE" "$ERROR_FILE"
     exit "$status"
   fi
 
@@ -105,10 +106,10 @@ NR == 1 {
     fi
   fi
 
-  rm -f "$OUTPUT_FILE"
+  rm -f "$OUTPUT_FILE" "$ERROR_FILE"
   exit 0
 else
   echo '{"ok":false,"error":"bd CLI not found","schema_version":1}'
-  rm -f "$OUTPUT_FILE"
+  rm -f "$OUTPUT_FILE" "$ERROR_FILE"
   exit 1
 fi

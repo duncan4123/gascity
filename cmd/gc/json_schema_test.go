@@ -836,7 +836,7 @@ func TestJSONSchemaManifestForDiscoveredPackCommandWithMissingLocalSchema(t *tes
 		BindingName: "beads-doltlite",
 	}}, "/tmp", "testcity", &stdout, &stderr, true)
 
-	handled, code := handleJSONSchemaRequest(root, []string{"beads-doltlite", "health", "--json-schema=result"}, &stdout)
+	handled, code := handleJSONContractRequest(root, []string{"beads-doltlite", "health", "--json-schema=result"}, &stdout, &stderr)
 	if !handled || code != 0 {
 		t.Fatalf("handled=%v code=%d stderr=%q stdout=%q", handled, code, stderr.String(), stdout.String())
 	}
@@ -853,6 +853,9 @@ func TestJSONSchemaManifestForDiscoveredPackCommandWithMissingLocalSchema(t *tes
 		t.Fatalf("manifest is not JSON: %v\n%s", err, stdout.String())
 	}
 	assertManifestOmitsTransport(t, stdout.Bytes())
+	if got := strings.Join(manifest.Command, " "); got != "beads-doltlite health" {
+		t.Fatalf("command = %q, want beads-doltlite health", got)
+	}
 	if !manifest.JSONSupported {
 		t.Fatalf("manifest json_supported = false, want true")
 	}

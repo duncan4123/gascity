@@ -34,10 +34,13 @@ func TestDoltliteHealthJSONSchemaIsValidObject(t *testing.T) {
 
 func TestDoltliteHealthScriptOutputsJSONOKWithoutJq(t *testing.T) {
 	script := filepath.Join(repoRootForTest(t), "commands", "health", "run.sh")
-	cityRoot := filepath.Clean(filepath.Join(repoRootForTest(t), "..", ".."))
+	bin := mustReadlink(t, "bd")
 
 	cmd := exec.Command("bash", script, "--json")
-	cmd.Env = append(os.Environ(), "GC_CITY_PATH="+cityRoot)
+	cmd.Env = append(os.Environ(),
+		"GC_CITY_PATH="+filepath.Dir(repoRootForTest(t)),
+		"PATH="+filepath.Dir(bin)+":"+filepath.Dir(os.Getenv("HOME"))+"/bin:"+os.Getenv("PATH"),
+	)
 
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -76,4 +79,13 @@ func mustReadFile(t *testing.T, path string) []byte {
 		t.Fatalf("read file %q: %v", path, err)
 	}
 	return raw
+}
+
+func mustReadlink(t *testing.T, name string) string {
+	t.Helper()
+	path, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatalf("look up %q: %v", name, err)
+	}
+	return path
 }
