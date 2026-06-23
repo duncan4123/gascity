@@ -57,6 +57,7 @@ const (
 	ControllerErrorClassMetadataKey      = "gc.controller_error_class"
 	ControllerErrorMetadataKey           = "gc.controller_error"
 	ControllerRetryableMetadataKey       = "gc.controller_retryable"
+	CurrentRunIDMetadataKey              = "gc.current_run_id"
 	DeferredAssigneeMetadataKey          = "gc.deferred_assignee"
 	DeferredExecutionRoutedToMetadataKey = "gc.deferred_execution_routed_to"
 	DeferredRoutedToMetadataKey          = "gc.deferred_routed_to"
@@ -123,6 +124,9 @@ const (
 	ParentConvoyIDMetadataKey            = "gc.parent_convoy_id"
 	PartialFragmentMetadataKey           = "gc.partial_fragment"
 	PartialRetryMetadataKey              = "gc.partial_retry"
+	PackMetadataKey                      = "gc.pack"
+	PackRootMetadataKey                  = "gc.pack_root"
+	PackWorkspaceMetadataKey             = "gc.pack_workspace"
 	PerDispatchModelMetadataKey          = "gc.per_dispatch_model"
 	PhaseHistoryMetadataKey              = "gc.phase_history"
 	PhaseMetadataKey                     = "gc.phase"
@@ -163,6 +167,8 @@ const (
 	TallyResultMetadataKey               = "gc.tally_result"
 	TemplateMetadataKey                  = "gc.template"
 	TerminalMetadataKey                  = "gc.terminal"
+	TriggerBeadIDMetadataKey             = "gc.trigger_bead_id"
+	TriggerBeadStoreRefMetadataKey       = "gc.trigger_bead_store_ref"
 	TruncatedMetadataKey                 = "gc.truncated"
 	VoteFieldMetadataKey                 = "gc.vote_field"
 	WorkBranchMetadataKey                = "gc.work_branch"
@@ -243,6 +249,7 @@ var KnownMetadataKeys = []string{
 	ControllerErrorClassMetadataKey,
 	ControllerErrorMetadataKey,
 	ControllerRetryableMetadataKey,
+	CurrentRunIDMetadataKey,
 	DeferredAssigneeMetadataKey,
 	DeferredExecutionRoutedToMetadataKey,
 	DeferredRoutedToMetadataKey,
@@ -309,6 +316,9 @@ var KnownMetadataKeys = []string{
 	ParentConvoyIDMetadataKey,
 	PartialFragmentMetadataKey,
 	PartialRetryMetadataKey,
+	PackMetadataKey,
+	PackRootMetadataKey,
+	PackWorkspaceMetadataKey,
 	PerDispatchModelMetadataKey,
 	PhaseHistoryMetadataKey,
 	PhaseMetadataKey,
@@ -349,6 +359,8 @@ var KnownMetadataKeys = []string{
 	TallyResultMetadataKey,
 	TemplateMetadataKey,
 	TerminalMetadataKey,
+	TriggerBeadIDMetadataKey,
+	TriggerBeadStoreRefMetadataKey,
 	TruncatedMetadataKey,
 	VoteFieldMetadataKey,
 	WorkBranchMetadataKey,

@@ -437,6 +437,8 @@ type AgentPatch struct {
 	Nudge                   *string           `json:"Nudge"`
 	OptionDefaults          map[string]string `json:"OptionDefaults"`
 	OverlayDir              *string           `json:"OverlayDir"`
+	Pack                    *string           `json:"Pack"`
+	PackRoot                *string           `json:"PackRoot"`
 	Pool                    PoolOverride      `json:"Pool"`
 	PreStart                *[]string         `json:"PreStart"`
 	PreStartAppend          *[]string         `json:"PreStartAppend"`
@@ -2770,6 +2772,7 @@ type SessionResponse struct {
 	SubmissionCapabilities *SubmissionCapabilities `json:"submission_capabilities,omitempty"`
 	Template               string                  `json:"template"`
 	Title                  string                  `json:"title"`
+	WorkDir                *string                 `json:"work_dir,omitempty"`
 }
 
 // SessionStrandedPayload defines model for SessionStrandedPayload.

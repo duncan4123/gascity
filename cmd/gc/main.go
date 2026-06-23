@@ -1198,6 +1198,26 @@ func openStoreResultAtForCity(storePath, cityPath string) (beads.StoreOpenResult
 		store, err := openExecStoreAtForCity(provider, scopeRoot, runtimeCityPath)
 		return beads.StoreOpenResult{Store: wrapStoreWithBeadPolicies(store, cfg), Diagnostic: beads.ExecStoreDiagnostic()}, err
 	}
+	openDoltliteFastPath := func() (beads.Store, bool) {
+		var bdStore *beads.BdStore
+		if samePath(scopeRoot, runtimeCityPath) {
+			bdStore = bdStoreForCity(scopeRoot, runtimeCityPath)
+		} else {
+			bdStore = bdStoreForRig(scopeRoot, runtimeCityPath, cfg)
+		}
+		return openOptimizedDoltliteStore(scopeRoot, runtimeCityPath, bdStore)
+	}
+	if providerUsesBdStoreContract(provider) && scopeBackendIsDoltlite(runtimeCityPath, scopeRoot) {
+		if optimized, ok := openDoltliteFastPath(); ok {
+			return beads.StoreOpenResult{
+				Store: wrapStoreWithBeadPolicies(optimized, cfg),
+				Diagnostic: beads.BeadsDiagnostic{
+					Store:               beads.BeadsStoreNameDoltliteReadStore,
+					NativeStoreEligible: true,
+				},
+			}, nil
+		}
+	}
 	result, err := beads.OpenStoreAtForCity(context.Background(), beads.StoreOpenOptions{
 		ScopeRoot:        scopeRoot,
 		CityPath:         runtimeCityPath,
@@ -1217,6 +1237,12 @@ func openStoreResultAtForCity(storePath, cityPath string) (beads.StoreOpenResult
 			return openExecStoreAtForCity(provider, scopeRoot, runtimeCityPath)
 		},
 		OpenNativeStore: func() (beads.Store, error) {
+			if optimized, ok := openDoltliteFastPath(); ok {
+				return optimized, nil
+			}
+			if providerUsesBdStoreContract(provider) && scopeBackendIsDoltlite(runtimeCityPath, scopeRoot) {
+				return nil, fmt.Errorf("doltlite fastpath unavailable for %s", scopeRoot)
+			}
 			env, err := nativeDoltOpenEnvForScope(runtimeCityPath, nil, scopeRoot)
 			if err != nil {
 				return nil, fmt.Errorf("project native store env %s: %w", scopeRoot, err)
@@ -1282,7 +1308,7 @@ func resolveStoreScopeRoot(cityPath, storePath string) string {
 func openBdStoreAt(storePath, cityPath string) (beads.Store, error) {
 	if filepath.Clean(storePath) == filepath.Clean(cityPath) {
 		store := bdStoreForCity(storePath, cityPath)
-		if optimized, ok := openOptimizedDoltliteStore(storePath, store); ok {
+		if optimized, ok := openOptimizedDoltliteStore(storePath, cityPath, store); ok {
 			return optimized, nil
 		}
 		return store, nil
@@ -1292,7 +1318,7 @@ func openBdStoreAt(storePath, cityPath string) (beads.Store, error) {
 		cfg = nil
 	}
 	store := bdStoreForRig(storePath, cityPath, cfg)
-	if optimized, ok := openOptimizedDoltliteStore(storePath, store); ok {
+	if optimized, ok := openOptimizedDoltliteStore(storePath, cityPath, store); ok {
 		return optimized, nil
 	}
 	return store, nil

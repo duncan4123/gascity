@@ -87,6 +87,15 @@ type defaultScaleCheckTarget struct {
 	err      error
 }
 
+type scaleCheckDemand struct {
+	Count       int
+	WorkBeadIDs []string
+	Titles      map[string]string
+	Packs       map[string]string
+	Workspaces  map[string]string
+	StoreRefs   map[string]string
+}
+
 var errPoolSessionCreateBudgetExhausted = errors.New("pool session create budget exhausted")
 
 // poolSessionCreateFairShareCounter rotates scarce create tokens across
@@ -643,6 +652,7 @@ func buildDesiredStateWithSessionBeads(
 	var assignedWorkStoreRefs []string
 	var storePartial bool
 	var scaleCheckCounts map[string]int
+	var scaleCheckDemandByTemplate map[string]scaleCheckDemand
 	var poolScaleCheckPartialTemplates map[string]bool
 	var namedScaleCheckPartialTemplates map[string]bool
 	var scaleCheckPartialTemplates map[string]bool
@@ -685,7 +695,7 @@ func buildDesiredStateWithSessionBeads(
 		controlDispatcherOpenDemand := openControlDispatcherDemand(cfg, unassignedRoutedBeads)
 		scaleCheckCounts, poolScaleCheckPartialTemplates = evaluatePendingPoolsMap(cfg, pendingPools, stderr, trace)
 		if len(defaultScaleTargets) > 0 {
-			defaultCounts, partialTemplates, errs := defaultScaleCheckCounts(defaultScaleTargets)
+			defaultCounts, defaultDemand, partialTemplates, errs := defaultScaleCheckCountsAndDemand(defaultScaleTargets)
 			for _, err := range errs {
 				// defaultScaleCheckCounts wraps Ready() failures with
 				// enough context to keep this generic outer log honest
@@ -697,6 +707,9 @@ func buildDesiredStateWithSessionBeads(
 			if scaleCheckCounts == nil {
 				scaleCheckCounts = make(map[string]int)
 			}
+			if scaleCheckDemandByTemplate == nil {
+				scaleCheckDemandByTemplate = make(map[string]scaleCheckDemand)
+			}
 			for template, count := range defaultCounts {
 				// A cold-pool wake probe only wakes the pool from zero; clamp its
 				// contribution to 1 so it never overrides a custom scale_check's
@@ -707,6 +720,7 @@ func buildDesiredStateWithSessionBeads(
 				if count > scaleCheckCounts[template] {
 					scaleCheckCounts[template] = count
 				}
+				scaleCheckDemandByTemplate[template] = mergeScaleCheckDemand(scaleCheckDemandByTemplate[template], defaultDemand[template], count)
 			}
 		}
 		if len(controlDispatcherOpenDemand) > 0 {
@@ -735,7 +749,7 @@ func buildDesiredStateWithSessionBeads(
 		}
 		poolWorkBeads := filterAssignedWorkBeadsForPoolDemand(cfg, cityPath, sessionBeads.Open(), assignedWorkBeads, assignedWorkStoreRefs)
 		bp.assignedWorkBeads = poolWorkBeads
-		poolDesiredStates := ComputePoolDesiredStatesTraced(cfg, poolWorkBeads, sessionBeads.Open(), scaleCheckCounts, trace)
+		poolDesiredStates := ComputePoolDesiredStatesWithDemandTraced(cfg, poolWorkBeads, sessionBeads.Open(), scaleCheckCounts, scaleCheckDemandByTemplate, trace)
 		bp.configurePoolSessionCreateFairShare(poolDesiredStates)
 		for _, poolState := range poolDesiredStates {
 			cfgAgent := findAgentByTemplate(cfg, poolState.Template)
@@ -1295,13 +1309,20 @@ func defaultScaleCheckTargetForAgent(
 // generic pool demand. Assigned beads are handled by assigned-work collection
 // and named-session demand so they are intentionally excluded here.
 func defaultScaleCheckCounts(targets []defaultScaleCheckTarget) (map[string]int, map[string]bool, []error) {
+	counts, _, partialTemplates, errs := defaultScaleCheckCountsAndDemand(targets)
+	return counts, partialTemplates, errs
+}
+
+func defaultScaleCheckCountsAndDemand(targets []defaultScaleCheckTarget) (map[string]int, map[string]scaleCheckDemand, map[string]bool, []error) {
 	counts := make(map[string]int, len(targets))
+	demand := make(map[string]scaleCheckDemand, len(targets))
 	if len(targets) == 0 {
-		return counts, nil, nil
+		return counts, demand, nil, nil
 	}
 
 	type scaleStoreGroup struct {
 		store     beads.Store
+		storeKey  string
 		templates map[string]struct{}
 	}
 	groups := make(map[string]*scaleStoreGroup)
@@ -1330,7 +1351,7 @@ func defaultScaleCheckCounts(targets []defaultScaleCheckTarget) (map[string]int,
 		}
 		group := groups[key]
 		if group == nil {
-			group = &scaleStoreGroup{store: target.store, templates: make(map[string]struct{})}
+			group = &scaleStoreGroup{store: target.store, storeKey: key, templates: make(map[string]struct{})}
 			groups[key] = group
 		}
 		group.templates[template] = struct{}{}
@@ -1359,9 +1380,78 @@ func defaultScaleCheckCounts(targets []defaultScaleCheckTarget) (map[string]int,
 				continue
 			}
 			counts[template]++
+			entry := demand[template]
+			entry.Count++
+			entry.WorkBeadIDs = append(entry.WorkBeadIDs, b.ID)
+			if entry.Titles == nil {
+				entry.Titles = make(map[string]string)
+			}
+			entry.Titles[b.ID] = b.Title
+			if pack := strings.TrimSpace(b.Metadata[beadmeta.PackMetadataKey]); pack != "" {
+				if entry.Packs == nil {
+					entry.Packs = make(map[string]string)
+				}
+				entry.Packs[b.ID] = pack
+			}
+			if workspace := strings.TrimSpace(b.Metadata[beadmeta.PackWorkspaceMetadataKey]); workspace != "" {
+				if entry.Workspaces == nil {
+					entry.Workspaces = make(map[string]string)
+				}
+				entry.Workspaces[b.ID] = workspace
+			}
+			if entry.StoreRefs == nil {
+				entry.StoreRefs = make(map[string]string)
+			}
+			entry.StoreRefs[b.ID] = group.storeKey
+			demand[template] = entry
 		}
 	}
-	return counts, partialTemplates, errs
+	return counts, demand, partialTemplates, errs
+}
+
+func mergeScaleCheckDemand(existing, incoming scaleCheckDemand, count int) scaleCheckDemand {
+	if count <= 0 || len(incoming.WorkBeadIDs) == 0 {
+		return existing
+	}
+	limit := count
+	if limit > len(incoming.WorkBeadIDs) {
+		limit = len(incoming.WorkBeadIDs)
+	}
+	if existing.StoreRefs == nil && len(incoming.StoreRefs) > 0 {
+		existing.StoreRefs = make(map[string]string, len(incoming.StoreRefs))
+	}
+	if existing.Titles == nil && len(incoming.Titles) > 0 {
+		existing.Titles = make(map[string]string, len(incoming.Titles))
+	}
+	if existing.Packs == nil && len(incoming.Packs) > 0 {
+		existing.Packs = make(map[string]string, len(incoming.Packs))
+	}
+	if existing.Workspaces == nil && len(incoming.Workspaces) > 0 {
+		existing.Workspaces = make(map[string]string, len(incoming.Workspaces))
+	}
+	for _, id := range incoming.WorkBeadIDs[:limit] {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		existing.WorkBeadIDs = append(existing.WorkBeadIDs, id)
+		if incoming.Titles != nil {
+			existing.Titles[id] = incoming.Titles[id]
+		}
+		if incoming.Packs != nil {
+			existing.Packs[id] = incoming.Packs[id]
+		}
+		if incoming.Workspaces != nil {
+			existing.Workspaces[id] = incoming.Workspaces[id]
+		}
+		if incoming.StoreRefs != nil {
+			existing.StoreRefs[id] = incoming.StoreRefs[id]
+		}
+	}
+	existing.Count = len(existing.WorkBeadIDs)
+	if existing.Count < count {
+		existing.Count = count
+	}
+	return existing
 }
 
 func defaultNamedSessionDemand(targets []defaultScaleCheckTarget, _ *config.City, _ string) (map[string]bool, map[string]bool, []error) {

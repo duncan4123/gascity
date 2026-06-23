@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,46 +63,37 @@ func ExecCommandRunner() CommandRunner {
 // applies the provided environment overrides. Explicit keys replace any
 // inherited values from the parent process.
 func ExecCommandRunnerWithEnv(env map[string]string) CommandRunner {
+	return execCommandRunnerWithEnv(context.Background(), env)
+}
+
+// ExecCommandRunnerWithEnvContext is like ExecCommandRunnerWithEnv but binds
+// every command it runs to ctx, so each command exits at the sooner of ctx's
+// deadline and the per-command bd timeout. Callers with a short best-effort
+// budget (for example the claim-time gc.current_run_id decoration) use this so a
+// slow or stuck bd child cannot outlast that budget.
+func ExecCommandRunnerWithEnvContext(ctx context.Context, env map[string]string) CommandRunner {
+	return execCommandRunnerWithEnv(ctx, env)
+}
+
+func execCommandRunnerWithEnv(parent context.Context, env map[string]string) CommandRunner {
 	return func(dir, name string, args ...string) ([]byte, error) {
 		start := time.Now()
-		trace := func(status string, err error) {
-			// GC_BD_TRACE_JSON wins: when the structured JSONL trace
-			// (via TraceBDCall in bdtrace.go) is enabled, suppress the
-			// legacy line-format trace so the two don't interleave
-			// incompatible records in the same file when an operator
-			// points both env vars at the same path.
-			if strings.TrimSpace(os.Getenv("GC_BD_TRACE_JSON")) != "" {
-				return
-			}
-			path := strings.TrimSpace(os.Getenv("GC_BD_TRACE"))
-			if path == "" {
-				return
-			}
-			f, openErr := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-			if openErr != nil {
-				return
-			}
-			defer f.Close() //nolint:errcheck // best-effort trace log
-			msg := ""
-			if err != nil {
-				msg = err.Error()
-			}
-			fmt.Fprintf(f, "%s status=%s dur=%s dir=%s cmd=%s args=%q err=%q\n", //nolint:errcheck // best-effort trace log
-				time.Now().UTC().Format(time.RFC3339Nano), status, time.Since(start), dir, name, args, msg)
-		}
+		trace := newBDExecTrace(start, dir, name, args)
 		trace("start", nil)
+
 		timeout := bdCommandTimeoutFor(name, args)
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(parent, timeout)
 		defer cancel()
-		var slowTimer *time.Timer
+
 		if name == "bd" {
 			bdArgs := append([]string(nil), args...)
 			agentID := bdTelemetryAgentID(env)
-			slowTimer = time.AfterFunc(bdSlowTelemetryThreshold, func() {
+			slowTimer := time.AfterFunc(bdSlowTelemetryThreshold, func() {
 				telemetry.RecordBDSlow(ctx, bdArgs, dir, agentID)
 			})
 			defer slowTimer.Stop()
 		}
+
 		cmd := exec.CommandContext(ctx, name, args...)
 		cmd.WaitDelay = 2 * time.Second
 		prepareCommandForTimeout(cmd)
@@ -113,53 +105,118 @@ func ExecCommandRunnerWithEnv(env map[string]string) CommandRunner {
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
-		if name == "bd" {
-			// Structured JSONL trace — independent of the legacy line-format
-			// trace above (gated by GC_BD_TRACE_JSON, not GC_BD_TRACE).
-			traceExit := 0
-			if err != nil {
-				var exitErr *exec.ExitError
-				if errors.As(err, &exitErr) {
-					traceExit = exitErr.ExitCode()
-				} else {
-					traceExit = -1
-				}
-			}
-			TraceBDCall("go:bdstore.runner", dir, args, start, traceExit, err)
-			telemetry.RecordBDCall(context.Background(),
-				args, float64(time.Since(start).Milliseconds()),
-				err, out, stderr.String())
-		}
-		if err == nil && name == "bd" && bdOutputIndicatesSilentFallback(stderr.String()) {
-			fallbackErr := fmt.Errorf("%w: %s", ErrBDSilentFallback, strings.TrimSpace(stderr.String()))
-			trace("error", fallbackErr)
-			return out, fallbackErr
-		}
-		if ctx.Err() == context.DeadlineExceeded {
-			timeoutErr := fmt.Errorf("timed out after %s", timeout)
-			trace("timeout", timeoutErr)
-			if stderr.Len() > 0 {
-				return out, fmt.Errorf("%w: %s", timeoutErr, stderr.String())
-			}
-			return out, timeoutErr
-		}
-		if err != nil {
-			// bd writes structured errors to stdout (JSON envelope) when
-			// invoked with --json, while stderr is often empty. Surface
-			// whichever stream has content so supervisor logs become
-			// actionable instead of bare "exit status 1".
-			detail := strings.TrimSpace(stderr.String())
-			if detail == "" && name == "bd" {
-				detail = bdStdoutErrorDetail(out)
-			}
-			if detail != "" {
-				trace("error", err)
-				return out, fmt.Errorf("%w: %s", err, detail)
-			}
-		}
-		trace("done", err)
-		return out, err
+
+		recordBDExecTelemetry(name, dir, args, start, out, stderr.String(), err)
+
+		status, traceErr, resultErr := classifyBDExecResult(
+			parent, ctx, name, timeout, start, out, stderr.String(), err)
+		trace(status, traceErr)
+		return out, resultErr
 	}
+}
+
+// newBDExecTrace returns the legacy line-format trace callback for one command
+// invocation. It is a no-op when GC_BD_TRACE is unset, or when GC_BD_TRACE_JSON
+// has claimed tracing (the structured JSONL trace in bdtrace.go) so the two
+// formats never interleave incompatible records when an operator points both
+// env vars at the same file. The returned callback appends one
+// "status=… dur=… cmd=… err=…" line per call.
+func newBDExecTrace(start time.Time, dir, name string, args []string) func(status string, err error) {
+	if strings.TrimSpace(os.Getenv("GC_BD_TRACE_JSON")) != "" {
+		return func(string, error) {}
+	}
+	path := strings.TrimSpace(os.Getenv("GC_BD_TRACE"))
+	if path == "" {
+		return func(string, error) {}
+	}
+	return func(status string, err error) {
+		f, openErr := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if openErr != nil {
+			return
+		}
+		defer f.Close() //nolint:errcheck // best-effort trace log
+		msg := ""
+		if err != nil {
+			msg = err.Error()
+		}
+		fmt.Fprintf(f, "%s status=%s dur=%s dir=%s cmd=%s args=%q err=%q\n", //nolint:errcheck // best-effort trace log
+			time.Now().UTC().Format(time.RFC3339Nano), status, time.Since(start), dir, name, args, msg)
+	}
+}
+
+// recordBDExecTelemetry emits the structured JSONL trace (bdtrace.go) and the
+// telemetry RecordBDCall for a completed "bd" invocation; it is a no-op for any
+// other command. The trace exit code is the child's exit status, or -1 when the
+// failure was not an *exec.ExitError (for example a context kill or a spawn
+// failure). It is independent of the legacy line-format trace (gated by
+// GC_BD_TRACE_JSON, not GC_BD_TRACE).
+func recordBDExecTelemetry(name, dir string, args []string, start time.Time, out []byte, stderr string, err error) {
+	if name != "bd" {
+		return
+	}
+	traceExit := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			traceExit = exitErr.ExitCode()
+		} else {
+			traceExit = -1
+		}
+	}
+	TraceBDCall("go:bdstore.runner", dir, args, start, traceExit, err)
+	telemetry.RecordBDCall(context.Background(),
+		args, float64(time.Since(start).Milliseconds()),
+		err, out, stderr)
+}
+
+// classifyBDExecResult maps a finished invocation to its legacy trace status,
+// the error to trace, and the error to return to the caller. The trace error
+// and the returned error differ only where the returned error is enriched with
+// stderr/stdout detail that the historical status-level trace line omits, so
+// the line-format trace stays compatible with prior releases. bd writes
+// structured errors to stdout (JSON envelope) under --json while stderr is
+// often empty, so the generic-error path surfaces whichever stream has content
+// rather than a bare "exit status 1".
+func classifyBDExecResult(parent, ctx context.Context, name string, timeout time.Duration, start time.Time, out []byte, stderr string, runErr error) (status string, traceErr, resultErr error) {
+	if runErr == nil && name == "bd" && bdOutputIndicatesSilentFallback(stderr) {
+		fallbackErr := fmt.Errorf("%w: %s", ErrBDSilentFallback, strings.TrimSpace(stderr))
+		return "error", fallbackErr, fallbackErr
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		timeoutErr := bdExecTimeoutError(parent, timeout, start)
+		if stderr != "" {
+			return "timeout", timeoutErr, fmt.Errorf("%w: %s", timeoutErr, stderr)
+		}
+		return "timeout", timeoutErr, timeoutErr
+	}
+	if runErr != nil {
+		detail := strings.TrimSpace(stderr)
+		if detail == "" && name == "bd" {
+			detail = bdStdoutErrorDetail(out)
+		}
+		if detail != "" {
+			return "error", runErr, fmt.Errorf("%w: %s", runErr, detail)
+		}
+	}
+	return "done", runErr, runErr
+}
+
+// bdExecTimeoutError formats the deadline error after the per-command context
+// expired, attributed to whichever budget actually won the race. ctx's
+// effective deadline is min(parent deadline, start+timeout): when the caller's
+// parent deadline is the binding one (for example the short claim-time
+// gc.current_run_id write budget), it reports that effective budget so the
+// failure is not misreported as the much larger per-command bd timeout; when
+// the per-command timer wins, it reports that timeout unchanged.
+func bdExecTimeoutError(parent context.Context, timeout time.Duration, start time.Time) error {
+	if deadline, ok := parent.Deadline(); ok && deadline.Before(start.Add(timeout)) {
+		budget := deadline.Sub(start)
+		if budget < 0 {
+			budget = 0
+		}
+		return fmt.Errorf("timed out after %s (caller deadline)", budget.Round(time.Millisecond))
+	}
+	return fmt.Errorf("timed out after %s", timeout)
 }
 
 func bdTelemetryAgentID(env map[string]string) string {
@@ -252,6 +309,22 @@ const (
 	bdTransientWriteAttempts = 3
 	bdTransientReadAttempts  = 3
 )
+
+var doltliteWriteLocks sync.Map // map[string]*sync.Mutex
+
+func withDoltliteWriteLock(lockKey, lockPath string, fn func() error) error {
+	actual, _ := doltliteWriteLocks.LoadOrStore(lockKey, &sync.Mutex{})
+	mu := actual.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+
+	locker := NewFileFlock(lockPath)
+	if err := locker.Lock(); err != nil {
+		return fmt.Errorf("locking DoltLite writes: %w", err)
+	}
+	defer locker.Unlock() //nolint:errcheck // best-effort unlock after write
+	return fn()
+}
 
 var _ ConditionalAssignmentReleaser = (*BdStore)(nil)
 
@@ -963,6 +1036,20 @@ func (s *BdStore) Get(id string) (Bead, error) {
 
 // Update modifies fields of an existing bead via bd update.
 func (s *BdStore) Update(id string, opts UpdateOpts) error {
+	if opts.ExpectedStatus != nil && opts.Status != nil {
+		if err := s.updateStatusIfCurrent(id, *opts.ExpectedStatus, *opts.Status); err != nil {
+			return err
+		}
+		opts.Status = nil
+		opts.ExpectedStatus = nil
+		if !hasUpdateOpts(opts) {
+			return nil
+		}
+	}
+	return s.updateWithoutExpectedStatus(id, opts)
+}
+
+func (s *BdStore) updateWithoutExpectedStatus(id string, opts UpdateOpts) error {
 	args := []string{"update", "--json", id}
 	if opts.Title != nil {
 		args = append(args, "--title", *opts.Title)
@@ -1016,6 +1103,99 @@ func (s *BdStore) Update(id string, opts UpdateOpts) error {
 		return fmt.Errorf("updating bead %q: %w", id, err)
 	}
 	return nil
+}
+
+func hasNonStatusUpdateFields(opts UpdateOpts) bool {
+	return opts.Title != nil ||
+		opts.Type != nil ||
+		opts.Priority != nil ||
+		opts.Description != nil ||
+		opts.ParentID != nil ||
+		opts.Assignee != nil ||
+		len(opts.Metadata) > 0 ||
+		len(opts.Labels) > 0 ||
+		len(opts.RemoveLabels) > 0
+}
+
+func (s *BdStore) updateStatusIfCurrent(id, expectedStatus, nextStatus string) error {
+	current, err := s.Get(id)
+	if err != nil {
+		if isBdNotFound(err) {
+			return fmt.Errorf("updating bead %q: %w", id, ErrNotFound)
+		}
+		return fmt.Errorf("updating bead %q: %w", id, err)
+	}
+	if current.Status == nextStatus {
+		if current.Status == expectedStatus {
+			return nil
+		}
+		return statusConflictError(id, expectedStatus, current.Status)
+	}
+	if current.Status != expectedStatus {
+		return statusConflictError(id, expectedStatus, current.Status)
+	}
+
+	table := "issues"
+	if current.Ephemeral {
+		table = "wisps"
+	}
+	query := "UPDATE " + table + " SET status = " + bdSQLStringLiteral(nextStatus) +
+		", updated_at = CURRENT_TIMESTAMP WHERE id = " + bdSQLStringLiteral(id) +
+		" AND status = " + bdSQLStringLiteral(expectedStatus)
+	out, err := s.runBDTransientWriteOutput("sql", "--json", query)
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if isBdSQLUnsupportedInEmbeddedMode(err) {
+			return s.updateStatusIfCurrentViaEmbeddedDoltSQL(id, table, expectedStatus, nextStatus)
+		}
+		if msg != "" {
+			return fmt.Errorf("bd status update: %w: %s", err, msg)
+		}
+		return fmt.Errorf("bd status update: %w", err)
+	}
+	var result struct {
+		RowsAffected int `json:"rows_affected"`
+	}
+	if err := json.Unmarshal(extractJSON(out), &result); err != nil {
+		return fmt.Errorf("bd status update: parsing JSON: %w", err)
+	}
+	if result.RowsAffected > 0 {
+		return nil
+	}
+	return statusConflictError(id, expectedStatus, current.Status)
+}
+
+func (s *BdStore) updateStatusIfCurrentViaEmbeddedDoltSQL(id, table, expectedStatus, nextStatus string) error {
+	doltDir, ok, err := s.embeddedDoltDir()
+	if err != nil {
+		return fmt.Errorf("bd status update embedded fallback: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("bd status update embedded fallback: %w", ErrConditionalReleaseUnsupported)
+	}
+	query := "UPDATE " + table + " SET status = " + bdSQLStringLiteral(nextStatus) +
+		", updated_at = CURRENT_TIMESTAMP WHERE id = " + bdSQLStringLiteral(id) +
+		" AND status = " + bdSQLStringLiteral(expectedStatus) +
+		"; SELECT ROW_COUNT() AS rows_affected"
+	out, err := s.runner(doltDir, "dolt", "sql", "-r", "json", "-q", query)
+	if err != nil {
+		return fmt.Errorf("bd status update embedded fallback: dolt sql: %w", err)
+	}
+	rowsAffected, err := parseDoltRowsAffected(out)
+	if err != nil {
+		return fmt.Errorf("bd status update embedded fallback: parsing SQL result: %w", err)
+	}
+	if rowsAffected > 0 {
+		return nil
+	}
+	current, getErr := s.Get(id)
+	if getErr != nil {
+		if isBdNotFound(getErr) {
+			return fmt.Errorf("updating bead %q: %w", id, ErrNotFound)
+		}
+		return fmt.Errorf("updating bead %q: %w", id, getErr)
+	}
+	return statusConflictError(id, expectedStatus, current.Status)
 }
 
 // ReleaseIfCurrent clears an in-progress assignment only when the bead still
@@ -1718,16 +1898,24 @@ func (s *BdStore) runBDTransientCreateOutput(hasStableID bool, args ...string) (
 }
 
 func (s *BdStore) runBDTransientWriteOutputWhen(shouldRetry func(error) bool, args ...string) ([]byte, error) {
+	doltlite := s.isDoltliteBackend()
 	var err error
 	var out []byte
-	args = s.bdTransientWriteArgs(args)
-	for attempt := 1; attempt <= bdTransientWriteAttempts; attempt++ {
-		out, err = s.runner(s.dir, "bd", args...)
-		if err == nil || !shouldRetry(err) || attempt == bdTransientWriteAttempts {
-			return out, err
+	args = s.bdTransientWriteArgsForBackend(args, doltlite)
+	run := func() error {
+		for attempt := 1; attempt <= bdTransientWriteAttempts; attempt++ {
+			out, err = s.runner(s.dir, "bd", args...)
+			if err == nil || !shouldRetry(err) || attempt == bdTransientWriteAttempts {
+				return err
+			}
+			time.Sleep(time.Duration(attempt) * 25 * time.Millisecond)
 		}
-		time.Sleep(time.Duration(attempt) * 25 * time.Millisecond)
+		return err
 	}
+	if !doltlite {
+		return out, run()
+	}
+	err = withDoltliteWriteLock(filepath.Join(s.dir, ".beads"), filepath.Join(s.dir, ".beads", ".bd-write.lock"), run)
 	return out, err
 }
 
@@ -1751,7 +1939,11 @@ func (s *BdStore) runBDTransientRead(args ...string) ([]byte, error) {
 }
 
 func (s *BdStore) bdTransientWriteArgs(args []string) []string {
-	if !s.isDoltliteBackend() {
+	return s.bdTransientWriteArgsForBackend(args, s.isDoltliteBackend())
+}
+
+func (s *BdStore) bdTransientWriteArgsForBackend(args []string, doltlite bool) []string {
+	if !doltlite {
 		return args
 	}
 	out := []string{"--dolt-auto-commit", "off"}
@@ -1792,10 +1984,12 @@ func isBdTransientWriteError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "Error 1213 (40001): serialization failure") ||
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "error 1213 (40001): serialization failure") ||
 		strings.Contains(msg, "this transaction conflicts with a committed transaction") ||
 		strings.Contains(msg, "failed to prepare catalog") ||
+		strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "database table is locked") ||
 		isBdAmbiguousWriteError(err)
 }
 
@@ -2362,6 +2556,7 @@ func (s *BdStore) Children(parentID string, opts ...QueryOpt) ([]Bead, error) {
 // wisp-aware tier modes.
 func (s *BdStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 	q := readyQueryFromArgs(query)
+	assignees := readyQueryAssignees(q)
 	includeEphemeral := q.TierMode == TierBoth || q.TierMode == TierWisps
 	args := bdReadyArgs(q, includeEphemeral)
 	out, err := s.runBDTransientRead(args...)
@@ -2376,7 +2571,7 @@ func (s *BdStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 		if !IsReadyCandidateForTier(bead, now, q.TierMode) {
 			continue
 		}
-		if q.Assignee != "" && bead.Assignee != q.Assignee {
+		if len(assignees) > 0 && !slices.Contains(assignees, bead.Assignee) {
 			continue
 		}
 		result = append(result, bead)

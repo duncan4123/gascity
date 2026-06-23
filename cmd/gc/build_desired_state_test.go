@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/beads/contract"
 	"github.com/gastownhall/gascity/internal/clock"
@@ -682,6 +683,51 @@ func TestDefaultScaleCheckCountsSeesExternalRoutedWorkAfterCachePrime(t *testing
 	}
 	if got := counts[template]; got != 1 {
 		t.Fatalf("defaultScaleCheckCounts[%q] = %d, want 1 for post-prime external routed work", template, got)
+	}
+}
+
+func TestDefaultScaleCheckCountsAndDemandCarriesPackWorkspaceMetadata(t *testing.T) {
+	const template = "gascity/workflows.codex-min"
+	store := beads.NewMemStore()
+	work, err := store.Create(beads.Bead{
+		Title:  "manual order run wisp",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			beadmeta.PackMetadataKey:          "packer",
+			beadmeta.PackWorkspaceMetadataKey: "existing-workspace",
+			"gc.routed_to":                    template,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create routed bead: %v", err)
+	}
+
+	counts, demand, _, errs := defaultScaleCheckCountsAndDemand([]defaultScaleCheckTarget{{
+		template: template,
+		storeKey: "rig:gascity",
+		store:    store,
+	}})
+	if len(errs) != 0 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
+	}
+	if got := counts[template]; got != 1 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand[%q] = %d, want 1", template, got)
+	}
+	if got := demand[template].WorkBeadIDs; !reflect.DeepEqual(got, []string{work.ID}) {
+		t.Fatalf("WorkBeadIDs = %v, want [%s]", got, work.ID)
+	}
+	if got := demand[template].Titles[work.ID]; got != "manual order run wisp" {
+		t.Fatalf("Titles[%s] = %q, want manual order run wisp", work.ID, got)
+	}
+	if got := demand[template].Packs[work.ID]; got != "packer" {
+		t.Fatalf("Packs[%s] = %q, want packer", work.ID, got)
+	}
+	if got := demand[template].Workspaces[work.ID]; got != "existing-workspace" {
+		t.Fatalf("Workspaces[%s] = %q, want existing-workspace", work.ID, got)
+	}
+	if got := demand[template].StoreRefs[work.ID]; got != "rig:gascity" {
+		t.Fatalf("StoreRefs[%s] = %q, want rig:gascity", work.ID, got)
 	}
 }
 

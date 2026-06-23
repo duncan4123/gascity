@@ -338,6 +338,18 @@
               "null"
             ]
           },
+          "Pack": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "PackRoot": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "Pool": {
             "$ref": "#/components/schemas/PoolOverride"
           },
@@ -502,6 +514,8 @@
           "Dir",
           "Name",
           "WorkDir",
+          "Pack",
+          "PackRoot",
           "TmuxAlias",
           "Scope",
           "Suspended",
@@ -6714,6 +6728,9 @@
             "type": "string"
           },
           "title": {
+            "type": "string"
+          },
+          "work_dir": {
             "type": "string"
           }
         },

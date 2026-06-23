@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 )
@@ -768,7 +769,7 @@ func TestComputePoolDesiredStates_CapsNewDemandBeforeMaterializingRequests(t *te
 	sessions := []beads.Bead{sessionBead("sess-1", "open")}
 	trace := newPoolDesiredStateTestTrace("claude")
 
-	result := computePoolDesiredStates(cfg, work, sessions, map[string]int{"claude": 10}, trace)
+	result := computePoolDesiredStates(cfg, work, sessions, map[string]int{"claude": 10}, nil, trace)
 
 	if len(result) != 1 {
 		t.Fatalf("len(result) = %d, want 1", len(result))
@@ -790,6 +791,77 @@ func TestComputePoolDesiredStates_CapsNewDemandBeforeMaterializingRequests(t *te
 		trace.decisionCounts[string(TraceSitePoolWorkspaceCap)]
 	if capRejections != 0 {
 		t.Fatalf("cap rejections = %d, want 0; new demand should be capped before request materialization", capRejections)
+	}
+}
+
+func TestComputePoolDesiredStates_InFlightNewPreservesPackWorkspace(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{poolAgent("claude", "", intPtr(3), 0)},
+	}
+	session := poolSessionBeadWithState("sess-1", "creating", boolMetadata(true))
+	session.Metadata[beadmeta.TriggerBeadIDMetadataKey] = "gp-qmh.5"
+	session.Metadata[beadmeta.TriggerBeadStoreRefMetadataKey] = "rig:gascity-packs"
+	session.Metadata[beadmeta.PackMetadataKey] = "jjw"
+	session.Metadata[beadmeta.PackWorkspaceMetadataKey] = "gp-qmh-5-jjw-align-workspace-pack-structure-with-upstream-packs"
+
+	result := computePoolDesiredStates(cfg, nil, []beads.Bead{session}, map[string]int{"claude": 1}, nil, nil)
+
+	if len(result) != 1 || len(result[0].Requests) != 1 {
+		t.Fatalf("requests = %#v, want one in-flight new request", result)
+	}
+	req := result[0].Requests[0]
+	if req.SessionBeadID != "sess-1" {
+		t.Fatalf("SessionBeadID = %q, want sess-1", req.SessionBeadID)
+	}
+	if req.WorkBeadID != "gp-qmh.5" {
+		t.Fatalf("WorkBeadID = %q, want gp-qmh.5", req.WorkBeadID)
+	}
+	if req.WorkStoreRef != "rig:gascity-packs" {
+		t.Fatalf("WorkStoreRef = %q, want rig:gascity-packs", req.WorkStoreRef)
+	}
+	if req.WorkPack != "jjw" {
+		t.Fatalf("WorkPack = %q, want jjw", req.WorkPack)
+	}
+	if req.WorkWorkspace != "gp-qmh-5-jjw-align-workspace-pack-structure-with-upstream-packs" {
+		t.Fatalf("WorkWorkspace = %q, want task workspace", req.WorkWorkspace)
+	}
+}
+
+func TestComputePoolDesiredStates_NewDemandCarriesWorkMetadata(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{poolAgent("claude", "", intPtr(3), 0)},
+	}
+	demand := map[string]scaleCheckDemand{
+		"claude": {
+			Count:       1,
+			WorkBeadIDs: []string{"gp-qmh.5"},
+			Titles:      map[string]string{"gp-qmh.5": "Align jjw pack"},
+			Packs:       map[string]string{"gp-qmh.5": "jjw"},
+			Workspaces:  map[string]string{"gp-qmh.5": "gp-qmh-5-jjw"},
+			StoreRefs:   map[string]string{"gp-qmh.5": "rig:gascity-packs"},
+		},
+	}
+
+	result := ComputePoolDesiredStatesWithDemandTraced(cfg, nil, nil, map[string]int{"claude": 1}, demand, nil)
+
+	if len(result) != 1 || len(result[0].Requests) != 1 {
+		t.Fatalf("requests = %#v, want one new request", result)
+	}
+	req := result[0].Requests[0]
+	if req.WorkBeadID != "gp-qmh.5" {
+		t.Fatalf("WorkBeadID = %q, want gp-qmh.5", req.WorkBeadID)
+	}
+	if req.WorkBeadTitle != "Align jjw pack" {
+		t.Fatalf("WorkBeadTitle = %q, want Align jjw pack", req.WorkBeadTitle)
+	}
+	if req.WorkStoreRef != "rig:gascity-packs" {
+		t.Fatalf("WorkStoreRef = %q, want rig:gascity-packs", req.WorkStoreRef)
+	}
+	if req.WorkPack != "jjw" {
+		t.Fatalf("WorkPack = %q, want jjw", req.WorkPack)
+	}
+	if req.WorkWorkspace != "gp-qmh-5-jjw" {
+		t.Fatalf("WorkWorkspace = %q, want gp-qmh-5-jjw", req.WorkWorkspace)
 	}
 }
 
@@ -1221,7 +1293,7 @@ func TestComputePoolDesiredStates_InFlightDemandRecordsTrace(t *testing.T) {
 	}
 	trace := newPoolDesiredStateTestTrace("claude")
 
-	result := computePoolDesiredStates(cfg, nil, sessions, map[string]int{"claude": 5}, trace)
+	result := computePoolDesiredStates(cfg, nil, sessions, map[string]int{"claude": 5}, nil, trace)
 
 	if len(result) != 1 || len(result[0].Requests) != 5 {
 		t.Fatalf("result = %#v, want five desired requests", result)
@@ -1254,7 +1326,7 @@ func TestComputePoolDesiredStates_InFlightDemandRecordsTraceWhenCapsSuppressReus
 	}
 	trace := newPoolDesiredStateTestTrace("claude")
 
-	result := computePoolDesiredStates(cfg, nil, sessions, map[string]int{"claude": 5}, trace)
+	result := computePoolDesiredStates(cfg, nil, sessions, map[string]int{"claude": 5}, nil, trace)
 
 	if len(result) != 0 {
 		t.Fatalf("result = %#v, want no desired requests when workspace cap is exhausted", result)

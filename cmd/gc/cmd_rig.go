@@ -587,7 +587,7 @@ func doRigAddWithResult(fs fsys.FS, cityPath, rigPath string, includes []string,
 	}
 	w("  Generated routes.jsonl for cross-rig routing")
 
-	if adopt {
+	if adopt && resolveBeadsBackend(cityPath).NeedsManagedServer() {
 		if err := installBeadHooks(rigPath, cityPath); err != nil {
 			fmt.Fprintf(stderr, "gc rig add: installing bead hooks: %v\n", err) //nolint:errcheck // best-effort stderr
 		}
@@ -1651,6 +1651,37 @@ func cmdRigRemove(rigName string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	cfg.Rigs = filtered
+
+	// Drop config blocks that reference the removed rig; left dangling they
+	// break a later load of the city (#3666). The three [[patches.*]] kinds and
+	// a [[github.pr_monitor]] hard-fail config.LoadWithIncludes once their
+	// now-absent rig can no longer be resolved (ApplyPatches "not found in
+	// merged config" / ValidateGitHubPRMonitors "rig is not declared"); an
+	// [[orders.overrides]] instead dangles at order-scan time. The issue named
+	// [[patches.agent]] and [[orders.overrides]]; the rest fail the same way on
+	// rig removal, so sweep them all.
+	cfg.Patches.Agents = slices.DeleteFunc(cfg.Patches.Agents,
+		func(p config.AgentPatch) bool { return p.Dir == rigName })
+	cfg.Patches.NamedSessions = slices.DeleteFunc(cfg.Patches.NamedSessions,
+		func(p config.NamedSessionPatch) bool { return p.Dir == rigName })
+	cfg.Patches.Rigs = slices.DeleteFunc(cfg.Patches.Rigs,
+		func(p config.RigPatch) bool { return p.Name == rigName })
+	// Capture rig-scoped PR monitor names before deleting them so we can also
+	// drop any [[patches.github_pr_monitor]] that targets them by name —
+	// otherwise the patch dangles and ApplyPatches fails ("github pr monitor
+	// %q not found in merged config") on the next compose, the same #3666 class.
+	removedMonitors := map[string]bool{}
+	for _, m := range cfg.GitHub.PRMonitors {
+		if m.Rig == rigName {
+			removedMonitors[m.Name] = true
+		}
+	}
+	cfg.GitHub.PRMonitors = slices.DeleteFunc(cfg.GitHub.PRMonitors,
+		func(m config.GitHubPRMonitor) bool { return m.Rig == rigName })
+	cfg.Patches.GitHubPRMonitors = slices.DeleteFunc(cfg.Patches.GitHubPRMonitors,
+		func(p config.GitHubPRMonitorPatch) bool { return removedMonitors[p.Name] })
+	cfg.Orders.Overrides = slices.DeleteFunc(cfg.Orders.Overrides,
+		func(o config.OrderOverride) bool { return o.Rig == rigName })
 
 	// Write updated config.
 	if err := config.WriteCityAndRigSiteBindingsForEditRemovingRigs(fsys.OSFS{}, tomlPath, cfg, rigName); err != nil {

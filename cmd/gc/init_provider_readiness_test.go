@@ -80,6 +80,32 @@ provider = "bd"
 	return cityPath
 }
 
+func TestApplyInitBeadsBackendDoltliteOptsIntoBD105(t *testing.T) {
+	var cfg config.City
+
+	applyInitBeadsBackend(&cfg, " doltlite ")
+
+	if got := cfg.Beads.Backend; got != "doltlite" {
+		t.Fatalf("Beads.Backend = %q, want doltlite", got)
+	}
+	if got := cfg.Beads.BDCompatibility; got != config.BeadsBDCompatibility105 {
+		t.Fatalf("Beads.BDCompatibility = %q, want %q", got, config.BeadsBDCompatibility105)
+	}
+}
+
+func TestApplyInitBeadsBackendDoltKeepsDefaultCompatibility(t *testing.T) {
+	var cfg config.City
+
+	applyInitBeadsBackend(&cfg, "dolt")
+
+	if got := cfg.Beads.Backend; got != "dolt" {
+		t.Fatalf("Beads.Backend = %q, want dolt", got)
+	}
+	if got := cfg.Beads.BDCompatibility; got != "" {
+		t.Fatalf("Beads.BDCompatibility = %q, want empty default", got)
+	}
+}
+
 func TestMaybePrintWizardProviderGuidanceNeedsAuth(t *testing.T) {
 	oldProbe := initProbeProvidersReadiness
 	initProbeProvidersReadiness = func(_ context.Context, _ []string, fresh bool) (map[string]api.ReadinessItem, error) {
