@@ -2126,6 +2126,7 @@ func TestCityRuntimeDemandSnapshotReplaysACPRoutesOnCacheHit(t *testing.T) {
 		},
 		stderr: io.Discard,
 	}
+	cr.demandSnapshot.readyDemandFingerprint = cr.readyDemandSnapshotFingerprint()
 
 	_ = cr.loadDemandSnapshot(nil, nil, "patrol", false)
 
