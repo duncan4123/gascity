@@ -21,7 +21,6 @@ import (
 	"github.com/gastownhall/gascity/internal/formula"
 	"github.com/gastownhall/gascity/internal/graphroute"
 	"github.com/gastownhall/gascity/internal/runtime"
-	"github.com/gastownhall/gascity/internal/session"
 	"github.com/gastownhall/gascity/internal/shellquote"
 	"github.com/gastownhall/gascity/internal/sling"
 	"github.com/gastownhall/gascity/internal/sourceworkflow"
@@ -571,6 +570,10 @@ func cliDirectSessionResolver(store beads.Store, cityName, cityPath string, cfg 
 	if cfg == nil {
 		return "", false, nil
 	}
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return "", false, nil
+	}
 	if cityName == "" {
 		cityName = config.EffectiveCityName(cfg, filepath.Base(cityPath))
 	}
@@ -825,7 +828,7 @@ func doSling(opts slingOpts, deps slingDeps, querier BeadQuerier, stdout, stderr
 		return dryRunSingle(opts, deps, querier, stdout, stderr)
 	}
 	if result.NudgeAgent != nil {
-		doSlingNudge(result.NudgeAgent, deps.CityName, deps.CityPath, deps.Cfg, deps.SP, deps.Store, result.BeadID, stdout, stderr)
+		doSlingNudge(result.NudgeAgent, deps.CityName, deps.CityPath, deps.Cfg, deps.SP, deps.Store, stdout, stderr)
 	}
 	return 0
 }
@@ -862,6 +865,7 @@ func doSlingBatchWithJSON(opts slingOpts, deps slingDeps, querier BeadChildQueri
 			SkipPoke:   opts.SkipPoke,
 			DryRun:     opts.DryRun,
 			InlineText: opts.InlineText,
+			NoFormula:  opts.NoFormula,
 		}, querier)
 	}
 	// Print warnings before error check so they're visible on failure.
@@ -929,7 +933,7 @@ func doSlingBatchWithJSON(opts slingOpts, deps slingDeps, querier BeadChildQueri
 		return dryRunSingle(opts, deps, querier, humanStdout, stderr)
 	}
 	if result.NudgeAgent != nil {
-		doSlingNudge(result.NudgeAgent, deps.CityName, deps.CityPath, deps.Cfg, deps.SP, deps.Store, result.BeadID, humanStdout, stderr)
+		doSlingNudge(result.NudgeAgent, deps.CityName, deps.CityPath, deps.Cfg, deps.SP, deps.Store, humanStdout, stderr)
 	}
 	if jsonOutput {
 		return writeSlingJSONResult(result, jsonStdout, stderr)
@@ -1283,7 +1287,7 @@ func resolveGraphStepBindingWithVars(stepID string, stepByID map[string]*formula
 		return graphRouteBinding{}, fmt.Errorf("formulas v2 routing for %s requires config", stepID)
 	}
 	if target.fromAssignee {
-		binding, ok, err := resolveGraphDirectSessionBinding(store, cityName, cityPath, cfg, target.value, rigContext)
+		binding, ok, err := graphroute.ResolveGraphDirectSessionBinding(store, cityName, cfg, target.value, rigContext, cliGraphrouteDeps(cityPath))
 		if err != nil {
 			return graphRouteBinding{}, fmt.Errorf("step %s: %w", stepID, err)
 		}
@@ -1326,84 +1330,6 @@ func graphStepRouteTarget(step *formula.RecipeStep, routeVars map[string]string)
 	return graphStepTarget{value: strings.TrimSpace(formula.Substitute(step.Metadata[beadmeta.RunTargetMetadataKey], routeVars))}
 }
 
-func resolveGraphDirectSessionBinding(store beads.Store, cityName, cityPath string, cfg *config.City, target, rigContext string) (graphRouteBinding, bool, error) {
-	target = strings.TrimSpace(target)
-	if store == nil || target == "" {
-		return graphRouteBinding{}, false, nil
-	}
-	if cfg == nil {
-		id, err := session.ResolveSessionID(store, target)
-		if err != nil {
-			return graphRouteBinding{}, false, nil
-		}
-		if bead, getErr := store.Get(id); getErr == nil && session.IsSessionBeadOrRepairable(bead) && bead.Status != "closed" {
-			return graphRouteBinding{DirectSessionID: bead.ID, RigContext: graphDirectSessionRigContext(target, rigContext, bead)}, true, nil
-		}
-		return graphRouteBinding{}, false, nil
-	}
-	if cityName == "" {
-		cityName = config.EffectiveCityName(cfg, filepath.Base(cityPath))
-	}
-	spec, ok, err := resolveNamedSessionSpecForConfigTarget(cfg, cityName, target, rigContext)
-	if err != nil {
-		return graphRouteBinding{}, false, err
-	}
-	if !ok {
-		// Exact session bead IDs are unambiguous and must win even when they
-		// collide with a config target name.
-		if id, err := session.ResolveSessionIDByExactID(store, target); err == nil {
-			if bead, getErr := store.Get(id); getErr == nil && session.IsSessionBeadOrRepairable(bead) && bead.Status != "closed" {
-				return graphRouteBinding{DirectSessionID: bead.ID, RigContext: graphDirectSessionRigContext(target, rigContext, bead)}, true, nil
-			}
-		}
-		if _, ok := resolveAgentIdentity(cfg, target, rigContext); ok {
-			return graphRouteBinding{}, false, nil
-		}
-		if id, err := session.ResolveSessionID(store, target); err == nil {
-			if bead, getErr := store.Get(id); getErr == nil && session.IsSessionBeadOrRepairable(bead) && bead.Status != "closed" {
-				return graphRouteBinding{DirectSessionID: bead.ID, RigContext: graphDirectSessionRigContext(target, rigContext, bead)}, true, nil
-			}
-		}
-		return graphRouteBinding{}, false, nil
-	}
-	id, err := resolveSessionIDMaterializingNamed(cityPath, cfg, store, spec.Identity)
-	if err != nil {
-		return graphRouteBinding{}, false, err
-	}
-	return graphRouteBinding{DirectSessionID: id, RigContext: graphRouteRigContext(spec.Identity)}, true, nil
-}
-
-func graphRouteRigContext(route string) string {
-	route = strings.TrimSpace(route)
-	if route == "" {
-		return ""
-	}
-	idx := strings.LastIndex(route, "/")
-	if idx <= 0 {
-		return ""
-	}
-	return route[:idx]
-}
-
-func graphDirectSessionRigContext(target, rigContext string, bead beads.Bead) string {
-	if rigContext = strings.TrimSpace(rigContext); rigContext != "" {
-		return rigContext
-	}
-	if rigContext = graphRouteRigContext(target); rigContext != "" {
-		return rigContext
-	}
-	for _, candidate := range []string{
-		bead.Metadata[namedSessionIdentityMetadata],
-		bead.Metadata["alias"],
-		bead.Metadata["template"],
-	} {
-		if rigContext = graphRouteRigContext(candidate); rigContext != "" {
-			return rigContext
-		}
-	}
-	return ""
-}
-
 // targetType returns "pool" or "agent" for telemetry attributes.
 func targetType(a *config.Agent) string {
 	if a.SupportsInstanceExpansion() {
@@ -1429,7 +1355,7 @@ func checkBeadState(q BeadQuerier, beadID string, a config.Agent) beadCheckResul
 // running, pokes the controller to trigger an immediate reconciler tick
 // so WakeWork can wake the session without waiting for the next patrol.
 func doSlingNudge(a *config.Agent, cityName, cityPath string, cfg *config.City,
-	sp runtime.Provider, store beads.Store, routedBeadID string, stdout, stderr io.Writer,
+	sp runtime.Provider, store beads.Store, stdout, stderr io.Writer,
 ) {
 	st := cfg.Workspace.SessionTemplate
 
@@ -1438,37 +1364,23 @@ func doSlingNudge(a *config.Agent, cityName, cityPath string, cfg *config.City,
 		return
 	}
 
-	routedBead, hasRoutedBead := slingNudgeRoutedBead(store, routedBeadID)
-
 	if a.SupportsInstanceExpansion() {
 		sp0 := scaleParamsFor(a)
-		deliverRef := func(sessionStore beads.Store, ref poolSessionRef) bool {
-			member := *a
-			if ref.qualifiedInstance != "" {
-				if resolved, ok := resolveAgentIdentity(cfg, ref.qualifiedInstance, currentRigContext(cfg)); ok {
-					member = resolved
-				} else {
-					fmt.Fprintf(stderr, "gc sling: agent %q not found in config\n", ref.qualifiedInstance) //nolint:errcheck // best-effort
-					return true
-				}
-			}
-			target := buildSlingNudgeTarget(member, cityName, cityPath, cfg, sessionStore, ref.sessionName)
-			deliverSlingNudge(target, sp, sessionStore, cityPath, stdout, stderr)
-			return true
-		}
 		tryNudgeStore := func(sessionStore beads.Store) bool {
 			refs := resolvePoolSessionRefs(sessionStore, cfg, a.Name, a.Dir, sp0, a, cityName, st, sp, stderr)
-			if hasRoutedBead {
-				if ref, ok := resolvePackRoutedSlingNudgeRef(sessionStore, a, routedBead, refs); ok {
-					return deliverRef(sessionStore, ref)
-				}
-			}
 			for _, ref := range refs {
 				running, err := workerSessionTargetRunningWithConfig(cityPath, sessionStore, sp, cfg, ref.sessionName)
 				if err != nil || !running {
 					continue
 				}
-				return deliverRef(sessionStore, ref)
+				member, ok := resolveAgentIdentity(cfg, ref.qualifiedInstance, currentRigContext(cfg))
+				if !ok {
+					fmt.Fprintf(stderr, "gc sling: agent %q not found in config\n", ref.qualifiedInstance) //nolint:errcheck // best-effort
+					return true
+				}
+				target := buildSlingNudgeTarget(member, cityName, cityPath, cfg, sessionStore, ref.sessionName)
+				deliverSlingNudge(target, sp, sessionStore, cityPath, stdout, stderr)
+				return true
 			}
 			return false
 		}
@@ -1495,96 +1407,6 @@ func doSlingNudge(a *config.Agent, cityName, cityPath string, cfg *config.City,
 	sn := lookupSessionNameOrLegacy(store, cityName, a.QualifiedName(), st)
 	target := buildSlingNudgeTarget(*a, cityName, cityPath, cfg, store, sn)
 	deliverSlingNudge(target, sp, store, cityPath, stdout, stderr)
-}
-
-func slingNudgeRoutedBead(store beads.Store, beadID string) (beads.Bead, bool) {
-	if store == nil || strings.TrimSpace(beadID) == "" {
-		return beads.Bead{}, false
-	}
-	bead, err := store.Get(strings.TrimSpace(beadID))
-	if err != nil {
-		return beads.Bead{}, false
-	}
-	return bead, true
-}
-
-func resolvePackRoutedSlingNudgeRef(store beads.Store, a *config.Agent, routedBead beads.Bead, refs []poolSessionRef) (poolSessionRef, bool) {
-	if store == nil || a == nil {
-		return poolSessionRef{}, false
-	}
-	pack := strings.TrimSpace(routedBead.Metadata[beadmeta.PackMetadataKey])
-	workspace := strings.TrimSpace(routedBead.Metadata[beadmeta.PackWorkspaceMetadataKey])
-	if pack == "" && workspace == "" {
-		return poolSessionRef{}, false
-	}
-	bySessionName := make(map[string]poolSessionRef, len(refs))
-	for _, ref := range refs {
-		if ref.sessionName != "" {
-			bySessionName[ref.sessionName] = ref
-		}
-	}
-	sessions, err := session.ListAllSessionBeads(store, beads.ListQuery{})
-	if err != nil {
-		return poolSessionRef{}, false
-	}
-	template := a.QualifiedName()
-	for _, sessionBead := range sessions {
-		if strings.TrimSpace(sessionBead.Metadata["template"]) != template {
-			continue
-		}
-		if !slingNudgeSessionMatchesPackWorkspace(sessionBead, pack, workspace) {
-			continue
-		}
-		sessionName := strings.TrimSpace(sessionBead.Metadata["session_name"])
-		if sessionName == "" {
-			continue
-		}
-		if ref, ok := bySessionName[sessionName]; ok {
-			return ref, true
-		}
-		qualified := strings.TrimSpace(sessionBead.Metadata["agent_name"])
-		if qualified == "" {
-			qualified = strings.TrimSpace(sessionBead.Metadata["alias"])
-		}
-		if qualified == "" {
-			qualified = template
-		}
-		return poolSessionRef{qualifiedInstance: qualified, sessionName: sessionName}, true
-	}
-	return poolSessionRef{}, false
-}
-
-func slingNudgeSessionMatchesPackWorkspace(sessionBead beads.Bead, pack, workspace string) bool {
-	if strings.TrimSpace(sessionBead.Metadata[beadmeta.PackMetadataKey]) == pack &&
-		strings.TrimSpace(sessionBead.Metadata[beadmeta.PackWorkspaceMetadataKey]) == workspace {
-		return true
-	}
-	for _, key := range []string{beadmeta.WorkDirMetadataKey, beadmeta.LegacyWorkDirMetadataKey} {
-		if slingNudgeWorkDirMatchesPackWorkspace(sessionBead.Metadata[key], pack, workspace) {
-			return true
-		}
-	}
-	return false
-}
-
-func slingNudgeWorkDirMatchesPackWorkspace(workDir, pack, workspace string) bool {
-	workDir = filepath.ToSlash(strings.TrimSpace(workDir))
-	pack = strings.TrimSpace(pack)
-	workspace = strings.Trim(strings.TrimSpace(workspace), "/")
-	if workDir == "" || pack == "" {
-		return false
-	}
-	parts := strings.Split(workDir, "/")
-	for i := 0; i+4 < len(parts); i++ {
-		if parts[i] != ".gc" || parts[i+1] != "workspaces" || parts[i+3] != "packs" {
-			continue
-		}
-		if parts[i+4] != pack {
-			continue
-		}
-		return strings.Join(parts[i+5:], "/") == workspace
-	}
-	return false
 }
 
 // pokeController sends a "poke" command to the controller socket to

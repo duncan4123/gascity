@@ -284,6 +284,7 @@ type memoryOrderDispatcher struct {
 	cfg                  *config.City
 	cityName             string
 	cityPath             string
+	checkRoleConfigured  func() error
 	storeRetryAttempts   int
 	storeRetryDelay      time.Duration
 	cacheMu              sync.Mutex
@@ -415,6 +416,7 @@ func buildOrderDispatcherFromOrderSet(cityPath string, cfg *config.City, allAA [
 		stderr:               lockedStderr(stderr),
 		maxTimeout:           cfg.Orders.MaxTimeoutDuration(),
 		maxDispatchesPerTick: defaultMaxOrderDispatchesPerTick,
+		checkRoleConfigured:  ensureBeadsRoleConfigured,
 		storeRetryAttempts:   orderDispatchStoreRetryAttempts,
 		storeRetryDelay:      orderDispatchStoreRetryDelay,
 		cfg:                  cfg,
@@ -423,6 +425,17 @@ func buildOrderDispatcherFromOrderSet(cityPath string, cfg *config.City, allAA [
 		dispatchCtx:          dispatchCtx,
 		dispatchCancel:       dispatchCancel,
 	}
+}
+
+func ensureBeadsRoleConfigured() error {
+	out, err := exec.Command("git", "config", "--global", "beads.role").Output()
+	if err != nil {
+		return fmt.Errorf("checking beads.role: %w", err)
+	}
+	if strings.TrimSpace(string(out)) == "" {
+		return fmt.Errorf("beads.role not configured")
+	}
+	return nil
 }
 
 func isRetryableBeadsStoreError(err error) bool {
@@ -489,6 +502,13 @@ func (m *memoryOrderDispatcher) dispatch(ctx context.Context, cityPath string, n
 			return
 		}
 	}
+	if m.checkRoleConfigured != nil {
+		if err := m.checkRoleConfigured(); err != nil {
+			logDispatchError(m.stderr, "gc: order dispatch: validating beads role: %v", err)
+			return
+		}
+	}
+
 	stores := make(map[string]beads.Store)
 	// inFlight counts the dispatchOne goroutines launched by THIS tick that
 	// still hold handles from `stores`. The per-tick handles must not be closed

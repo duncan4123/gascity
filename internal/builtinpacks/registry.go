@@ -4,7 +4,6 @@ package builtinpacks
 import (
 	"bytes"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -19,25 +18,11 @@ import (
 
 	"github.com/gastownhall/gascity/examples/bd"
 	"github.com/gastownhall/gascity/examples/bd/dolt"
-	beadsdoltlite "github.com/gastownhall/gascity/examples/beads-doltlite"
 	"github.com/gastownhall/gascity/internal/bootstrap/packs/core"
 	"github.com/gastownhall/gascity/internal/fsys"
 	gitutil "github.com/gastownhall/gascity/internal/git"
 	"github.com/gastownhall/gascity/internal/remotesource"
 )
-
-var syntheticContentHash = SyntheticContentHash
-var ErrSyntheticCacheContentHashMismatch = errors.New("bundled pack cache content hash mismatch")
-
-// SetSyntheticContentHashForTest overrides the bundled-pack content hash
-// source and returns a restore function for test cleanup.
-func SetSyntheticContentHashForTest(fn func() (string, error)) func() {
-	prev := syntheticContentHash
-	syntheticContentHash = fn
-	return func() {
-		syntheticContentHash = prev
-	}
-}
 
 const (
 	// Repository is the canonical clone URL for bundled pack imports.
@@ -75,7 +60,6 @@ func All() []Pack {
 		{Name: "core", Subpath: "internal/bootstrap/packs/core", FS: core.PackFS},
 		{Name: "bd", Subpath: "examples/bd", FS: bd.PackFS},
 		{Name: "dolt", Subpath: "examples/bd/dolt", FS: dolt.PackFS},
-		{Name: "beads-doltlite", Subpath: "examples/beads-doltlite", FS: beadsdoltlite.PackFS},
 		{Name: "gastown", Subpath: "examples/gastown/packs/gastown", FS: gascitypacks.Gastown()},
 		// The gascity planning pack never lived in gascity.git: it is
 		// public-registry-only (empty Subpath), served solely through the
@@ -240,7 +224,7 @@ func MaterializeSyntheticRepo(dst, commit string) error {
 			return fmt.Errorf("materializing bundled pack %q at %s: %w", layout.Pack.Name, layout.Subpath, err)
 		}
 	}
-	hash, err := syntheticContentHash()
+	hash, err := SyntheticContentHash()
 	if err != nil {
 		return err
 	}
@@ -256,6 +240,55 @@ func MaterializeSyntheticRepo(dst, commit string) error {
 	}
 	if err := fsys.WriteFileAtomic(fsys.OSFS{}, filepath.Join(dst, syntheticMarkerFile), data, 0o644); err != nil {
 		return fmt.Errorf("writing bundled pack cache marker: %w", err)
+	}
+	return nil
+}
+
+// ValidateSyntheticRepoFast verifies that dir is a synthetic bundled-pack cache
+// for the current binary content and the source's canonical pin commit without
+// walking the materialized file set. It is the resolution-path variant: callers
+// on the hot pack-resolution path use it to gate cache hits cheaply. Full
+// file-set and file-content integrity is verified only by ValidateSyntheticRepo.
+func ValidateSyntheticRepoFast(dir, commit string) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("missing bundled pack cache marker")
+		}
+		return fmt.Errorf("checking bundled pack cache root: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("bundled pack cache root %q is a symlink", dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("bundled pack cache root %q is not a directory", dir)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, syntheticMarkerFile))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("missing bundled pack cache marker")
+		}
+		return fmt.Errorf("reading bundled pack cache marker: %w", err)
+	}
+	var marker syntheticMarker
+	if _, err := toml.Decode(string(data), &marker); err != nil {
+		return fmt.Errorf("parsing bundled pack cache marker: %w", err)
+	}
+	if marker.Schema != 1 {
+		return fmt.Errorf("unsupported bundled pack cache marker schema %d", marker.Schema)
+	}
+	if marker.Repository != Repository {
+		return fmt.Errorf("bundled pack cache repository %q does not match %q", marker.Repository, Repository)
+	}
+	if !gitutil.SameCommit(marker.Commit, commit) {
+		return fmt.Errorf("bundled pack cache commit %q does not match %q", marker.Commit, commit)
+	}
+	wantHash, err := syntheticContentHashOnce()
+	if err != nil {
+		return err
+	}
+	if marker.ContentHash != wantHash {
+		return fmt.Errorf("bundled pack cache content hash %q does not match current binary %q", marker.ContentHash, wantHash)
 	}
 	return nil
 }
@@ -298,12 +331,12 @@ func ValidateSyntheticRepo(dir, commit string) error {
 	if !gitutil.SameCommit(marker.Commit, commit) {
 		return fmt.Errorf("bundled pack cache commit %q does not match %q", marker.Commit, commit)
 	}
-	wantHash, err := syntheticContentHash()
+	wantHash, err := syntheticContentHashOnce()
 	if err != nil {
 		return err
 	}
 	if marker.ContentHash != wantHash {
-		return fmt.Errorf("%w: bundled pack cache content hash %q does not match current binary %q", ErrSyntheticCacheContentHashMismatch, marker.ContentHash, wantHash)
+		return fmt.Errorf("bundled pack cache content hash %q does not match current binary %q", marker.ContentHash, wantHash)
 	}
 	if err := validateSyntheticRepoFileSet(dir); err != nil {
 		return err

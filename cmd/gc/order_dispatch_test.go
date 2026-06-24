@@ -838,50 +838,38 @@ func TestOrderDispatchEventExecLatestSeqErrorDoesNotRunExec(t *testing.T) {
 	}
 }
 
-func TestOrderDispatchIgnoresBeadsRoleGitConfig(t *testing.T) {
-	globalConfig := filepath.Join(t.TempDir(), "global.gitconfig")
-	if err := os.WriteFile(globalConfig, []byte("[beads]\n\trole = refinery\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-
+func TestOrderDispatchRoleCheckPreventsDispatchWithoutRole(t *testing.T) {
 	store := beads.NewMemStore()
-	cityDir := t.TempDir()
 	var rec memRecorder
 	var stderr bytes.Buffer
-	var calls int
-	execRun := func(context.Context, string, string, []string) ([]byte, error) {
-		calls++
-		return []byte("ok"), nil
-	}
 	ad := buildOrderDispatcherFromListExec([]orders.Order{{
 		Name:     "nudge-on-route",
 		Trigger:  "cooldown",
 		Interval: "2m",
 		Exec:     "scripts/release.sh",
-	}}, store, nil, execRun, &rec)
+	}}, store, nil, successfulExec, &rec)
 	if ad == nil {
 		t.Fatal("expected non-nil dispatcher")
 	}
+
 	mad := ad.(*memoryOrderDispatcher)
 	mad.stderr = &stderr
+	mad.checkRoleConfigured = func() error {
+		return fmt.Errorf("beads.role not configured")
+	}
 
-	ad.dispatch(context.Background(), cityDir, time.Now())
+	ad.dispatch(context.Background(), t.TempDir(), time.Now())
 	ad.drain(context.Background())
 
-	if calls != 1 {
-		t.Fatalf("exec calls = %d, want 1", calls)
-	}
 	all := trackingBeads(t, store, "order-run:nudge-on-route")
-	if len(all) != 1 {
-		t.Fatalf("tracking beads for %q = %d, want 1", "nudge-on-route", len(all))
+	if len(all) != 0 {
+		t.Fatalf("tracking beads for %q = %d, want 0", "nudge-on-route", len(all))
 	}
-	if !rec.hasType(events.OrderCompleted) {
-		t.Fatal("missing order.completed event")
+	if rec.hasType(events.OrderCompleted) {
+		t.Fatal("unexpected order.completed with missing beads.role")
 	}
-	if strings.Contains(stderr.String(), "beads.role") {
-		t.Fatalf("stderr = %q, want no beads.role validation", stderr.String())
+	if !strings.Contains(stderr.String(), "beads.role not configured") {
+		t.Fatalf("stderr = %q, want beads.role not configured", stderr.String())
 	}
 }
 
@@ -906,6 +894,9 @@ func TestOrderDispatchCreateTrackingBeadRetriesOnTransientLock(t *testing.T) {
 	if ad == nil {
 		t.Fatal("expected non-nil dispatcher")
 	}
+
+	mad := ad.(*memoryOrderDispatcher)
+	mad.checkRoleConfigured = nil
 
 	ad.dispatch(context.Background(), t.TempDir(), time.Now())
 	ad.drain(context.Background())
@@ -941,6 +932,8 @@ func TestOrderDispatchExecTrackingUpdateRetriesOnTransientLock(t *testing.T) {
 	if ad == nil {
 		t.Fatal("expected non-nil dispatcher")
 	}
+	mad := ad.(*memoryOrderDispatcher)
+	mad.checkRoleConfigured = nil
 
 	ad.dispatch(context.Background(), t.TempDir(), time.Now())
 	ad.drain(context.Background())

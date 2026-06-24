@@ -245,7 +245,7 @@ func TestAgentProcessNamesResolvesExplicitProvider(t *testing.T) {
 	}
 
 	got := AgentProcessNames(cfg, Agent{Name: "worker"}, lookPathOnly("codex"))
-	want := []string{"codex"}
+	want := []string{"codex", "codex-raw"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("AgentProcessNames() = %v, want %v", got, want)
 	}
@@ -1913,12 +1913,15 @@ func TestResolveInstallHooksNilWorkspace(t *testing.T) {
 	}
 }
 
-func TestResolveInstallHooksImplicitControlDispatcherIgnoresWorkspaceHooks(t *testing.T) {
-	agent := &Agent{Name: ControlDispatcherAgentName, Implicit: true}
+func TestResolveInstallHooksControlDispatcherIgnoresWorkspaceHooks(t *testing.T) {
+	agent := &Agent{
+		Name:         ControlDispatcherAgentName,
+		StartCommand: ControlDispatcherStartCommandFor("{{.Agent}}"),
+	}
 	ws := &Workspace{InstallAgentHooks: []string{"gemini"}}
 	got := ResolveInstallHooks(agent, ws)
 	if len(got) != 0 {
-		t.Fatalf("ResolveInstallHooks implicit control-dispatcher = %v, want none", got)
+		t.Fatalf("ResolveInstallHooks control-dispatcher = %v, want none", got)
 	}
 }
 
@@ -2168,6 +2171,7 @@ func TestMergeProviderOverBuiltinFieldSync(t *testing.T) {
 		PermissionModes:        map[string]string{"yolo": "--yolo"},
 		OptionDefaults:         map[string]string{"permission_mode": "yolo"},
 		OptionsSchema:          []ProviderOption{{Key: "model"}},
+		UpstreamEnv:            UpstreamEnvBinding{BaseURL: "X_BASE_URL", APIKey: "X_API_KEY", AuthToken: "X_AUTH_TOKEN"},
 		PrintArgs:              []string{"-p"},
 		TitleModel:             "haiku",
 		ACPCommand:             "custom-acp",

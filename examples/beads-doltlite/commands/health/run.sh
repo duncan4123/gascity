@@ -5,6 +5,9 @@ set -euo pipefail
 BEADS_DIR="${BEADS_DIR:-${GC_CITY_PATH:-.}/.beads}"
 SCOPE_DIR="${BEADS_DIR%/.*}"
 OUTPUT_FILE="${TMPDIR:-/tmp}/beads-doltlite-health-$$.json"
+RAW_OUTPUT_FILE="$OUTPUT_FILE"
+ERROR_FILE="${TMPDIR:-/tmp}/beads-doltlite-health-err-$$.txt"
+NORMALIZED_FILE="${TMPDIR:-/tmp}/beads-doltlite-health-normalized-$$.json"
 
 if command -v bd >/dev/null 2>&1; then
   cd "$SCOPE_DIR" || exit 1
@@ -27,11 +30,17 @@ if command -v bd >/dev/null 2>&1; then
 
   if [ "$status" -ne 0 ]; then
     cat "$OUTPUT_FILE"
-    rm -f "$OUTPUT_FILE"
+    rm -f "$RAW_OUTPUT_FILE" "$OUTPUT_FILE" "$ERROR_FILE" "$NORMALIZED_FILE"
     exit "$status"
   fi
 
   if [ -f "$OUTPUT_FILE" ]; then
+    if command -v awk >/dev/null 2>&1; then
+      awk 'seen || /^[[:space:]]*\{/ { seen=1; print }' "$OUTPUT_FILE" >"$NORMALIZED_FILE"
+      if [ -s "$NORMALIZED_FILE" ]; then
+        OUTPUT_FILE="$NORMALIZED_FILE"
+      fi
+    fi
     if command -v jq >/dev/null 2>&1; then
       jq '.ok = (if has("error") then false else true end) | .schema_version = ( .schema_version // 1 )' "$OUTPUT_FILE"
     elif [ -x /usr/bin/jq ]; then
@@ -105,10 +114,10 @@ NR == 1 {
     fi
   fi
 
-  rm -f "$OUTPUT_FILE"
+  rm -f "$RAW_OUTPUT_FILE" "$OUTPUT_FILE" "$ERROR_FILE" "$NORMALIZED_FILE"
   exit 0
 else
   echo '{"ok":false,"error":"bd CLI not found","schema_version":1}'
-  rm -f "$OUTPUT_FILE"
+  rm -f "$RAW_OUTPUT_FILE" "$OUTPUT_FILE" "$ERROR_FILE" "$NORMALIZED_FILE"
   exit 1
 fi

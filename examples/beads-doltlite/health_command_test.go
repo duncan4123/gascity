@@ -19,6 +19,86 @@ func TestDoltliteHealthScriptDoesNotForceDefaultShellTimeout(t *testing.T) {
 	}
 }
 
+func TestDoltliteBuildScriptBuildsGCWithNativeReadTag(t *testing.T) {
+	script := filepath.Join(repoRootForTest(t), "commands", "build", "run.sh")
+	text := string(mustReadFile(t, script))
+
+	for _, required := range []string{
+		`common_env_prefix "gascity_doltlite_lib,libsqlite3"`,
+		`binary_has_go_build_tag "$output" "gascity_doltlite_lib"`,
+		`built gc binary does not report -tags including gascity_doltlite_lib`,
+		`built gc binary is missing native DoltLite read-store symbols`,
+		`"tags": "%s"`,
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("build script missing %q", required)
+		}
+	}
+}
+
+func TestDoltliteBuildHelpExplainsTargetSelection(t *testing.T) {
+	root := repoRootForTest(t)
+	script := string(mustReadFile(t, filepath.Join(root, "commands", "build", "run.sh")))
+	help := string(mustReadFile(t, filepath.Join(root, "commands", "build", "help.md")))
+	skill := string(mustReadFile(t, filepath.Join(root, "skills", "doltlite", "SKILL.md")))
+
+	for _, required := range []string{
+		`gc      Normal iteration path`,
+		`all     Bootstrap/coordinated rebuild`,
+		`Builds bd, doltlite-client, then gc`,
+		`It does not skip unchanged targets`,
+		`gc beads-doltlite build gc --install --no-restart`,
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("build script help missing %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		`The default target is ` + "`gc`",
+		`normal Gas City iteration`,
+		`all` + "` builds `" + `bd` + "`, `" + `doltlite-client` + "`, then `" + `gc`,
+		`does not skip unchanged targets`,
+		`does not build libdoltlite itself`,
+	} {
+		if !strings.Contains(help, required) {
+			t.Fatalf("build long help missing %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		`build only ` + "`gc`",
+		`gc beads-doltlite build gc --install --no-restart`,
+		`only for bootstrap`,
+		`does not build libdoltlite itself or skip unchanged targets`,
+	} {
+		if !strings.Contains(skill, required) {
+			t.Fatalf("doltlite skill missing %q", required)
+		}
+	}
+}
+
+func TestDoltliteGCLinkDoctorRequiresNativeReadBuildTag(t *testing.T) {
+	script := filepath.Join(
+		repoRootForTest(t),
+		"doctor",
+		"check-gc-doltlite-link",
+		"run.sh",
+	)
+	text := string(mustReadFile(t, script))
+
+	for _, required := range []string{
+		`go version -m "$gc_bin"`,
+		`gascity_doltlite_lib`,
+		`gc binary was not built with -tags including gascity_doltlite_lib`,
+		`gc beads-doltlite build gc --install`,
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("gc link doctor missing %q", required)
+		}
+	}
+}
+
 func TestDoltliteHealthJSONSchemaIsValidObject(t *testing.T) {
 	schemaPath := filepath.Join(repoRootForTest(t), "commands", "health", "schemas", "result.schema.json")
 	raw := mustReadFile(t, schemaPath)
@@ -34,10 +114,13 @@ func TestDoltliteHealthJSONSchemaIsValidObject(t *testing.T) {
 
 func TestDoltliteHealthScriptOutputsJSONOKWithoutJq(t *testing.T) {
 	script := filepath.Join(repoRootForTest(t), "commands", "health", "run.sh")
-	cityRoot := filepath.Clean(filepath.Join(repoRootForTest(t), "..", ".."))
+	bin := mustReadlink(t, "bd")
 
 	cmd := exec.Command("bash", script, "--json")
-	cmd.Env = append(os.Environ(), "GC_CITY_PATH="+cityRoot)
+	cmd.Env = append(os.Environ(),
+		"GC_CITY_PATH="+filepath.Dir(repoRootForTest(t)),
+		"PATH="+filepath.Dir(bin)+":"+filepath.Dir(os.Getenv("HOME"))+"/bin:"+os.Getenv("PATH"),
+	)
 
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -76,4 +159,13 @@ func mustReadFile(t *testing.T, path string) []byte {
 		t.Fatalf("read file %q: %v", path, err)
 	}
 	return raw
+}
+
+func mustReadlink(t *testing.T, name string) string {
+	t.Helper()
+	path, err := exec.LookPath(name)
+	if err != nil {
+		t.Fatalf("look up %q: %v", name, err)
+	}
+	return path
 }

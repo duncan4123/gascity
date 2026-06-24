@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 	convoycore "github.com/gastownhall/gascity/internal/convoy"
@@ -1221,7 +1220,7 @@ func TestDoSlingNudgePoolBeadDerivedSession(t *testing.T) {
 	startNudgePoller = func(_, _, _ string) error { return nil }
 	t.Cleanup(func() { startNudgePoller = prev })
 
-	doSlingNudge(&a, deps.CityName, deps.CityPath, cfg, sp, deps.Store, "", stdout, stderr)
+	doSlingNudge(&a, deps.CityName, deps.CityPath, cfg, sp, deps.Store, stdout, stderr)
 	if strings.Contains(stdout.String(), "No running sessions") || strings.Contains(stderr.String(), "poke failed") {
 		t.Fatalf("sling nudge missed live bead-derived pool session; stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
@@ -1289,7 +1288,7 @@ func TestDoSlingNudgePoolUsesCityStoreForSessionBeads(t *testing.T) {
 	startNudgePoller = func(_, _, _ string) error { return nil }
 	t.Cleanup(func() { startNudgePoller = prevPoller })
 
-	doSlingNudge(&a, deps.CityName, deps.CityPath, cfg, sp, deps.Store, "", stdout, stderr)
+	doSlingNudge(&a, deps.CityName, deps.CityPath, cfg, sp, deps.Store, stdout, stderr)
 	if strings.Contains(stdout.String(), "No running sessions") || strings.Contains(stderr.String(), "poke failed") {
 		t.Fatalf("sling nudge missed live city-store pool session; stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
@@ -1308,102 +1307,6 @@ func TestDoSlingNudgePoolUsesCityStoreForSessionBeads(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "gascity/workflows.codex-max-8") {
 		t.Fatalf("stdout = %q, want nudge output for city-store pool instance", stdout.String())
-	}
-}
-
-func TestDoSlingNudgePoolPrefersRoutedPackWorkspaceSession(t *testing.T) {
-	runner := newFakeRunner()
-	sp := runtime.NewFake()
-	otherSession := "packer-packsmith-1"
-	matchingSession := "packer-packsmith-2"
-	if err := sp.Start(context.Background(), otherSession, runtime.Config{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := sp.Start(context.Background(), matchingSession, runtime.Config{}); err != nil {
-		t.Fatal(err)
-	}
-	sp.Calls = nil
-	a := config.Agent{
-		Name:              "packer.packsmith",
-		Dir:               "gascity-packs",
-		MinActiveSessions: intPtr(0),
-		MaxActiveSessions: intPtr(6),
-	}
-	cfg := &config.City{
-		Workspace: config.Workspace{Name: "test-city"},
-		Agents:    []config.Agent{a},
-	}
-
-	deps, stdout, stderr := testDeps(cfg, sp, runner.run)
-	deps.CityPath = t.TempDir()
-	workspace := "gp-gan-1-jj-hunk-create-mermaid-workflow-diagrams-for-formulas"
-	work, err := deps.Store.Create(beads.Bead{
-		Title:  "jj-hunk: route nudge smoke",
-		Type:   "task",
-		Status: "open",
-		Metadata: map[string]string{
-			beadmeta.PackMetadataKey:          "jj-hunk",
-			beadmeta.PackWorkspaceMetadataKey: workspace,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, seed := range []struct {
-		id          string
-		agentName   string
-		sessionName string
-		workDir     string
-	}{
-		{
-			id:          "session-other",
-			agentName:   "gascity-packs/packer.packsmith-1",
-			sessionName: otherSession,
-			workDir:     filepath.Join(deps.CityPath, ".gc", "workspaces", "gascity-packs", "packs", "packer", "other-workspace"),
-		},
-		{
-			id:          "session-match",
-			agentName:   "gascity-packs/packer.packsmith-2",
-			sessionName: matchingSession,
-			workDir:     filepath.Join(deps.CityPath, ".gc", "workspaces", "gascity-packs", "packs", "jj-hunk", workspace),
-		},
-	} {
-		if _, err := deps.Store.Create(beads.Bead{
-			ID:     seed.id,
-			Title:  seed.agentName,
-			Type:   sessionBeadType,
-			Status: "open",
-			Labels: []string{sessionBeadLabel},
-			Metadata: map[string]string{
-				"template":     "gascity-packs/packer.packsmith",
-				"agent_name":   seed.agentName,
-				"session_name": seed.sessionName,
-				"work_dir":     seed.workDir,
-				"state":        "active",
-			},
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	doSlingNudge(&a, deps.CityName, deps.CityPath, cfg, sp, deps.Store, work.ID, stdout, stderr)
-	if stderr.Len() > 0 {
-		t.Fatalf("stderr = %q, want no warning", stderr.String())
-	}
-	var observedMatching bool
-	for _, call := range sp.Calls {
-		if call.Method != "IsRunning" {
-			continue
-		}
-		switch call.Name {
-		case matchingSession:
-			observedMatching = true
-		case otherSession:
-			t.Fatalf("observed non-matching workspace session %q for routed pack nudge; calls=%#v", otherSession, sp.Calls)
-		}
-	}
-	if !observedMatching {
-		t.Fatalf("runtime calls = %#v, want IsRunning for matching workspace session %q", sp.Calls, matchingSession)
 	}
 }
 
@@ -1791,6 +1694,10 @@ start_command = "true"
 default_sling_formula = "mol-do-work"
 min_active_sessions = 0
 max_active_sessions = 1
+
+[[named_session]]
+template = "worker"
+mode = "on_demand"
 `
 	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(cityToml), 0o644); err != nil {
 		t.Fatalf("WriteFile(city.toml): %v", err)
@@ -1844,10 +1751,28 @@ max_active_sessions = 1
 	if len(members) != 1 || members[0].Title != "ship feature" {
 		t.Fatalf("input convoy members = %#v, want the slung work bead", members)
 	}
+	foundRoutedWorkflowBead := false
+	for _, bead := range all {
+		if bead.ID != root.ID && bead.Metadata["gc.root_bead_id"] != root.ID {
+			continue
+		}
+		if bead.Assignee == "worker" {
+			t.Fatalf("workflow bead %s Assignee = %q, want template only in gc.routed_to; metadata=%v", bead.ID, bead.Assignee, bead.Metadata)
+		}
+		if bead.Metadata["gc.routed_to"] == "worker" {
+			foundRoutedWorkflowBead = true
+			if bead.Assignee != "" {
+				t.Fatalf("workflow bead %s Assignee = %q with gc.routed_to=worker, want unassigned pool work", bead.ID, bead.Assignee)
+			}
+		}
+	}
+	if !foundRoutedWorkflowBead {
+		t.Fatalf("workflow rooted at %s had no gc.routed_to=worker bead; all=%#v", root.ID, all)
+	}
 
-	// Demand surfaces through the assigned-work path: the routed graph step
-	// bead makes the reconciler desire a worker session even though sling
-	// itself materialized nothing.
+	// Demand surfaces through routed pool metadata: the graph workflow makes
+	// the reconciler desire a worker session even though sling itself
+	// materialized nothing.
 	cfg, _, err := config.LoadWithIncludes(fsys.OSFS{}, filepath.Join(cityDir, "city.toml"))
 	if err != nil {
 		t.Fatalf("LoadWithIncludes: %v", err)
@@ -4404,7 +4329,6 @@ func TestOnFormulaGraphWorkflowPreassignsNonLatchBeadsForFixedAgent(t *testing.T
 	runner := newFakeRunner()
 	sp := runtime.NewFake()
 	cfg := &config.City{Workspace: config.Workspace{Name: "test-city"}}
-	cfg.Daemon.FormulaV2 = true
 	applyFeatureFlags(cfg)
 	t.Cleanup(func() { applyFeatureFlags(&config.City{}) })
 	cfg.FormulaLayers.City = []string{testFormulaDir(t)}
@@ -4428,6 +4352,7 @@ title = "Do work"
 		{ID: "BL-42", Title: "Work", Type: "task", Status: "open"},
 	}, nil)
 	config.InjectImplicitAgents(cfg)
+	addTestControlDispatcherAgents(cfg, "", "frontend")
 	opts := testOpts(a, "BL-42")
 	opts.OnFormula = "graph-work"
 	opts.ScopeKind = "city"
@@ -4524,11 +4449,11 @@ title = "Do work"
 				t.Fatalf("latch bead %s assignee = %q, want empty", bead.ID, bead.Assignee)
 			}
 		case "workflow-finalize":
-			if bead.Assignee != config.ControlDispatcherAgentName {
-				t.Fatalf("workflow-finalize assignee = %q, want %q", bead.Assignee, config.ControlDispatcherAgentName)
+			if bead.Assignee != "" {
+				t.Fatalf("workflow-finalize assignee = %q, want empty routed control-dispatcher queue", bead.Assignee)
 			}
-			if got := bead.Metadata["gc.routed_to"]; got != "" {
-				t.Fatalf("workflow-finalize gc.routed_to = %q, want empty direct dispatcher assignee", got)
+			if got := bead.Metadata["gc.routed_to"]; got != config.ControlDispatcherAgentName {
+				t.Fatalf("workflow-finalize gc.routed_to = %q, want %q", got, config.ControlDispatcherAgentName)
 			}
 			if bead.Metadata[graphroute.GraphExecutionRouteMetaKey] != "mayor" {
 				t.Fatalf("workflow-finalize execution route = %q, want mayor", bead.Metadata[graphroute.GraphExecutionRouteMetaKey])
@@ -4556,7 +4481,6 @@ func TestDoSlingGraphWorkflowConflictReturnsExit3(t *testing.T) {
 	runner := newFakeRunner()
 	sp := runtime.NewFake()
 	cfg := &config.City{Workspace: config.Workspace{Name: "test-city"}}
-	cfg.Daemon.FormulaV2 = true
 	applyFeatureFlags(cfg)
 	t.Cleanup(func() { applyFeatureFlags(&config.City{}) })
 	cfg.FormulaLayers.City = []string{testFormulaDir(t)}
@@ -4591,6 +4515,7 @@ title = "Do work"
 		},
 	}, nil)
 	config.InjectImplicitAgents(cfg)
+	addTestControlDispatcherAgents(cfg, "", "frontend")
 	opts := testOpts(a, "BL-42")
 	opts.OnFormula = "graph-work"
 	code := doSling(opts, deps, nil, stdout, stderr)
@@ -4607,7 +4532,6 @@ func TestBatchOnGraphWorkflowStartsWorkflowWithoutRoutingChild(t *testing.T) {
 	runner := newFakeRunner()
 	sp := runtime.NewFake()
 	cfg := &config.City{Workspace: config.Workspace{Name: "test-city"}}
-	cfg.Daemon.FormulaV2 = true
 	applyFeatureFlags(cfg)
 	t.Cleanup(func() { applyFeatureFlags(&config.City{}) })
 	cfg.FormulaLayers.City = []string{testFormulaDir(t)}
@@ -4636,6 +4560,7 @@ title = "Do work"
 		{ID: "BL-1", Title: "Child", Type: "task", Status: "open"},
 	}, nil)
 	config.InjectImplicitAgents(cfg)
+	addTestControlDispatcherAgents(cfg, "", "frontend")
 	opts := testOpts(a, "CVY-1")
 	opts.OnFormula = "graph-work"
 	opts.ScopeKind = "city"
@@ -4675,7 +4600,6 @@ func TestBatchOnGraphWorkflowConflictLeavesExistingRootInPlace(t *testing.T) {
 	runner := newFakeRunner()
 	sp := runtime.NewFake()
 	cfg := &config.City{Workspace: config.Workspace{Name: "test-city"}}
-	cfg.Daemon.FormulaV2 = true
 	applyFeatureFlags(cfg)
 	t.Cleanup(func() { applyFeatureFlags(&config.City{}) })
 	cfg.FormulaLayers.City = []string{testFormulaDir(t)}
@@ -4715,6 +4639,7 @@ title = "Do work"
 		},
 	}, nil)
 	config.InjectImplicitAgents(cfg)
+	addTestControlDispatcherAgents(cfg, "", "frontend")
 	opts := testOpts(a, "CVY-1")
 	opts.OnFormula = "graph-work"
 	code := doSlingBatch(opts, deps, q, stdout, stderr)
@@ -4899,6 +4824,74 @@ func TestSlingFormulaRepoDirUsesCanonicalRigRoot(t *testing.T) {
 	}
 }
 
+func TestCLIDirectSessionResolverMaterializesNamedSessionAliasShadow(t *testing.T) {
+	t.Setenv("GC_SESSION", "fake")
+
+	store := beads.NewMemStore()
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:              "claude",
+			StartCommand:      "true",
+			MinActiveSessions: intPtr(0),
+			MaxActiveSessions: intPtr(1),
+		}},
+		NamedSessions: []config.NamedSession{{
+			Template: "claude",
+			Mode:     "on_demand",
+		}},
+	}
+
+	id, ok, err := cliDirectSessionResolver(store, cfg.Workspace.Name, t.TempDir(), cfg, "claude", "")
+	if err != nil {
+		t.Fatalf("cliDirectSessionResolver: %v", err)
+	}
+	if !ok || id == "" {
+		t.Fatalf("cliDirectSessionResolver did not materialize named-session alias shadow: id=%q ok=%v", id, ok)
+	}
+	bead, err := store.Get(id)
+	if err != nil {
+		t.Fatalf("store.Get(%s): %v", id, err)
+	}
+	if got := bead.Metadata[namedSessionMetadataKey]; got != "true" {
+		t.Fatalf("configured_named_session = %q, want true", got)
+	}
+}
+
+func TestResolveGraphDirectSessionBindingMaterializesNamedSessionAliasShadow(t *testing.T) {
+	t.Setenv("GC_SESSION", "fake")
+
+	store := beads.NewMemStore()
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:              "claude",
+			StartCommand:      "true",
+			MinActiveSessions: intPtr(0),
+			MaxActiveSessions: intPtr(1),
+		}},
+		NamedSessions: []config.NamedSession{{
+			Template: "claude",
+			Mode:     "on_demand",
+		}},
+	}
+
+	binding, ok, err := graphroute.ResolveGraphDirectSessionBinding(store, cfg.Workspace.Name, cfg, "claude", "", cliGraphrouteDeps(t.TempDir()))
+	if err != nil {
+		t.Fatalf("ResolveGraphDirectSessionBinding: %v", err)
+	}
+	if !ok || binding.DirectSessionID == "" {
+		t.Fatalf("ResolveGraphDirectSessionBinding did not materialize named-session alias shadow: binding=%+v ok=%v", binding, ok)
+	}
+	bead, err := store.Get(binding.DirectSessionID)
+	if err != nil {
+		t.Fatalf("store.Get(%s): %v", binding.DirectSessionID, err)
+	}
+	if got := bead.Metadata[namedSessionMetadataKey]; got != "true" {
+		t.Fatalf("configured_named_session = %q, want true", got)
+	}
+}
+
 func TestDoSlingRejectsScopeForPlainBeadRouting(t *testing.T) {
 	cfg := &config.City{
 		Workspace: config.Workspace{Name: "test-city"},
@@ -4936,10 +4929,10 @@ func TestOnFormulaGraphWorkflowPokesOnce(t *testing.T) {
 	runner := newFakeRunner()
 	sp := runtime.NewFake()
 	cfg := &config.City{Workspace: config.Workspace{Name: "test-city"}}
-	cfg.Daemon.FormulaV2 = true
 	applyFeatureFlags(cfg)
 	t.Cleanup(func() { applyFeatureFlags(&config.City{}) })
 	config.InjectImplicitAgents(cfg)
+	addTestControlDispatcherAgents(cfg, "", "frontend")
 	cfg.FormulaLayers.City = []string{testFormulaDir(t)}
 	a := config.Agent{Name: "mayor", MaxActiveSessions: intPtr(1)}
 

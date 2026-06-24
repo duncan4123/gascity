@@ -2,7 +2,6 @@ package config
 
 import (
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,7 +17,6 @@ import (
 )
 
 var runRepoCacheGit = defaultRunRepoCacheGit
-var syntheticCacheContentHash = builtinpacks.SyntheticContentHash
 
 // includeCacheDir is the subdirectory under .gc/cache/includes/ where
 // remote pack includes are cached.
@@ -176,7 +174,7 @@ func resolveLockedRemoteImport(source, cityRoot string) (string, bool, error) {
 		return "", false, err
 	}
 	cacheDir := filepath.Join(cacheRoot, RepoCacheKey(source, entry.Commit))
-	if err := ensureInstalledRemoteCache(source, cacheRoot, cacheDir, entry.Commit); err != nil {
+	if err := validateInstalledRemoteCacheLocked(source, cacheRoot, cacheDir, entry.Commit); err != nil {
 		return "", false, err
 	}
 	return cacheDir, true, nil
@@ -300,7 +298,7 @@ func resolveBundledSourceWithoutLock(source, declaredVersion string) (string, bo
 		return "", true, fmt.Errorf("resolving global repo cache root: %w", err)
 	}
 	cacheDir := filepath.Join(cacheRoot, RepoCacheKey(source, commit))
-	if builtinpacks.ValidateSyntheticRepo(cacheDir, commit) == nil {
+	if builtinpacks.ValidateSyntheticRepoFast(cacheDir, commit) == nil {
 		return cacheDir, true, nil
 	}
 	if _, err := WithRepoCacheWriteLock(cacheRoot, func() (string, error) {
@@ -350,7 +348,7 @@ func resolveInstalledRemoteImport(source, declaredVersion, cityRoot string) (str
 		return "", err
 	}
 	cacheDir := filepath.Join(cacheRoot, RepoCacheKey(source, entry.Commit))
-	if err := ensureInstalledRemoteCache(source, cacheRoot, cacheDir, entry.Commit); err != nil {
+	if err := validateInstalledRemoteCacheLocked(source, cacheRoot, cacheDir, entry.Commit); err != nil {
 		return "", err
 	}
 	return cacheDir, nil
@@ -370,57 +368,20 @@ var remoteCacheValidationCache sync.Map // cacheDir+"\x00"+commit -> remoteCache
 type remoteCacheValidationEntry struct{ fingerprint string }
 
 // remoteCacheFingerprint is a cheap change signal for a remote cache checkout:
-// the size+mtime of the checkout root, its .git marker, the resolved git index,
-// and the bundled-pack content hash for synthetic caches. Linked worktrees store
-// the real index under the gitdir target, so we resolve that path instead of
-// assuming .git/index. A nested manual worktree edit touching none of these
-// escapes detection until the process restarts — acceptable for a pinned,
-// gc-managed cache.
-func remoteCacheFingerprint(source, cacheDir string) string {
+// the size+mtime of the checkout root, its .git dir, and the git index. Git
+// checkout/status touch .git and the index; `gc import install` rewrites the
+// tree. A nested manual worktree edit touching none of these escapes detection
+// until the process restarts — acceptable for a pinned, gc-managed cache.
+func remoteCacheFingerprint(cacheDir string) string {
 	var b strings.Builder
-	for _, p := range []string{cacheDir, filepath.Join(cacheDir, ".git"), remoteCacheIndexPath(cacheDir)} {
+	for _, p := range []string{cacheDir, filepath.Join(cacheDir, ".git"), filepath.Join(cacheDir, ".git", "index")} {
 		if fi, err := os.Stat(p); err == nil {
 			fmt.Fprintf(&b, "%d:%d;", fi.Size(), fi.ModTime().UnixNano())
 		} else {
 			b.WriteString("-;")
 		}
 	}
-	if builtinpacks.IsSource(source) {
-		if hash, err := syntheticCacheContentHash(); err == nil {
-			b.WriteString(hash)
-		} else {
-			b.WriteString("synthetic-hash-error:")
-			b.WriteString(err.Error())
-		}
-	}
 	return b.String()
-}
-
-// remoteCacheIndexPath returns the index path for a cached checkout.
-// Linked worktrees store the real index under the gitdir target referenced by
-// the .git file, so we resolve that target instead of assuming .git/index.
-func remoteCacheIndexPath(cacheDir string) string {
-	gitPath := filepath.Join(cacheDir, ".git")
-	info, err := os.Stat(gitPath)
-	if err == nil && info.IsDir() {
-		return filepath.Join(gitPath, "index")
-	}
-	data, err := os.ReadFile(gitPath)
-	if err != nil {
-		return filepath.Join(gitPath, "index")
-	}
-	content := strings.TrimSpace(string(data))
-	if !strings.HasPrefix(content, "gitdir:") {
-		return filepath.Join(gitPath, "index")
-	}
-	target := strings.TrimSpace(strings.TrimPrefix(content, "gitdir:"))
-	if target == "" {
-		return filepath.Join(gitPath, "index")
-	}
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(cacheDir, target)
-	}
-	return filepath.Join(filepath.Clean(target), "index")
 }
 
 // validateInstalledRemoteCacheLocked validates the remote cache under the
@@ -428,7 +389,7 @@ func remoteCacheIndexPath(cacheDir string) string {
 // both the flock and the git execs on subsequent loads.
 func validateInstalledRemoteCacheLocked(source, cacheRoot, cacheDir, commit string) error {
 	key := cacheDir + "\x00" + commit
-	fp := remoteCacheFingerprint(source, cacheDir)
+	fp := remoteCacheFingerprint(cacheDir)
 	if v, ok := remoteCacheValidationCache.Load(key); ok {
 		if v.(remoteCacheValidationEntry).fingerprint == fp {
 			return nil
@@ -437,36 +398,51 @@ func validateInstalledRemoteCacheLocked(source, cacheRoot, cacheDir, commit stri
 	if err := WithRepoCacheReadLock(cacheRoot, func() error {
 		return validateInstalledRemoteCache(source, cacheDir, commit)
 	}); err != nil {
+		// A locked bundled source pinned at its canonical commit is served from
+		// the running binary's embedded content. A freshly installed/upgraded
+		// binary resolves a new content-hash cache dir (RepoCacheKey folds the
+		// embedded-content hash) that does not exist yet — rebuild it OFFLINE
+		// instead of forcing "gc import install", mirroring the no-lock fallback
+		// in resolveBundledSourceWithoutLock. Strictly scoped to the ABSENT-cache
+		// case so a present-but-invalid cache (content drift, tampering, bad
+		// marker) still fails loudly per its security contract. The read lock
+		// above is already released here, so taking the write lock is safe.
+		if rematerializeAbsentBundledCache(source, cacheRoot, cacheDir, commit) {
+			remoteCacheValidationCache.Store(key, remoteCacheValidationEntry{fingerprint: remoteCacheFingerprint(cacheDir)})
+			return nil
+		}
 		return err
 	}
 	remoteCacheValidationCache.Store(key, remoteCacheValidationEntry{fingerprint: fp})
 	return nil
 }
 
-// ensureInstalledRemoteCache validates the repo cache and refreshes bundled
-// synthetic caches when the running binary's embedded pack content changes.
-func ensureInstalledRemoteCache(source, cacheRoot, cacheDir, commit string) error {
-	if err := validateInstalledRemoteCacheLocked(source, cacheRoot, cacheDir, commit); err != nil {
-		if !shouldRefreshBundledSyntheticCache(source, err) {
-			return err
-		}
-		if _, refreshErr := WithRepoCacheWriteLock(cacheRoot, func() (string, error) {
-			if err := builtinpacks.ValidateSyntheticRepo(cacheDir, commit); err == nil {
-				return cacheDir, nil
-			}
-			if err := builtinpacks.MaterializeSyntheticRepo(cacheDir, commit); err != nil {
-				return "", fmt.Errorf("materializing bundled repo cache %q after synthetic cache hash mismatch: %w", cacheDir, err)
-			}
-			return cacheDir, nil
-		}); refreshErr != nil {
-			return refreshErr
-		}
+// rematerializeAbsentBundledCache rebuilds the synthetic cache for a bundled
+// source pinned at its canonical commit when the cache directory is ABSENT —
+// the situation a freshly installed or upgraded binary hits, since the cache
+// dir name folds the binary's embedded-content hash. It materializes offline
+// from the embedded packs (no network) under the repo-cache write lock and
+// reports success only if the rebuilt cache validates. It deliberately leaves
+// a present-but-invalid cache untouched, so content-drift / tampering /
+// bad-marker rejection in validateInstalledRemoteCache keeps failing loudly.
+func rematerializeAbsentBundledCache(source, cacheRoot, cacheDir, commit string) bool {
+	if !IsBundledSourceAtCanonicalPin(source, commit) {
+		return false
 	}
-	return nil
-}
-
-func shouldRefreshBundledSyntheticCache(source string, err error) bool {
-	return builtinpacks.IsSource(source) && errors.Is(err, builtinpacks.ErrSyntheticCacheContentHashMismatch)
+	if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
+		// Present (possibly drifted/tampered) or unstattable: do not auto-heal.
+		return false
+	}
+	if _, err := WithRepoCacheWriteLock(cacheRoot, func() (string, error) {
+		// Re-check under the lock: another writer may have materialized it.
+		if builtinpacks.ValidateSyntheticRepo(cacheDir, commit) == nil {
+			return cacheDir, nil
+		}
+		return cacheDir, builtinpacks.MaterializeSyntheticRepo(cacheDir, commit)
+	}); err != nil {
+		return false
+	}
+	return builtinpacks.ValidateSyntheticRepo(cacheDir, commit) == nil
 }
 
 // ResetRemoteCacheValidationCache clears memoized remote-cache validations
@@ -482,7 +458,7 @@ func validateInstalledRemoteCache(source, cacheDir, commit string) error {
 	gitPath := filepath.Join(cacheDir, ".git")
 	gitInfo, gitStatErr := os.Stat(gitPath)
 	if IsBundledSourceAtCanonicalPin(source, commit) {
-		err := builtinpacks.ValidateSyntheticRepo(cacheDir, commit)
+		err := builtinpacks.ValidateSyntheticRepoFast(cacheDir, commit)
 		if err == nil {
 			return nil
 		}
