@@ -522,11 +522,11 @@ func TestSessionReconcilerTraceGH1654WorkRequestedStartCandidates(t *testing.T) 
 					t.Fatalf("Create named session: %v", err)
 				}
 				dsResult := buildDesiredState("trace-town", cityDir, now, cfg, sp, store, io.Discard)
-				if dsResult.NamedSessionDemand["dispatcher"] {
-					t.Fatal("NamedSessionDemand[dispatcher] = true for routed_to=dispatcher, want false because routed_to targets pools")
+				if !dsResult.NamedSessionDemand["dispatcher"] {
+					t.Fatal("NamedSessionDemand[dispatcher] = false for routed_to=dispatcher, want true")
 				}
-				if got := dsResult.ScaleCheckCounts["dispatcher"]; got != 1 {
-					t.Fatalf("ScaleCheckCounts[dispatcher] = %d, want 1", got)
+				if got := dsResult.ScaleCheckCounts["dispatcher"]; got != 0 {
+					t.Fatalf("ScaleCheckCounts[dispatcher] = %d, want 0 for named demand", got)
 				}
 				snapshot, err := loadSessionBeadSnapshot(store)
 				if err != nil {

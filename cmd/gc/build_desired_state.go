@@ -81,10 +81,11 @@ type poolEvalWork struct {
 }
 
 type defaultScaleCheckTarget struct {
-	template string
-	storeKey string
-	store    beads.Store
-	err      error
+	template        string
+	storeKey        string
+	store           beads.Store
+	err             error
+	namedIdentities []string
 }
 
 type scaleCheckDemand struct {
@@ -479,6 +480,10 @@ func buildDesiredStateWithSessionBeads(
 	// below so the probe wakes a cold pool from zero without overriding the
 	// pool's custom scale_check count.
 	coldWakeTemplates := map[string]bool{}
+	// namedOnDemandTemplates marks named-backing templates that still use the
+	// upstream pool fallback path. Identity-routed demand is handled by the
+	// named-session pass; this fallback is for backing-template routes.
+	namedOnDemandTemplates := map[string]bool{}
 	// activeStores is the set of stores a cold custom-scale_check pool is probed
 	// against (city + every non-suspended rig store), so routed demand a sleeping
 	// rig pool can't see locally — e.g. work queued in the city store — still
@@ -501,13 +506,24 @@ func buildDesiredStateWithSessionBeads(
 		if cfg.Agents[i].Suspended {
 			continue
 		}
-		backsNamedSession := false
+		template := cfg.Agents[i].QualifiedName()
+		namedSessionMode := ""
+		var backingNamedIdentities []string
+		templateHasNamedIdentity := false
 		for j := range cfg.NamedSessions {
-			if cfg.NamedSessions[j].TemplateQualifiedName() == cfg.Agents[i].QualifiedName() {
-				backsNamedSession = true
-				break
+			if cfg.NamedSessions[j].TemplateQualifiedName() == template {
+				mode := cfg.NamedSessions[j].ModeOrDefault()
+				if namedSessionMode == "" || mode == "always" {
+					namedSessionMode = mode
+				}
+				identity := cfg.NamedSessions[j].QualifiedName()
+				backingNamedIdentities = append(backingNamedIdentities, identity)
+				if identity == template {
+					templateHasNamedIdentity = true
+				}
 			}
 		}
+		backsNamedSession := namedSessionMode != ""
 
 		sp := scaleParamsForBeads(&cfg.Agents[i], cfg.Beads)
 		// Expand {{.Rig}}/{{.AgentBase}} before the scale_check enters the
@@ -519,7 +535,6 @@ func buildDesiredStateWithSessionBeads(
 		}
 
 		hasCustomScaleCheck := strings.TrimSpace(cfg.Agents[i].ScaleCheck) != ""
-		template := cfg.Agents[i].QualifiedName()
 		runningSessions := 0
 		for _, sb := range allOpenSessionBeads {
 			if isPoolManagedSessionBead(sb) {
@@ -554,17 +569,19 @@ func buildDesiredStateWithSessionBeads(
 			if rigName != "" && suspendedRigPaths[filepath.Clean(rigRootForName(rigName, cfg.Rigs))] {
 				continue
 			}
-			// Named-session materialization is handled in the named-session pass,
-			// but explicit scale_check/min demand for the backing template still
-			// creates ephemeral capacity through the pool pipeline. The default
-			// routed-work probes treat gc.routed_to=<template> as generic pool
-			// demand. Named sessions wake only from direct Assignee=<identity>
-			// work below; defaultNamedScaleTargets only preserves partial-query
-			// retention for configured named-session beads.
+			// Named-session materialization is handled in the named-session pass.
+			// mode='always': named session is unconditionally desired, so pool
+			// demand is redundant and creates "{name}-N" phantoms. mode='on_demand':
+			// identity-routed default probes feed named-session demand below; only
+			// backing-template routes keep the upstream clamped pool fallback.
 			poolDir := agentCommandDir(cityPath, &cfg.Agents[i], cfg.Rigs)
 			if store != nil && !hasCustomScaleCheck {
 				ownTarget := defaultScaleCheckTargetForAgent(cityPath, cfg, &cfg.Agents[i], store, rigStores)
-				defaultScaleTargets = append(defaultScaleTargets, ownTarget)
+				ownTarget.namedIdentities = backingNamedIdentities
+				if namedSessionMode != "always" && !templateHasNamedIdentity {
+					defaultScaleTargets = append(defaultScaleTargets, ownTarget)
+					namedOnDemandTemplates[template] = true
+				}
 				defaultNamedScaleTargets = append(defaultNamedScaleTargets, ownTarget)
 				// Cross-store cold-wake for named-backing pools (vp-cl4): mirror the
 				// generic-pool guard (vp-s37 / #3078 line ~598). A cold rig pool that
@@ -575,14 +592,23 @@ func buildDesiredStateWithSessionBeads(
 				// mirrors these probes only for partial-query retention bookkeeping.
 				if isCold && ownTarget.storeKey != "city" && ownTarget.store != nil && ownTarget.err == nil && ownTarget.store != store {
 					cityTarget := defaultScaleCheckTarget{template: template, store: store, storeKey: "city"}
-					defaultScaleTargets = append(defaultScaleTargets, cityTarget)
+					cityTarget.namedIdentities = backingNamedIdentities
+					if namedSessionMode != "always" && !templateHasNamedIdentity {
+						defaultScaleTargets = append(defaultScaleTargets, cityTarget)
+						namedOnDemandTemplates[template] = true
+					}
 					defaultNamedScaleTargets = append(defaultNamedScaleTargets, cityTarget)
 				}
 				continue
 			}
 			if store != nil && isCold {
 				for _, source := range activeStores {
-					defaultNamedScaleTargets = append(defaultNamedScaleTargets, defaultScaleCheckTarget{template: template, store: source.store, storeKey: source.ref})
+					defaultNamedScaleTargets = append(defaultNamedScaleTargets, defaultScaleCheckTarget{
+						template:        template,
+						store:           source.store,
+						storeKey:        source.ref,
+						namedIdentities: backingNamedIdentities,
+					})
 				}
 			}
 			pendingPools = append(pendingPools, poolEvalWork{agentIdx: i, sp: sp, poolDir: poolDir, newDemand: store != nil})
@@ -717,6 +743,11 @@ func buildDesiredStateWithSessionBeads(
 				if coldWakeTemplates[template] && count > 1 {
 					count = 1
 				}
+				// Keep upstream's singleton fallback for on-demand named-backing
+				// templates that still route through pool demand.
+				if namedOnDemandTemplates[template] && count > 1 {
+					count = 1
+				}
 				if count > scaleCheckCounts[template] {
 					scaleCheckCounts[template] = count
 				}
@@ -787,7 +818,7 @@ func buildDesiredStateWithSessionBeads(
 	// Named sessions: materialize session beads for configured [[named_session]]
 	// entries. "always" mode sessions are unconditionally materialized;
 	// "on_demand" sessions are materialized only when they already have a
-	// canonical bead or direct assigned work.
+	// canonical bead, direct assigned work, or identity-routed ready work.
 	namedSpecs := make(map[string]namedSessionSpec)
 	for i := range cfg.NamedSessions {
 		identity := cfg.NamedSessions[i].QualifiedName()
@@ -1463,6 +1494,7 @@ func defaultNamedSessionDemand(targets []defaultScaleCheckTarget, _ *config.City
 	type scaleStoreGroup struct {
 		store     beads.Store
 		templates map[string]struct{}
+		routes    map[string]map[string]struct{}
 	}
 	groups := make(map[string]*scaleStoreGroup)
 	var errs []error
@@ -1489,26 +1521,69 @@ func defaultNamedSessionDemand(targets []defaultScaleCheckTarget, _ *config.City
 		}
 		group := groups[key]
 		if group == nil {
-			group = &scaleStoreGroup{store: target.store, templates: make(map[string]struct{})}
+			group = &scaleStoreGroup{
+				store:     target.store,
+				templates: make(map[string]struct{}),
+				routes:    make(map[string]map[string]struct{}),
+			}
 			groups[key] = group
 		}
 		group.templates[template] = struct{}{}
+		for _, identity := range target.namedIdentities {
+			identity = strings.TrimSpace(identity)
+			if identity == "" {
+				continue
+			}
+			addNamedDemandRoute(group.routes, identity, identity)
+			if identity == template {
+				addNamedDemandRoute(group.routes, template, identity)
+			}
+		}
 	}
 
-	// Named sessions are not inferred from gc.routed_to/gc.run_target.
-	// A work item targets a named session by Assignee=<session id/name/alias>.
-	// This probe remains only to mark named-session backing templates partial
-	// when a default demand query is inconclusive, so existing named-session
-	// beads are retained instead of swept on a store/query failure.
+	// A default-routed work item targets a named session when the route names
+	// the configured named identity. A backing-template route only targets a
+	// named session when the identity is the same as the template; named
+	// sessions with a distinct public identity must be routed by that identity
+	// or assigned directly.
 	for key, group := range groups {
-		_, err := readyForControllerDemand(group.store)
+		ready, err := readyForControllerDemand(group.store)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("default scale_check %s templates=%s: Ready(): %w", key, strings.Join(sortedStringSet(group.templates), ","), err))
 			partialTemplates = markScaleCheckPartialSet(partialTemplates, group.templates)
-			continue
+			if !beads.IsPartialResult(err) {
+				ready = nil
+			}
+		}
+		for _, b := range ready {
+			if strings.TrimSpace(b.Assignee) != "" {
+				continue
+			}
+			for _, candidate := range controllerDemandRouteCandidates(b) {
+				identities := group.routes[candidate]
+				if len(identities) == 0 {
+					continue
+				}
+				for identity := range identities {
+					demand[identity] = true
+				}
+				break
+			}
 		}
 	}
 	return demand, partialTemplates, errs
+}
+
+func addNamedDemandRoute(routes map[string]map[string]struct{}, route, identity string) {
+	if routes == nil || route == "" || identity == "" {
+		return
+	}
+	identities := routes[route]
+	if identities == nil {
+		identities = make(map[string]struct{})
+		routes[route] = identities
+	}
+	identities[identity] = struct{}{}
 }
 
 func controllerDemandRouteTarget(b beads.Bead, templates map[string]struct{}) string {

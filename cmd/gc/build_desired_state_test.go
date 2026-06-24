@@ -1513,6 +1513,63 @@ func TestDefaultNamedSessionDemandRecordsPartialWithoutRoutedDemand(t *testing.T
 	}
 }
 
+func TestDefaultNamedSessionDemandRecordsIdentityRoutedDemand(t *testing.T) {
+	store := beads.NewMemStore()
+	if _, err := store.Create(beads.Bead{
+		Title:  "queued worker work",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			"gc.routed_to": "worker",
+		},
+	}); err != nil {
+		t.Fatalf("create routed bead: %v", err)
+	}
+
+	demand, partialTemplates, errs := defaultNamedSessionDemand([]defaultScaleCheckTarget{{
+		template:        "worker",
+		storeKey:        "rig:gascity",
+		store:           store,
+		namedIdentities: []string{"worker"},
+	}}, nil, "test-city")
+	if len(errs) != 0 {
+		t.Fatalf("defaultNamedSessionDemand errs = %v", errs)
+	}
+	if len(partialTemplates) != 0 {
+		t.Fatalf("partialTemplates = %v, want none", partialTemplates)
+	}
+	if !demand["worker"] {
+		t.Fatalf("defaultNamedSessionDemand = %v, want worker demand", demand)
+	}
+}
+
+func TestDefaultNamedSessionDemandDoesNotTreatDistinctBackingTemplateAsIdentity(t *testing.T) {
+	store := beads.NewMemStore()
+	if _, err := store.Create(beads.Bead{
+		Title:  "queued worker work",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			"gc.routed_to": "worker",
+		},
+	}); err != nil {
+		t.Fatalf("create routed bead: %v", err)
+	}
+
+	demand, _, errs := defaultNamedSessionDemand([]defaultScaleCheckTarget{{
+		template:        "worker",
+		storeKey:        "rig:gascity",
+		store:           store,
+		namedIdentities: []string{"primary"},
+	}}, nil, "test-city")
+	if len(errs) != 0 {
+		t.Fatalf("defaultNamedSessionDemand errs = %v", errs)
+	}
+	if demand["primary"] {
+		t.Fatalf("defaultNamedSessionDemand = %v, want no demand for backing-template route", demand)
+	}
+}
+
 func TestDefaultNamedSessionDemandIgnoresNamedIdentityRunTargetOnlyWorkflow(t *testing.T) {
 	store := beads.NewMemStore()
 	if _, err := store.Create(beads.Bead{
@@ -5710,7 +5767,7 @@ func TestBuildDesiredState_PoolInFlightSessionsPreservePartialScaleDemand(t *tes
 	}
 }
 
-func TestBuildDesiredState_OnDemandNamedSession_DefaultRoutedWorkUsesTemplatePoolDemand(t *testing.T) {
+func TestBuildDesiredState_OnDemandNamedSession_DefaultRoutedWorkUsesNamedDemand(t *testing.T) {
 	cityPath := t.TempDir()
 	store := beads.NewMemStore()
 	if _, err := store.Create(beads.Bead{
@@ -5749,18 +5806,18 @@ func TestBuildDesiredState_OnDemandNamedSession_DefaultRoutedWorkUsesTemplatePoo
 			foundGeneric = true
 		}
 	}
-	if foundNamed {
-		t.Fatal("template-routed work should not materialize the on-demand named session")
+	if !foundNamed {
+		t.Fatal("identity-routed work should materialize the on-demand named session")
 	}
-	if !foundGeneric {
-		t.Fatal("template-routed work should create generic template demand")
+	if foundGeneric {
+		t.Fatal("identity-routed named work should not create generic template demand")
 	}
-	if dsResult.NamedSessionDemand["mayor"] {
-		t.Fatal("NamedSessionDemand should not record template-routed work for mayor")
+	if !dsResult.NamedSessionDemand["mayor"] {
+		t.Fatal("NamedSessionDemand should record routed work for mayor")
 	}
 }
 
-func TestBuildDesiredState_OnDemandNamedSession_DefaultRoutedTaskWispUsesTemplatePoolDemand(t *testing.T) {
+func TestBuildDesiredState_OnDemandNamedSession_DefaultRoutedTaskWispUsesNamedDemand(t *testing.T) {
 	cityPath := t.TempDir()
 	store := beads.NewMemStore()
 	if _, err := store.Create(beads.Bead{
@@ -5800,14 +5857,14 @@ func TestBuildDesiredState_OnDemandNamedSession_DefaultRoutedTaskWispUsesTemplat
 			foundGeneric = true
 		}
 	}
-	if foundNamed {
-		t.Fatal("template-routed task wisp should not materialize the on-demand named session")
+	if !foundNamed {
+		t.Fatal("identity-routed task wisp should materialize the on-demand named session")
 	}
-	if !foundGeneric {
-		t.Fatal("template-routed task wisp should create generic template demand")
+	if foundGeneric {
+		t.Fatal("identity-routed task wisp should not create generic template demand")
 	}
-	if dsResult.NamedSessionDemand["mayor"] {
-		t.Fatal("NamedSessionDemand should not record template-routed task wisp for mayor")
+	if !dsResult.NamedSessionDemand["mayor"] {
+		t.Fatal("NamedSessionDemand should record routed task wisp for mayor")
 	}
 }
 
