@@ -3782,6 +3782,76 @@ func TestRealizePoolDesiredSessionsReuseRefreshesTriggerPackWorkspaceMetadata(t 
 	}
 }
 
+func TestRealizePoolDesiredSessionsGenericReuseClearsTriggerPackMetadata(t *testing.T) {
+	cityPath := t.TempDir()
+	store := beads.NewMemStore()
+	staleWorkDir := filepath.Join(cityPath, ".gc", "workspaces", "gascity-packs", "packs", "old-pack", "old-lane")
+	reusable, err := store.Create(beads.Bead{
+		Title:  "gascity-packs/packsmith-1",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel, "agent:gascity-packs/packsmith-1", "template:gascity-packs/packsmith"},
+		Metadata: map[string]string{
+			"template":                              "gascity-packs/packsmith",
+			"agent_name":                            "gascity-packs/packsmith-1",
+			"alias":                                 "gascity-packs/packsmith-1",
+			"session_name":                          "packsmith-reusable",
+			"state":                                 "awake",
+			"pool_slot":                             "1",
+			poolManagedMetadataKey:                  boolMetadata(true),
+			beadmeta.TriggerBeadIDMetadataKey:       "gp-old",
+			beadmeta.TriggerBeadStoreRefMetadataKey: "rig:gascity-packs",
+			beadmeta.PackMetadataKey:                "old-pack",
+			beadmeta.PackWorkspaceMetadataKey:       "old-lane",
+			beadmeta.WorkDirMetadataKey:             staleWorkDir,
+			beadmeta.LegacyWorkDirMetadataKey:       staleWorkDir,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:              "packsmith",
+			Dir:               "gascity-packs",
+			StartCommand:      "true",
+			WorkDir:           ".gc/workspaces/gascity-packs/packs/__packsmith__",
+			MaxActiveSessions: intPtr(2),
+		}},
+	}
+	snapshot := &sessionBeadSnapshot{}
+	snapshot.add(reusable)
+	var stderr bytes.Buffer
+	bp := newAgentBuildParams("test-city", cityPath, cfg, runtime.NewFake(), time.Now().UTC(), store, &stderr)
+	bp.sessionBeads = snapshot
+	desired := map[string]TemplateParams{}
+
+	realizePoolDesiredSessions(bp, &cfg.Agents[0], PoolDesiredState{
+		Template: "gascity-packs/packsmith",
+		Requests: []SessionRequest{{
+			Template: "gascity-packs/packsmith",
+			Tier:     "new",
+		}},
+	}, desired, &stderr)
+
+	stored, err := store.Get(reusable.ID)
+	if err != nil {
+		t.Fatalf("Get(session): %v", err)
+	}
+	for _, key := range []string{
+		beadmeta.TriggerBeadIDMetadataKey,
+		beadmeta.TriggerBeadStoreRefMetadataKey,
+		beadmeta.PackMetadataKey,
+		beadmeta.PackWorkspaceMetadataKey,
+		beadmeta.WorkDirMetadataKey,
+		beadmeta.LegacyWorkDirMetadataKey,
+	} {
+		if got := stored.Metadata[key]; got != "" {
+			t.Fatalf("metadata[%s] = %q, want cleared for generic pool reuse", key, got)
+		}
+	}
+}
+
 func TestRealizePoolDesiredSessionsLimitsFreshCreatesToWakeBudget(t *testing.T) {
 	maxWakes := 2
 	store := beads.NewMemStore()

@@ -2422,11 +2422,17 @@ func bindPoolSessionTriggerBead(bp *agentBuildParams, cfgAgent *config.Agent, qu
 	}
 	metadata := map[string]string{}
 	if workBeadID == "" {
-		if strings.TrimSpace(sessionBead.Metadata[beadmeta.TriggerBeadIDMetadataKey]) != "" {
-			metadata[beadmeta.TriggerBeadIDMetadataKey] = ""
-		}
-		if strings.TrimSpace(sessionBead.Metadata[beadmeta.TriggerBeadStoreRefMetadataKey]) != "" {
-			metadata[beadmeta.TriggerBeadStoreRefMetadataKey] = ""
+		for _, key := range []string{
+			beadmeta.TriggerBeadIDMetadataKey,
+			beadmeta.TriggerBeadStoreRefMetadataKey,
+			beadmeta.PackMetadataKey,
+			beadmeta.PackWorkspaceMetadataKey,
+			beadmeta.WorkDirMetadataKey,
+			beadmeta.LegacyWorkDirMetadataKey,
+		} {
+			if strings.TrimSpace(sessionBead.Metadata[key]) != "" {
+				metadata[key] = ""
+			}
 		}
 		if len(metadata) == 0 {
 			return sessionBead, nil
