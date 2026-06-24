@@ -3691,10 +3691,14 @@ func TestRealizePoolDesiredSessionsNewDemandStampsTriggerPackMetadata(t *testing
 	if got := stored.Metadata[beadmeta.PackMetadataKey]; got != "gascity-jj-base" {
 		t.Fatalf("pack metadata = %q, want gascity-jj-base", got)
 	}
+	wantPackRoot := filepath.Join(cityPath, ".gc", "workspaces", "gascity-packs", "packs", "gascity-jj-base")
+	if got := stored.Metadata[beadmeta.PackRootMetadataKey]; got != wantPackRoot {
+		t.Fatalf("pack root metadata = %q, want %q", got, wantPackRoot)
+	}
 	if got := stored.Metadata[beadmeta.PackWorkspaceMetadataKey]; got != "" {
 		t.Fatalf("pack workspace metadata = %q, want empty default pack workspace", got)
 	}
-	wantWorkDir := filepath.Join(cityPath, ".gc", "workspaces", "gascity-packs", "packs", "gascity-jj-base")
+	wantWorkDir := wantPackRoot
 	if got := stored.Metadata[beadmeta.WorkDirMetadataKey]; got != wantWorkDir {
 		t.Fatalf("gc.work_dir = %q, want %q", got, wantWorkDir)
 	}
@@ -3748,18 +3752,36 @@ func TestRealizePoolDesiredSessionsUsesPackRootForTriggerPackWorkDir(t *testing.
 	if err != nil {
 		t.Fatalf("Get(session): %v", err)
 	}
-	wantWorkDir := filepath.Join(rigRoot, "packs", "gascity-jj-base", "review-lane")
+	wantPackRoot := filepath.Join(rigRoot, "packs", "gascity-jj-base")
+	if got := stored.Metadata[beadmeta.PackRootMetadataKey]; got != wantPackRoot {
+		t.Fatalf("pack root metadata = %q, want %q", got, wantPackRoot)
+	}
+	wantWorkDir := filepath.Join(wantPackRoot, "review-lane")
 	if got := stored.Metadata[beadmeta.WorkDirMetadataKey]; got != wantWorkDir {
 		t.Fatalf("gc.work_dir = %q, want %q", got, wantWorkDir)
 	}
 	if got := stored.Metadata[beadmeta.LegacyWorkDirMetadataKey]; got != wantWorkDir {
 		t.Fatalf("work_dir = %q, want %q", got, wantWorkDir)
 	}
+	if len(desired) != 1 {
+		t.Fatalf("desired sessions = %d, want 1", len(desired))
+	}
+	var tp TemplateParams
+	for _, entry := range desired {
+		tp = entry
+	}
+	if got := tp.Env["GC_PACK"]; got != "gascity-jj-base" {
+		t.Fatalf("GC_PACK = %q, want gascity-jj-base", got)
+	}
+	if got := tp.Env["GC_PACK_ROOT"]; got != wantPackRoot {
+		t.Fatalf("GC_PACK_ROOT = %q, want %q", got, wantPackRoot)
+	}
 }
 
 func TestRealizePoolDesiredSessionsReuseRefreshesTriggerPackWorkspaceMetadata(t *testing.T) {
 	cityPath := t.TempDir()
 	store := beads.NewMemStore()
+	oldPackRoot := filepath.Join(cityPath, ".gc", "workspaces", "gascity-packs", "packs", "old-pack")
 	oldWorkDir := filepath.Join(cityPath, ".gc", "workspaces", "gascity-packs", "packs", "old-pack")
 	reusable, err := store.Create(beads.Bead{
 		Title:  "gascity-packs/packsmith-1",
@@ -3776,6 +3798,7 @@ func TestRealizePoolDesiredSessionsReuseRefreshesTriggerPackWorkspaceMetadata(t 
 			beadmeta.TriggerBeadIDMetadataKey:       "gp-old",
 			beadmeta.TriggerBeadStoreRefMetadataKey: "rig:gascity-packs",
 			beadmeta.PackMetadataKey:                "old-pack",
+			beadmeta.PackRootMetadataKey:            oldPackRoot,
 			beadmeta.PackWorkspaceMetadataKey:       "old-workspace",
 			beadmeta.WorkDirMetadataKey:             oldWorkDir,
 			beadmeta.LegacyWorkDirMetadataKey:       oldWorkDir,
@@ -3818,12 +3841,16 @@ func TestRealizePoolDesiredSessionsReuseRefreshesTriggerPackWorkspaceMetadata(t 
 	if err != nil {
 		t.Fatalf("Get(session): %v", err)
 	}
-	wantWorkDir := filepath.Join(cityPath, ".gc", "workspaces", "gascity-packs", "packs", "gascity-jj-base", "review-lane")
+	wantPackRoot := filepath.Join(cityPath, ".gc", "workspaces", "gascity-packs", "packs", "gascity-jj-base")
+	wantWorkDir := filepath.Join(wantPackRoot, "review-lane")
 	if got := stored.Metadata[beadmeta.TriggerBeadIDMetadataKey]; got != "gp-new" {
 		t.Fatalf("trigger bead metadata = %q, want gp-new", got)
 	}
 	if got := stored.Metadata[beadmeta.PackMetadataKey]; got != "gascity-jj-base" {
 		t.Fatalf("pack metadata = %q, want gascity-jj-base", got)
+	}
+	if got := stored.Metadata[beadmeta.PackRootMetadataKey]; got != wantPackRoot {
+		t.Fatalf("pack root metadata = %q, want %q", got, wantPackRoot)
 	}
 	if got := stored.Metadata[beadmeta.PackWorkspaceMetadataKey]; got != "review-lane" {
 		t.Fatalf("pack workspace metadata = %q, want review-lane", got)
@@ -3855,6 +3882,7 @@ func TestRealizePoolDesiredSessionsGenericReuseClearsTriggerPackMetadata(t *test
 			beadmeta.TriggerBeadIDMetadataKey:       "gp-old",
 			beadmeta.TriggerBeadStoreRefMetadataKey: "rig:gascity-packs",
 			beadmeta.PackMetadataKey:                "old-pack",
+			beadmeta.PackRootMetadataKey:            filepath.Join(cityPath, ".gc", "workspaces", "gascity-packs", "packs", "old-pack"),
 			beadmeta.PackWorkspaceMetadataKey:       "old-lane",
 			beadmeta.WorkDirMetadataKey:             staleWorkDir,
 			beadmeta.LegacyWorkDirMetadataKey:       staleWorkDir,
@@ -3896,6 +3924,7 @@ func TestRealizePoolDesiredSessionsGenericReuseClearsTriggerPackMetadata(t *test
 		beadmeta.TriggerBeadIDMetadataKey,
 		beadmeta.TriggerBeadStoreRefMetadataKey,
 		beadmeta.PackMetadataKey,
+		beadmeta.PackRootMetadataKey,
 		beadmeta.PackWorkspaceMetadataKey,
 		beadmeta.WorkDirMetadataKey,
 		beadmeta.LegacyWorkDirMetadataKey,
@@ -3903,6 +3932,19 @@ func TestRealizePoolDesiredSessionsGenericReuseClearsTriggerPackMetadata(t *test
 		if got := stored.Metadata[key]; got != "" {
 			t.Fatalf("metadata[%s] = %q, want cleared for generic pool reuse", key, got)
 		}
+	}
+	if len(desired) != 1 {
+		t.Fatalf("desired sessions = %d, want 1", len(desired))
+	}
+	var tp TemplateParams
+	for _, entry := range desired {
+		tp = entry
+	}
+	if got := tp.Env["GC_PACK"]; got != "" {
+		t.Fatalf("GC_PACK = %q, want cleared for generic pool reuse", got)
+	}
+	if got := tp.Env["GC_PACK_ROOT"]; got != "" {
+		t.Fatalf("GC_PACK_ROOT = %q, want cleared for generic pool reuse", got)
 	}
 }
 

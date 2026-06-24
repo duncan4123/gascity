@@ -2426,6 +2426,7 @@ func bindPoolSessionTriggerBead(bp *agentBuildParams, cfgAgent *config.Agent, qu
 			beadmeta.TriggerBeadIDMetadataKey,
 			beadmeta.TriggerBeadStoreRefMetadataKey,
 			beadmeta.PackMetadataKey,
+			beadmeta.PackRootMetadataKey,
 			beadmeta.PackWorkspaceMetadataKey,
 			beadmeta.WorkDirMetadataKey,
 			beadmeta.LegacyWorkDirMetadataKey,
@@ -2460,6 +2461,9 @@ func bindPoolSessionTriggerBead(bp *agentBuildParams, cfgAgent *config.Agent, qu
 	}
 	if pack := strings.TrimSpace(request.WorkPack); strings.TrimSpace(sessionBead.Metadata[beadmeta.PackMetadataKey]) != pack {
 		metadata[beadmeta.PackMetadataKey] = pack
+	}
+	if packRoot := poolTriggerPackRoot(bp, cfgAgent, qualifiedName, request); strings.TrimSpace(sessionBead.Metadata[beadmeta.PackRootMetadataKey]) != packRoot {
+		metadata[beadmeta.PackRootMetadataKey] = packRoot
 	}
 	if workspace := packWorkspaceSlug(request); strings.TrimSpace(sessionBead.Metadata[beadmeta.PackWorkspaceMetadataKey]) != workspace {
 		metadata[beadmeta.PackWorkspaceMetadataKey] = workspace
@@ -2499,7 +2503,7 @@ func poolTriggerWorkDir(bp *agentBuildParams, cfgAgent *config.Agent, qualifiedN
 		return ""
 	}
 	if pack := strings.TrimSpace(request.WorkPack); pack != "" {
-		packDir := poolTriggerPackRoot(bp, cfgAgent, qualifiedName, pack)
+		packDir := poolTriggerPackRoot(bp, cfgAgent, qualifiedName, request)
 		if packDir == "" {
 			packDir = filepath.Join(filepath.Dir(base), pack)
 		}
@@ -2517,7 +2521,22 @@ func poolTriggerWorkDir(bp *agentBuildParams, cfgAgent *config.Agent, qualifiedN
 	return ""
 }
 
-func poolTriggerPackRoot(bp *agentBuildParams, cfgAgent *config.Agent, qualifiedName, pack string) string {
+func poolTriggerPackRoot(bp *agentBuildParams, cfgAgent *config.Agent, qualifiedName string, request SessionRequest) string {
+	pack := strings.TrimSpace(request.WorkPack)
+	if bp == nil || cfgAgent == nil || pack == "" {
+		return ""
+	}
+	if explicit := poolTriggerConfiguredPackRoot(bp, cfgAgent, qualifiedName, pack); explicit != "" {
+		return explicit
+	}
+	base, err := resolveConfiguredWorkDir(bp.cityPath, bp.cityName, qualifiedName, cfgAgent, bp.rigs)
+	if err != nil || strings.TrimSpace(base) == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(base), pack)
+}
+
+func poolTriggerConfiguredPackRoot(bp *agentBuildParams, cfgAgent *config.Agent, qualifiedName, pack string) string {
 	if bp == nil || cfgAgent == nil || strings.TrimSpace(pack) == "" || strings.TrimSpace(cfgAgent.PackRoot) == "" {
 		return ""
 	}
@@ -2819,7 +2838,23 @@ func resolveTemplateForSessionBead(
 ) (TemplateParams, error) {
 	local := *bp
 	local.beadNames = map[string]string{qualifiedName: sessionBead.Metadata["session_name"]}
-	return resolveTemplatePrepared(&local, cfgAgent, qualifiedName, fpExtra)
+	tp, err := resolveTemplatePrepared(&local, cfgAgent, qualifiedName, fpExtra)
+	if err != nil {
+		return tp, err
+	}
+	setTemplatePackEnv(&tp, sessionBead)
+	return tp, nil
+}
+
+func setTemplatePackEnv(tp *TemplateParams, sessionBead beads.Bead) {
+	if tp == nil {
+		return
+	}
+	if tp.Env == nil {
+		tp.Env = make(map[string]string)
+	}
+	tp.Env["GC_PACK"] = strings.TrimSpace(sessionBead.Metadata[beadmeta.PackMetadataKey])
+	tp.Env["GC_PACK_ROOT"] = strings.TrimSpace(sessionBead.Metadata[beadmeta.PackRootMetadataKey])
 }
 
 // canonicalSessionIdentity returns the agent and qualified name to use when
@@ -3252,6 +3287,9 @@ func poolTriggerMetadata(bp *agentBuildParams, cfgAgent *config.Agent, qualified
 	}
 	if pack := strings.TrimSpace(request.WorkPack); pack != "" {
 		metadata[beadmeta.PackMetadataKey] = pack
+	}
+	if packRoot := poolTriggerPackRoot(bp, cfgAgent, qualifiedName, request); packRoot != "" {
+		metadata[beadmeta.PackRootMetadataKey] = packRoot
 	}
 	if workspace := packWorkspaceSlug(request); workspace != "" {
 		metadata[beadmeta.PackWorkspaceMetadataKey] = workspace
