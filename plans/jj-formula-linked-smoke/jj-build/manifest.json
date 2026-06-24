@@ -8,9 +8,18 @@
   "artifact_root_relative": "plans/jj-formula-linked-smoke/jj-build",
   "manifest_path": "/data/projects/doltlite-gascity/gascity/plans/jj-formula-linked-smoke/jj-build/manifest.json",
   "manifest_path_relative": "plans/jj-formula-linked-smoke/jj-build/manifest.json",
-  "docs_change_id": "uzwkrxrrnvtrstwwqomzuuymwttmnmmr",
+  "docs_change_id": "wmqqurqzmnztpuqqykzwnkpwmmpsppox",
   "source_workspace": "",
   "source_workspace_path": "",
   "source_change_id": "",
-  "documents": []
+  "documents": [
+    {
+      "name": "requirements",
+      "schema": "gc.build.requirements.v1",
+      "path": "plans/jj-formula-linked-smoke/jj-build/requirements.md",
+      "absolute_path": "/data/projects/doltlite-gascity/gascity/plans/jj-formula-linked-smoke/jj-build/requirements.md",
+      "hash": "sha256:0be5778c2c7279867f647a7a4c7e2ab9c056b6d7d04fe805ef8ed258ebc8d4d5",
+      "change_id": "wmqqurqzmnztpuqqykzwnkpwmmpsppox"
+    }
+  ]
 }
