@@ -9,6 +9,19 @@ usage: gc beads-doltlite build [gc|bd|client|all] [options]
 Builds DoltLite-linked binaries from the Gas City and beads-doltlite source trees.
 The default target is gc.
 
+Targets:
+  gc      Normal iteration path. Rebuild after Gas City changes, native fastpath
+          fixes, or build-tag changes.
+  bd      Rebuild only after beads-doltlite source or bd link inputs change.
+  client  Rebuild the DoltLite diagnostic client only when that tool changes.
+  all     Bootstrap/coordinated rebuild. Builds bd, doltlite-client, then gc.
+          Use after changing libdoltlite/link inputs or when setting up a fresh
+          DoltLite city. It does not skip unchanged targets.
+
+Examples:
+  gc beads-doltlite build gc --install --no-restart
+  gc beads-doltlite build all --install --no-restart
+
 Options:
   --source DIR       Source checkout for the selected single target.
   --gc-source DIR    Gas City source checkout. Default: ./gascity, current dir, or script checkout.

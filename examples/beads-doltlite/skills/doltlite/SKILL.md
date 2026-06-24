@@ -25,8 +25,11 @@ Prefer that contract over assumptions from Dolt-server commands.
   `.beads/doltlite/*.db`.
 - Do not require a Dolt SQL server, runtime port, or
   `.gc/runtime/packs/dolt/dolt-state.json`.
-- Build linked `gc`, `bd`, and `doltlite-client` with
-  `gc beads-doltlite build all --install`.
+- For normal Gas City iteration or native read fastpath fixes, build only `gc`
+  with `gc beads-doltlite build gc --install --no-restart`.
+- Use `gc beads-doltlite build all --install --no-restart` only for bootstrap
+  or coordinated rebuilds. `all` builds `bd`, `doltlite-client`, then `gc`; it
+  does not build libdoltlite itself or skip unchanged targets.
 - Use `doltlite-client` for direct test reads and writes. It supports `info`,
   `query`, `exec`, `show`, `set-metadata`, and `close`.
 - Use DoltLite SQL for native maintenance checks, including

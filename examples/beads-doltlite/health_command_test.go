@@ -36,6 +36,48 @@ func TestDoltliteBuildScriptBuildsGCWithNativeReadTag(t *testing.T) {
 	}
 }
 
+func TestDoltliteBuildHelpExplainsTargetSelection(t *testing.T) {
+	root := repoRootForTest(t)
+	script := string(mustReadFile(t, filepath.Join(root, "commands", "build", "run.sh")))
+	help := string(mustReadFile(t, filepath.Join(root, "commands", "build", "help.md")))
+	skill := string(mustReadFile(t, filepath.Join(root, "skills", "doltlite", "SKILL.md")))
+
+	for _, required := range []string{
+		`gc      Normal iteration path`,
+		`all     Bootstrap/coordinated rebuild`,
+		`Builds bd, doltlite-client, then gc`,
+		`It does not skip unchanged targets`,
+		`gc beads-doltlite build gc --install --no-restart`,
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("build script help missing %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		`The default target is ` + "`gc`",
+		`normal Gas City iteration`,
+		`all` + "` builds `" + `bd` + "`, `" + `doltlite-client` + "`, then `" + `gc`,
+		`does not skip unchanged targets`,
+		`does not build libdoltlite itself`,
+	} {
+		if !strings.Contains(help, required) {
+			t.Fatalf("build long help missing %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		`build only ` + "`gc`",
+		`gc beads-doltlite build gc --install --no-restart`,
+		`only for bootstrap`,
+		`does not build libdoltlite itself or skip unchanged targets`,
+	} {
+		if !strings.Contains(skill, required) {
+			t.Fatalf("doltlite skill missing %q", required)
+		}
+	}
+}
+
 func TestDoltliteGCLinkDoctorRequiresNativeReadBuildTag(t *testing.T) {
 	script := filepath.Join(
 		repoRootForTest(t),
