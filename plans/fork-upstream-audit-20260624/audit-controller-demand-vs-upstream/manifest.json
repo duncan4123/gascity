@@ -8,9 +8,18 @@
   "artifact_root_relative": "plans/fork-upstream-audit-20260624/audit-controller-demand-vs-upstream",
   "manifest_path": "/data/projects/doltlite-gascity/gascity/plans/fork-upstream-audit-20260624/audit-controller-demand-vs-upstream/manifest.json",
   "manifest_path_relative": "plans/fork-upstream-audit-20260624/audit-controller-demand-vs-upstream/manifest.json",
-  "docs_change_id": "lwwsptrqtrxppqunrunoxpsvwqykluwv",
+  "docs_change_id": "mxpuqnnzrwsttwtokxkrvwpzwoytozwx",
   "source_workspace": "",
   "source_workspace_path": "",
   "source_change_id": "",
-  "documents": []
+  "documents": [
+    {
+      "name": "requirements",
+      "schema": "gc.build.requirements.v1",
+      "path": "/data/projects/doltlite-gascity/gascity/plans/fork-upstream-audit-20260624/audit-controller-demand-vs-upstream/requirements.md",
+      "path_relative": "plans/fork-upstream-audit-20260624/audit-controller-demand-vs-upstream/requirements.md",
+      "hash": "sha256:3acc0e95ba45ba99a38b66ee92f358e6e0b8959e4214f9e29e0047ee1833e763",
+      "change_id": "mxpuqnnzrwsttwtokxkrvwpzwoytozwx"
+    }
+  ]
 }
