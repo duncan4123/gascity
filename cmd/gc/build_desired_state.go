@@ -2499,7 +2499,10 @@ func poolTriggerWorkDir(bp *agentBuildParams, cfgAgent *config.Agent, qualifiedN
 		return ""
 	}
 	if pack := strings.TrimSpace(request.WorkPack); pack != "" {
-		packDir := filepath.Join(filepath.Dir(base), pack)
+		packDir := poolTriggerPackRoot(bp, cfgAgent, qualifiedName, pack)
+		if packDir == "" {
+			packDir = filepath.Join(filepath.Dir(base), pack)
+		}
 		if workspace := packWorkspaceSlug(request); workspace != "" {
 			return filepath.Join(packDir, workspace)
 		}
@@ -2512,6 +2515,16 @@ func poolTriggerWorkDir(bp *agentBuildParams, cfgAgent *config.Agent, qualifiedN
 		return filepath.Join(base, slug)
 	}
 	return ""
+}
+
+func poolTriggerPackRoot(bp *agentBuildParams, cfgAgent *config.Agent, qualifiedName, pack string) string {
+	if bp == nil || cfgAgent == nil || strings.TrimSpace(pack) == "" || strings.TrimSpace(cfgAgent.PackRoot) == "" {
+		return ""
+	}
+	routedAgent := *cfgAgent
+	routedAgent.Pack = strings.TrimSpace(pack)
+	ctx := workdirutil.PathContextForQualifiedName(bp.cityPath, bp.cityName, qualifiedName, routedAgent, bp.rigs)
+	return strings.TrimSpace(ctx.PackRoot)
 }
 
 func packWorkspaceSlug(request SessionRequest) string {

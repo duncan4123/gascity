@@ -3703,6 +3703,60 @@ func TestRealizePoolDesiredSessionsNewDemandStampsTriggerPackMetadata(t *testing
 	}
 }
 
+func TestRealizePoolDesiredSessionsUsesPackRootForTriggerPackWorkDir(t *testing.T) {
+	cityPath := t.TempDir()
+	rigRoot := filepath.Join(cityPath, "rigs", "gascity-packs")
+	store := beads.NewMemStore()
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Rigs: []config.Rig{{
+			Name: "gascity-packs",
+			Path: rigRoot,
+		}},
+		Agents: []config.Agent{{
+			Name:              "packsmith",
+			Dir:               "gascity-packs",
+			StartCommand:      "true",
+			WorkDir:           ".gc/workspaces/{{.AgentBase}}",
+			PackRoot:          "packs/{{.Pack}}",
+			MaxActiveSessions: intPtr(2),
+		}},
+	}
+	var stderr bytes.Buffer
+	bp := newAgentBuildParams("test-city", cityPath, cfg, runtime.NewFake(), time.Now().UTC(), store, &stderr)
+	bp.sessionBeads = &sessionBeadSnapshot{}
+	desired := map[string]TemplateParams{}
+
+	realizePoolDesiredSessions(bp, &cfg.Agents[0], PoolDesiredState{
+		Template: "gascity-packs/packsmith",
+		Requests: []SessionRequest{{
+			Template:      "gascity-packs/packsmith",
+			Tier:          "new",
+			WorkBeadID:    "gp-packroot",
+			WorkBeadTitle: "Route pack root",
+			WorkPack:      "gascity-jj-base",
+			WorkWorkspace: "review-lane",
+			WorkStoreRef:  "rig:gascity-packs",
+		}},
+	}, desired, &stderr)
+
+	sessions := bp.sessionBeads.Open()
+	if len(sessions) != 1 {
+		t.Fatalf("created session beads = %d, want 1; stderr=%q", len(sessions), stderr.String())
+	}
+	stored, err := store.Get(sessions[0].ID)
+	if err != nil {
+		t.Fatalf("Get(session): %v", err)
+	}
+	wantWorkDir := filepath.Join(rigRoot, "packs", "gascity-jj-base", "review-lane")
+	if got := stored.Metadata[beadmeta.WorkDirMetadataKey]; got != wantWorkDir {
+		t.Fatalf("gc.work_dir = %q, want %q", got, wantWorkDir)
+	}
+	if got := stored.Metadata[beadmeta.LegacyWorkDirMetadataKey]; got != wantWorkDir {
+		t.Fatalf("work_dir = %q, want %q", got, wantWorkDir)
+	}
+}
+
 func TestRealizePoolDesiredSessionsReuseRefreshesTriggerPackWorkspaceMetadata(t *testing.T) {
 	cityPath := t.TempDir()
 	store := beads.NewMemStore()
