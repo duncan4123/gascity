@@ -39,6 +39,14 @@ if [[ -f "$build_stamp" ]]; then
   fi
 fi
 
+if ! go version -m "$gc_bin" 2>/dev/null |
+  grep -E '^[[:space:]]*build[[:space:]]+-tags=' |
+  grep -Eq '(^|[=,[:space:]])gascity_doltlite_lib($|[,[:space:]])'; then
+  echo "gc binary was not built with -tags including gascity_doltlite_lib: $gc_bin"
+  echo "repair: run gc beads-doltlite build gc --install"
+  exit 1
+fi
+
 if command -v ldd >/dev/null 2>&1; then
   if ldd "$gc_bin" 2>/dev/null | grep -q 'libdoltlite'; then
     echo "gc links libdoltlite: $gc_bin"

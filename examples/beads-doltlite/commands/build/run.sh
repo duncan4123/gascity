@@ -164,9 +164,20 @@ verify_linked_binary() {
   fi
 }
 
+binary_has_go_build_tag() {
+  local output="$1"
+  local tag="$2"
+  go version -m "$output" 2>/dev/null |
+    grep -E '^[[:space:]]*build[[:space:]]+-tags=' |
+    grep -Eq "(^|[=,[:space:]])${tag}($|[,[:space:]])"
+}
+
 verify_gc_binary() {
   local output="$1"
   verify_linked_binary "$output" "gc"
+  if ! binary_has_go_build_tag "$output" "gascity_doltlite_lib"; then
+    die "built gc binary does not report -tags including gascity_doltlite_lib"
+  fi
   if ! go tool nm "$output" 2>/dev/null | grep -Fq 'github.com/gastownhall/gascity/internal/beads.(*DoltliteReadStore)'; then
     die "built gc binary is missing native DoltLite read-store symbols"
   fi

@@ -19,6 +19,44 @@ func TestDoltliteHealthScriptDoesNotForceDefaultShellTimeout(t *testing.T) {
 	}
 }
 
+func TestDoltliteBuildScriptBuildsGCWithNativeReadTag(t *testing.T) {
+	script := filepath.Join(repoRootForTest(t), "commands", "build", "run.sh")
+	text := string(mustReadFile(t, script))
+
+	for _, required := range []string{
+		`common_env_prefix "gascity_doltlite_lib,libsqlite3"`,
+		`binary_has_go_build_tag "$output" "gascity_doltlite_lib"`,
+		`built gc binary does not report -tags including gascity_doltlite_lib`,
+		`built gc binary is missing native DoltLite read-store symbols`,
+		`"tags": "%s"`,
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("build script missing %q", required)
+		}
+	}
+}
+
+func TestDoltliteGCLinkDoctorRequiresNativeReadBuildTag(t *testing.T) {
+	script := filepath.Join(
+		repoRootForTest(t),
+		"doctor",
+		"check-gc-doltlite-link",
+		"run.sh",
+	)
+	text := string(mustReadFile(t, script))
+
+	for _, required := range []string{
+		`go version -m "$gc_bin"`,
+		`gascity_doltlite_lib`,
+		`gc binary was not built with -tags including gascity_doltlite_lib`,
+		`gc beads-doltlite build gc --install`,
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("gc link doctor missing %q", required)
+		}
+	}
+}
+
 func TestDoltliteHealthJSONSchemaIsValidObject(t *testing.T) {
 	schemaPath := filepath.Join(repoRootForTest(t), "commands", "health", "schemas", "result.schema.json")
 	raw := mustReadFile(t, schemaPath)
