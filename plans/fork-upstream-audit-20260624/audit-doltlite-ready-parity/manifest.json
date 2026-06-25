@@ -8,7 +8,7 @@
   "artifact_root_relative": "plans/fork-upstream-audit-20260624/audit-doltlite-ready-parity",
   "manifest_path": "/data/projects/doltlite-gascity/gascity/plans/fork-upstream-audit-20260624/audit-doltlite-ready-parity/manifest.json",
   "manifest_path_relative": "plans/fork-upstream-audit-20260624/audit-doltlite-ready-parity/manifest.json",
-  "docs_change_id": "mlxzsxpvvmuxozumtnnrunvqvnvyurnv",
+  "docs_change_id": "kzwpnwxukwopnsrnzlmyuwvlvzyzkswx",
   "source_workspace": "",
   "source_workspace_path": "",
   "source_change_id": "",
@@ -20,6 +20,14 @@
       "absolute_path": "/data/projects/doltlite-gascity/gascity/plans/fork-upstream-audit-20260624/audit-doltlite-ready-parity/requirements.md",
       "hash": "sha256:4150a0e77c0916cdde69931b80339c77da88c11076a2ccdda05ecf6ca78c5e97",
       "change_id": "mlxzsxpvvmuxozumtnnrunvqvnvyurnv"
+    },
+    {
+      "name": "plan",
+      "schema": "gc.build.plan.v1",
+      "path": "plans/fork-upstream-audit-20260624/audit-doltlite-ready-parity/implementation-plan.md",
+      "absolute_path": "/data/projects/doltlite-gascity/gascity/plans/fork-upstream-audit-20260624/audit-doltlite-ready-parity/implementation-plan.md",
+      "hash": "sha256:2803afa47f0c4d4f92d123fd70f58940691badd759fbb59237767babdefedc84",
+      "change_id": "kzwpnwxukwopnsrnzlmyuwvlvzyzkswx"
     }
   ]
 }
