@@ -8,7 +8,7 @@
   "artifact_root_relative": "plans/fork-upstream-audit-20260624/audit-controller-demand-vs-upstream",
   "manifest_path": "/data/projects/doltlite-gascity/gascity/plans/fork-upstream-audit-20260624/audit-controller-demand-vs-upstream/manifest.json",
   "manifest_path_relative": "plans/fork-upstream-audit-20260624/audit-controller-demand-vs-upstream/manifest.json",
-  "docs_change_id": "lrwvopxrqmtzqulqmmrlvzwztowttnum",
+  "docs_change_id": "qrozssznnnywnvknoszozqskmnrypulp",
   "source_workspace": "",
   "source_workspace_path": "",
   "source_change_id": "",
@@ -36,6 +36,14 @@
       "path_relative": "plans/fork-upstream-audit-20260624/audit-controller-demand-vs-upstream/plan-review.md",
       "hash": "sha256:6a02e1b4eb48f4c935745cf4df914f032839efda7c49b360a03d62ac20f13412",
       "change_id": "lrwvopxrqmtzqulqmmrlvzwztowttnum"
+    },
+    {
+      "name": "decomposition",
+      "schema": "gc.build.decomposition.v1",
+      "path": "/data/projects/doltlite-gascity/gascity/plans/fork-upstream-audit-20260624/audit-controller-demand-vs-upstream/decomposition.md",
+      "path_relative": "plans/fork-upstream-audit-20260624/audit-controller-demand-vs-upstream/decomposition.md",
+      "hash": "sha256:e245c72107094d6c4d035bd2e95ff1abb3b66585bea979ac03aa188f42980fe2",
+      "change_id": "qrozssznnnywnvknoszozqskmnrypulp"
     }
   ]
 }
