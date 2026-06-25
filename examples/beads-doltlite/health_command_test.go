@@ -78,6 +78,83 @@ func TestDoltliteBuildHelpExplainsTargetSelection(t *testing.T) {
 	}
 }
 
+func TestDoltliteSqlitebrowserCommandBuildsAgainstLibdoltlite(t *testing.T) {
+	root := repoRootForTest(t)
+	manifest := string(mustReadFile(t, filepath.Join(root, "commands", "sqlitebrowser", "command.toml")))
+	script := string(mustReadFile(t, filepath.Join(root, "commands", "sqlitebrowser", "run.sh")))
+	help := string(mustReadFile(t, filepath.Join(root, "commands", "sqlitebrowser", "help.md")))
+	skill := string(mustReadFile(t, filepath.Join(root, "skills", "doltlite", "SKILL.md")))
+
+	if !strings.Contains(manifest, "DB Browser for SQLite against libdoltlite") {
+		t.Fatalf("sqlitebrowser manifest missing libdoltlite description: %s", manifest)
+	}
+	for _, required := range []string{
+		`usage: gc beads-doltlite sqlitebrowser [open|build|path]`,
+		`-Dsqlcipher=0`,
+		`-DSQLite3_INCLUDE_DIR="$DOLTLITE_LIB"`,
+		`-DSQLite3_LIBRARY="$lib_file"`,
+		`libdoltlite`,
+		`sqlitebrowser-doltlite`,
+		`DISPLAY, WAYLAND_DISPLAY, or QT_QPA_PLATFORM`,
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("sqlitebrowser script missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		`stock SQLite or SQLCipher`,
+		`CMake's SQLite dependency at ` + "`libdoltlite`",
+		`gc beads-doltlite sqlitebrowser build`,
+		`gc beads-doltlite sqlitebrowser open --db`,
+	} {
+		if !strings.Contains(help, required) {
+			t.Fatalf("sqlitebrowser help missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		`gc beads-doltlite sqlitebrowser build/open`,
+		`stock SQLite Browser builds cannot open DoltLite-format databases`,
+	} {
+		if !strings.Contains(skill, required) {
+			t.Fatalf("doltlite skill missing %q", required)
+		}
+	}
+}
+
+func TestDoltliteSqlitebrowserPathUsesCityMetadata(t *testing.T) {
+	root := repoRootForTest(t)
+	city := t.TempDir()
+	lib := filepath.Join(city, "doltlite-work", "build")
+	dbDir := filepath.Join(city, ".beads", "doltlite")
+	if err := os.MkdirAll(lib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lib, "libdoltlite.so"), []byte("fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(city, ".beads", "metadata.json"), []byte(`{"backend":"doltlite","database":"doltlite","dolt_database":"hq"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantDB := filepath.Join(dbDir, "hq.db")
+	if err := os.WriteFile(wantDB, []byte("fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("bash", filepath.Join(root, "commands", "sqlitebrowser", "run.sh"), "path", "--city", city, "--lib", lib)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("sqlitebrowser path failed: %v\noutput=%s", err, out.String())
+	}
+	if got := strings.TrimSpace(out.String()); got != wantDB {
+		t.Fatalf("sqlitebrowser path = %q, want %q", got, wantDB)
+	}
+}
+
 func TestDoltliteGCLinkDoctorRequiresNativeReadBuildTag(t *testing.T) {
 	script := filepath.Join(
 		repoRootForTest(t),
