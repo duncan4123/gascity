@@ -33,7 +33,9 @@ Prefer that contract over assumptions from Dolt-server commands.
 - Use `doltlite-client` for direct test reads and writes. It supports `info`,
   `query`, `exec`, `show`, `set-metadata`, and `close`.
 - Use `gc beads-doltlite sqlitebrowser build/open` for optional GUI inspection;
-  stock SQLite Browser builds cannot open DoltLite-format databases.
+  stock SQLite Browser builds cannot open DoltLite-format databases. Plain
+  `open --city <city>` generates a DB Browser project with HQ, rig attachments,
+  and a formula-progress SQL tab.
 - Use DoltLite SQL for native maintenance checks, including
   `SELECT dolt_gc();` for GC.
 - Do not assume configurable SQLite checkpoint modes. DoltLite rejects

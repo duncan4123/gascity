@@ -4,18 +4,21 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-usage: gc beads-doltlite sqlitebrowser [open|build|path] [options] [db-file]
+usage: gc beads-doltlite sqlitebrowser [open|project|build|path] [options] [db-file]
 
 Build or run DB Browser for SQLite linked against libdoltlite.
 
 Subcommands:
-  open    Open the active DoltLite beads database. Default.
-  build   Clone/configure/build DB Browser against libdoltlite.
-  path    Print the DoltLite database path that open would use.
+  open     Open the generated HQ/rig DB Browser project. Default.
+  project  Generate the HQ/rig DB Browser project and print its path.
+  build    Clone/configure/build DB Browser against libdoltlite.
+  path     Print the DoltLite database path that --db would open.
 
 Options:
   --city DIR        City workspace root. Default: GC_CITY_PATH or current dir.
   --db FILE         DoltLite database file to open instead of city metadata.
+  --project FILE    Generated DB Browser project path.
+  --sql FILE        Generated formula-progress SQL path.
   --lib DIR         Directory containing libdoltlite.so. Default: doltlite-work/build.
   --source DIR      sqlitebrowser source checkout.
   --build-dir DIR   CMake build directory.
@@ -31,6 +34,7 @@ Examples:
   gc beads-doltlite sqlitebrowser build
   gc beads-doltlite sqlitebrowser open
   gc beads-doltlite sqlitebrowser open --city /path/to/city
+  gc beads-doltlite sqlitebrowser project --city /path/to/city
   gc beads-doltlite sqlitebrowser open --db /path/to/.beads/doltlite/hq.db
 EOF
 }
@@ -243,8 +247,7 @@ open_browser() {
     [ -r "$DB_FILE" ] || die "database file does not exist or is not readable: $DB_FILE"
     db_file="$(abs_file "$DB_FILE")"
   else
-    db_file="$(database_for_city || true)"
-    [ -n "$db_file" ] || die "could not find a DoltLite database under $CITY_ROOT/.beads/doltlite; pass --db"
+    db_file="$(generate_browser_project)"
   fi
 
   browser_bin="$(resolve_browser_bin || true)"
@@ -263,6 +266,138 @@ open_browser() {
   exec "$browser_bin" "$db_file" "${BROWSER_ARGS[@]}"
 }
 
+generate_browser_project() {
+  command -v python3 >/dev/null 2>&1 || die "python3 is required to generate a DB Browser project"
+
+  local generator project_file sql_file project_dir
+  generator="$PACK_DIR/examples/formula-progress/generate-formula-progress-sql.py"
+  [ -r "$generator" ] || die "formula progress generator not found: $generator"
+
+  project_dir="$PACK_STATE_DIR/sqlitebrowser"
+  project_file="${PROJECT_FILE:-$project_dir/doltlite-city.sqbpro}"
+  sql_file="${SQL_FILE:-$project_dir/formula-progress-no-attach.sql}"
+
+  python3 "$generator" \
+    --city "$CITY_ROOT" \
+    --attach-mode none \
+    --output "$sql_file" ||
+    die "generating formula progress SQL failed"
+
+  python3 - "$CITY_ROOT" "$project_file" "$sql_file" <<'PY'
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import re
+import sys
+from xml.sax.saxutils import escape
+
+
+SKIP_DIRS = {
+    ".cache",
+    ".git",
+    ".gc",
+    ".jj",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "sqlitebrowser-build",
+    "sqlitebrowser-src",
+    "vendor",
+}
+
+
+def attr(value: object) -> str:
+    return escape(str(value), {'"': "&quot;"})
+
+
+def safe_alias(value: str, used: set[str]) -> str:
+    base = re.sub(r"[^A-Za-z0-9_]+", "_", value.strip().lower()).strip("_")
+    if not base:
+        base = "db"
+    if base[0].isdigit():
+        base = "db_" + base
+    alias = base
+    i = 2
+    while alias in used:
+        alias = f"{base}_{i}"
+        i += 1
+    used.add(alias)
+    return alias
+
+
+def main_database(city: Path) -> Path:
+    db_root = city / ".beads" / "doltlite"
+    metadata = city / ".beads" / "metadata.json"
+    if metadata.exists():
+        try:
+            data = json.loads(metadata.read_text(encoding="utf-8"))
+            name = data.get("dolt_database") or data.get("database")
+        except Exception:
+            name = None
+        if name:
+            candidate = db_root / f"{name}.db"
+            if candidate.exists():
+                return candidate.resolve()
+
+    matches = sorted(db_root.glob("*.db")) if db_root.exists() else []
+    if matches:
+        return matches[0].resolve()
+    raise SystemExit(f"could not find a DoltLite database under {db_root}")
+
+
+def discover_attachments(city: Path, main: Path) -> list[tuple[str, Path]]:
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(city):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        current = Path(dirpath)
+        if current.name != "doltlite" or current.parent.name != ".beads":
+            continue
+        for filename in filenames:
+            if filename.endswith(".db"):
+                found.append((current / filename).resolve())
+
+    used = {"main"}
+    attached: list[tuple[str, Path]] = []
+    for path in sorted(found):
+        if path == main:
+            continue
+        attached.append((safe_alias(f"rig_{path.stem}", used), path))
+    return attached
+
+
+city = Path(sys.argv[1]).expanduser().resolve()
+project = Path(sys.argv[2]).expanduser().resolve()
+sql = Path(sys.argv[3]).expanduser().resolve()
+main = main_database(city)
+attached = discover_attachments(city, main)
+
+project.parent.mkdir(parents=True, exist_ok=True)
+attachments = "".join(
+    f'<db schema="{attr(alias)}" path="{attr(path)}"/>'
+    for alias, path in attached
+)
+project.write_text(
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<sqlb_project>'
+    f'<db path="{attr(main)}" readonly="1" foreign_keys="1" case_sensitive_like="0" temp_store="0" wal_autocheckpoint="1000" synchronous="2"/>'
+    f'<attached>{attachments}</attached>'
+    '<window><main_tabs open="structure browse pragma sql plot" current="3"/></window>'
+    '<tab_sql>'
+    f'<sql name="Formula progress" filename="{attr(sql)}">'
+    f'-- Reference to file "{attr(sql)}" --'
+    '</sql>'
+    '<current_tab id="0"/>'
+    '</tab_sql>'
+    '</sqlb_project>\n',
+    encoding="utf-8",
+)
+print(project)
+PY
+}
+
 ACTION="open"
 CITY_ROOT="${GC_CITY_PATH:-$(pwd)}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -279,12 +414,14 @@ SQLITEBROWSER_REF="${GC_DOLTLITE_SQLITEBROWSER_REF:-master}"
 UPDATE_SOURCE=0
 JOBS="${GC_DOLTLITE_SQLITEBROWSER_JOBS:-$(default_jobs)}"
 DB_FILE=""
+PROJECT_FILE=""
+SQL_FILE=""
 CMAKE_ARGS=()
 BROWSER_ARGS=()
 
 if [ "$#" -gt 0 ]; then
   case "$1" in
-    open|build|path)
+    open|project|build|path)
       ACTION="$1"
       shift
       ;;
@@ -309,6 +446,24 @@ while [ "$#" -gt 0 ]; do
       ;;
     --db=*)
       DB_FILE="${1#*=}"
+      shift
+      ;;
+    --project)
+      require_value "$1" "${2:-}"
+      PROJECT_FILE="$2"
+      shift 2
+      ;;
+    --project=*)
+      PROJECT_FILE="${1#*=}"
+      shift
+      ;;
+    --sql)
+      require_value "$1" "${2:-}"
+      SQL_FILE="$2"
+      shift 2
+      ;;
+    --sql=*)
+      SQL_FILE="${1#*=}"
       shift
       ;;
     --lib)
@@ -416,7 +571,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$ACTION" in
-  open|build|path) ;;
+  open|project|build|path) ;;
   *) usage_error "unknown subcommand: $ACTION" ;;
 esac
 
@@ -434,17 +589,22 @@ if [ "$BUILD_DIR_SET" = "0" ] && [ -z "${GC_DOLTLITE_SQLITEBROWSER_BUILD_DIR:-}"
   BUILD_DIR="$PACK_STATE_DIR/sqlitebrowser-build"
 fi
 
-if [ -z "$DOLTLITE_LIB" ]; then
-  DOLTLITE_LIB="$(find_doltlite_lib || true)"
+if [ "$ACTION" = "build" ] || [ "$ACTION" = "open" ]; then
+  if [ -z "$DOLTLITE_LIB" ]; then
+    DOLTLITE_LIB="$(find_doltlite_lib || true)"
+  fi
+  if [ -z "$DOLTLITE_LIB" ] || ! has_doltlite_lib "$DOLTLITE_LIB"; then
+    die "could not find libdoltlite; set DOLTLITE_LIB=/path/to/doltlite-work/build or pass --lib"
+  fi
+  DOLTLITE_LIB="$(abs_dir "$DOLTLITE_LIB")"
 fi
-if [ -z "$DOLTLITE_LIB" ] || ! has_doltlite_lib "$DOLTLITE_LIB"; then
-  die "could not find libdoltlite; set DOLTLITE_LIB=/path/to/doltlite-work/build or pass --lib"
-fi
-DOLTLITE_LIB="$(abs_dir "$DOLTLITE_LIB")"
 
 case "$ACTION" in
   build)
     build_browser
+    ;;
+  project)
+    generate_browser_project
     ;;
   path)
     if [ -n "$DB_FILE" ]; then

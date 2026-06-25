@@ -3,12 +3,15 @@ package beadsdoltlite_test
 import (
 	"bytes"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	beadsdoltlite "github.com/gastownhall/gascity/examples/beads-doltlite"
 )
 
 func TestDoltliteHealthScriptDoesNotForceDefaultShellTimeout(t *testing.T) {
@@ -89,13 +92,17 @@ func TestDoltliteSqlitebrowserCommandBuildsAgainstLibdoltlite(t *testing.T) {
 		t.Fatalf("sqlitebrowser manifest missing libdoltlite description: %s", manifest)
 	}
 	for _, required := range []string{
-		`usage: gc beads-doltlite sqlitebrowser [open|build|path]`,
+		`usage: gc beads-doltlite sqlitebrowser [open|project|build|path]`,
 		`-Dsqlcipher=0`,
 		`-DSQLite3_INCLUDE_DIR="$DOLTLITE_LIB"`,
 		`-DSQLite3_LIBRARY="$lib_file"`,
 		`libdoltlite`,
 		`sqlitebrowser-doltlite`,
 		`DISPLAY, WAYLAND_DISPLAY, or QT_QPA_PLATFORM`,
+		`generate_browser_project`,
+		`generate-formula-progress-sql.py`,
+		`<tab_sql>`,
+		`Formula progress`,
 	} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("sqlitebrowser script missing %q", required)
@@ -105,7 +112,9 @@ func TestDoltliteSqlitebrowserCommandBuildsAgainstLibdoltlite(t *testing.T) {
 		`stock SQLite or SQLCipher`,
 		`CMake's SQLite dependency at ` + "`libdoltlite`",
 		`gc beads-doltlite sqlitebrowser build`,
+		`gc beads-doltlite sqlitebrowser project --city`,
 		`gc beads-doltlite sqlitebrowser open --db`,
+		`loads a formula-progress SQL tab`,
 	} {
 		if !strings.Contains(help, required) {
 			t.Fatalf("sqlitebrowser help missing %q", required)
@@ -114,6 +123,7 @@ func TestDoltliteSqlitebrowserCommandBuildsAgainstLibdoltlite(t *testing.T) {
 	for _, required := range []string{
 		`gc beads-doltlite sqlitebrowser build/open`,
 		`stock SQLite Browser builds cannot open DoltLite-format databases`,
+		`open --city <city>`,
 	} {
 		if !strings.Contains(skill, required) {
 			t.Fatalf("doltlite skill missing %q", required)
@@ -152,6 +162,216 @@ func TestDoltliteSqlitebrowserPathUsesCityMetadata(t *testing.T) {
 	}
 	if got := strings.TrimSpace(out.String()); got != wantDB {
 		t.Fatalf("sqlitebrowser path = %q, want %q", got, wantDB)
+	}
+}
+
+func TestDoltliteSqlitebrowserProjectGeneratesBrowserSetup(t *testing.T) {
+	root := repoRootForTest(t)
+	city := t.TempDir()
+	for _, dir := range []string{
+		filepath.Join(city, ".beads", "doltlite"),
+		filepath.Join(city, ".beads", "formulas"),
+		filepath.Join(city, "rig-one", ".beads", "doltlite"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(city, ".beads", "metadata.json"), []byte(`{"backend":"doltlite","database":"doltlite","dolt_database":"hq"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hqDB := filepath.Join(city, ".beads", "doltlite", "hq.db")
+	rigDB := filepath.Join(city, "rig-one", ".beads", "doltlite", "ri.db")
+	if err := os.WriteFile(hqDB, []byte("fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rigDB, []byte("fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(city, ".beads", "formulas", "demo.toml"), []byte(`
+formula = "demo"
+contract = "graph.v2"
+
+[[steps]]
+id = "prepare"
+title = "Prepare demo"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	outDir := t.TempDir()
+	projectPath := filepath.Join(outDir, "browser.sqbpro")
+	sqlPath := filepath.Join(outDir, "formula-progress.sql")
+	cmd := exec.Command(
+		"bash",
+		filepath.Join(root, "commands", "sqlitebrowser", "run.sh"),
+		"project",
+		"--city", city,
+		"--project", projectPath,
+		"--sql", sqlPath,
+	)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("sqlitebrowser project failed: %v\noutput=%s", err, out.String())
+	}
+	if got := strings.TrimSpace(out.String()); got != projectPath {
+		t.Fatalf("project output = %q, want %q", got, projectPath)
+	}
+
+	project := string(mustReadFile(t, projectPath))
+	for _, required := range []string{
+		`<db path="` + hqDB + `" readonly="1"`,
+		`schema="rig_ri"`,
+		`path="` + rigDB + `"`,
+		`<main_tabs open="structure browse pragma sql plot" current="3"/>`,
+		`<sql name="Formula progress" filename="` + sqlPath + `"`,
+	} {
+		if !strings.Contains(project, required) {
+			t.Fatalf("generated project missing %q:\n%s", required, project)
+		}
+	}
+
+	sql := string(mustReadFile(t, sqlPath))
+	for _, required := range []string{
+		"formula_steps",
+		"'demo.prepare'",
+		"assumes rig databases are already attached",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("generated SQL missing %q", required)
+		}
+	}
+	if strings.Contains(sql, "ATTACH DATABASE") {
+		t.Fatalf("generated project SQL should not include ATTACH DATABASE statements:\n%s", sql)
+	}
+}
+
+func TestDoltlitePackEmbedsHQAndRigBrowserExample(t *testing.T) {
+	for _, path := range []string{
+		"examples/hq-rig-browser/README.md",
+		"examples/hq-rig-browser/doltlite-gascity-attach.sql",
+		"examples/hq-rig-browser/doltlite-gascity-hq-rigs.sqbpro",
+		"examples/formula-progress/README.md",
+		"examples/formula-progress/generate-formula-progress-sql.py",
+		"examples/formula-progress/doltlite-gascity-formula-progress.sql",
+		"examples/formula-progress/doltlite-gascity-formula-progress-no-attach.sql",
+	} {
+		if _, err := fs.Stat(beadsdoltlite.PackFS, path); err != nil {
+			t.Fatalf("embedded pack missing %s: %v", path, err)
+		}
+	}
+
+	sql := string(mustReadFile(t, filepath.Join(repoRootForTest(t), "examples", "hq-rig-browser", "doltlite-gascity-attach.sql")))
+	project := string(mustReadFile(t, filepath.Join(repoRootForTest(t), "examples", "hq-rig-browser", "doltlite-gascity-hq-rigs.sqbpro")))
+	for _, required := range []string{
+		`ATTACH DATABASE '/data/projects/doltlite-gascity/beads-doltlite/.beads/doltlite/bd.db' AS rig_bd`,
+		`ATTACH DATABASE '/data/projects/doltlite-gascity/gascity/.beads/doltlite/gc.db' AS rig_gc`,
+		`ATTACH DATABASE '/data/projects/doltlite-gascity/gascity-packs/.beads/doltlite/gp.db' AS rig_gp`,
+		`ATTACH DATABASE '/data/projects/doltlite-gascity/gascity/gascity-dashboard/.beads/doltlite/gd.db' AS rig_gd`,
+		`ATTACH DATABASE '/data/projects/doltlite-gascity/lightjj/.beads/doltlite/lj.db' AS rig_lj`,
+		`PRAGMA database_list`,
+		`Blocked beads across HQ and rigs`,
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("hq/rig browser SQL missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		`<db path="/data/projects/doltlite-gascity/.beads/doltlite/hq.db" readonly="1"`,
+		`schema="rig_bd"`,
+		`schema="rig_gc"`,
+		`schema="rig_gp"`,
+		`schema="rig_gd"`,
+		`schema="rig_lj"`,
+	} {
+		if !strings.Contains(project, required) {
+			t.Fatalf("hq/rig project missing %q", required)
+		}
+	}
+}
+
+func TestDoltliteFormulaProgressGeneratorEmitsStepSQL(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	root := repoRootForTest(t)
+	formulaDir := filepath.Join(t.TempDir(), "formulas")
+	if err := os.MkdirAll(formulaDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(formulaDir, "demo.toml"), []byte(`
+formula = "demo"
+version = 1
+contract = "graph.v2"
+
+[[steps]]
+id = "prepare"
+title = "Prepare demo"
+metadata = { "gc.run_target" = "gc.run-operator" }
+
+[[steps]]
+id = "finish"
+title = "Finish demo"
+needs = ["prepare"]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	output := filepath.Join(t.TempDir(), "formula-progress.sql")
+	cmd := exec.Command(
+		python,
+		filepath.Join(root, "examples", "formula-progress", "generate-formula-progress-sql.py"),
+		"--city", t.TempDir(),
+		"--formula-root", formulaDir,
+		"--database", "hq=main",
+		"--output", output,
+	)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("formula progress generator failed: %v\noutput=%s", err, out.String())
+	}
+
+	sql := string(mustReadFile(t, output))
+	for _, required := range []string{
+		"formula_steps",
+		"'demo.prepare'",
+		"'demo.finish'",
+		`json_extract(metadata, '$."gc.step_ref"')`,
+		"Workflow progress rollup",
+		"Runtime-generated or expansion steps",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("generated formula progress SQL missing %q", required)
+		}
+	}
+
+	noAttachOutput := filepath.Join(t.TempDir(), "formula-progress-no-attach.sql")
+	cmd = exec.Command(
+		python,
+		filepath.Join(root, "examples", "formula-progress", "generate-formula-progress-sql.py"),
+		"--city", t.TempDir(),
+		"--formula-root", formulaDir,
+		"--database", "hq=main",
+		"--attach-mode", "none",
+		"--output", noAttachOutput,
+	)
+	out.Reset()
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("formula progress no-attach generator failed: %v\noutput=%s", err, out.String())
+	}
+	noAttachSQL := string(mustReadFile(t, noAttachOutput))
+	if strings.Contains(noAttachSQL, "ATTACH DATABASE") {
+		t.Fatalf("no-attach SQL should not include ATTACH DATABASE statements:\n%s", noAttachSQL)
+	}
+	if !strings.Contains(noAttachSQL, "assumes rig databases are already attached") {
+		t.Fatalf("no-attach SQL missing already-attached note")
 	}
 }
 
