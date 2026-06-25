@@ -164,6 +164,22 @@ Implementation is deliberately limited to the override layer. No patrol-loop
 special case is needed because all order consumers already flow through
 `orderdiscovery.ScanAll` and `orders.ApplyOverrides`.
 
+## Implementation Task Boundaries
+
+Decompose this plan into implementation beads along these boundaries:
+
+| Task | Scope | Acceptance Criteria | Focused Proof |
+| --- | --- | --- | --- |
+| Override unit tests | Update `internal/orders/override_test.go` for disabled-only missing-order tombstones and preserved invalid override diagnostics. | `REQ-001`, `REQ-002`, `REQ-004` | `go test ./internal/orders -run TestApplyOverrides` |
+| Command contract tests | Update `cmd/gc/order_scan_contract_test.go` and keep `cmd/gc/order_dispatch_test.go` coverage for non-fatal but visible invalid override errors. | `REQ-001`, `REQ-002`, `REQ-004` | `go test ./cmd/gc -run 'TestOrderScanContract(DisabledMissingOverrideIsSilent|EnabledMissingOverrideStillWarns|OverrideEnabledFalseMarksOrderDisabled)|TestBuildOrderDispatcherOverrideNotFoundNonFatal'` |
+| Override implementation | Update `internal/orders/override.go` so only disabled-only overrides for globally absent order names skip `notFoundError`. | `REQ-001`, `REQ-002` | Both focused test commands above |
+| Documentation | Update `docs/tutorials/07-orders.md` and any generated config reference source required by the schema/doc pipeline. | `REQ-003` | Review docs diff and generated-reference policy before hand-editing generated files |
+
+Each task is independently reviewable. Keep the override implementation bead
+behind the test beads if the decomposition supports ordering; the desired rule
+is small enough that implementation before tests would hide the important edge
+cases.
+
 ## Non-Goals
 
 - Do not reintroduce or import a `jjw-workspace-report` order just to satisfy
@@ -177,6 +193,28 @@ special case is needed because all order consumers already flow through
   be ignored.
 - Do not change order scanning, scheduling, patrol timing, or active-order
   filtering semantics beyond this override validation rule.
+
+## Risk, Migration, And Rollback
+
+- Primary behavior risk: accidentally silencing enabled missing-order overrides
+  or mutating overrides. Mitigation: keep paired negative tests for enabled,
+  nil-enabled, and field-mutating missing overrides.
+- Scope risk: treating a disabled override for an existing order name but wrong
+  rig as a tombstone would hide configuration mistakes. Mitigation: the helper
+  must check all discovered orders by name before allowing the tombstone path.
+- Public interface impact: no new CLI flags, API fields, schema fields, or
+  config keys are planned. The user-facing change is narrower stderr/log
+  behavior for disabled-only missing-order tombstones plus documentation.
+- Migration impact: none. Existing `city.toml` disabled override entries remain
+  valid and should not be removed as part of this fix.
+- Rollback: revert the `internal/orders/override.go` helper and the associated
+  tests/docs change. There is no data migration or runtime state to unwind.
+- Artifact risk: the workflow root still records a missing generated
+  requirements artifact at
+  `/data/projects/doltlite-gascity/gascity/plans/order-override-missing-order-fix/build/requirements.md`.
+  This plan remains traceable through `investigation-input.md` and the explicit
+  coverage table above; the artifact mismatch should be treated as workflow
+  bookkeeping debt, not as a reason to broaden the implementation.
 
 ## Verification
 
@@ -203,3 +241,17 @@ The command path should not emit `order "jjw-workspace-report" (rig "gascity")
 not found` for disabled missing overrides. A temporary enabled or mutating
 missing override in a test city should still produce a clear `not found`
 diagnostic.
+
+## GSTACK REVIEW REPORT
+
+| Run | Status | Findings |
+| --- | --- | --- |
+| Design scope | Pass | No screen or component UI scope. The user-facing design surface is CLI/log behavior and order override documentation. |
+| Requirements traceability | Pass with note | `REQ-001` through `REQ-004` map to the plan coverage table and task boundary table. The generated requirements artifact path is missing and remains captured as artifact debt. |
+| Task boundaries | Pass | The plan now separates unit tests, command contract tests, override implementation, and docs into decomposition-ready beads. |
+| Test strategy | Pass | The plan names focused `go test` commands and the repository `go vet ./...` gate. |
+| Risk and rollback | Pass | The plan now records behavior risks, public-interface impact, migration impact, and rollback. |
+
+VERDICT: pass - ready for decomposition after these plan amendments.
+
+NO UNRESOLVED DECISIONS
