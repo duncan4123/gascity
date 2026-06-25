@@ -97,7 +97,11 @@ type scaleCheckDemand struct {
 	StoreRefs   map[string]string
 }
 
-var errPoolSessionCreateBudgetExhausted = errors.New("pool session create budget exhausted")
+var (
+	errPoolSessionCreateBudgetExhausted = errors.New("pool session create budget exhausted")
+	errPoolSessionCreatePartial         = errors.New("pool session create skipped: demand read partial")
+	errPoolSessionCreateProviderRed     = errors.New("pool session create skipped: provider red")
+)
 
 // poolSessionCreateFairShareCounter rotates scarce create tokens across
 // contending pools so stable template sort order does not always win.
@@ -780,6 +784,8 @@ func buildDesiredStateWithSessionBeads(
 		}
 		poolWorkBeads := filterAssignedWorkBeadsForPoolDemand(cfg, cityPath, sessionBeads.Open(), assignedWorkBeads, assignedWorkStoreRefs)
 		bp.assignedWorkBeads = poolWorkBeads
+		bp.poolScaleCheckPartialTemplates = poolScaleCheckPartialTemplates
+		bp.providerHealthSnapshot = loadProviderHealthSnapshot(cityPath)
 		poolDesiredStates := ComputePoolDesiredStatesWithDemandTraced(cfg, poolWorkBeads, sessionBeads.Open(), scaleCheckCounts, scaleCheckDemandByTemplate, trace)
 		bp.configurePoolSessionCreateFairShare(poolDesiredStates)
 		for _, poolState := range poolDesiredStates {
@@ -796,6 +802,7 @@ func buildDesiredStateWithSessionBeads(
 	} else {
 		// No store — use scale_check counts directly.
 		scaleCheckCounts, _ = evaluatePendingPoolsMap(cfg, pendingPools, stderr, trace)
+		bp.providerHealthSnapshot = loadProviderHealthSnapshot(cityPath)
 		for _, pw := range pendingPools {
 			cfgAgent := &cfg.Agents[pw.agentIdx]
 			desiredCount := scaleCheckCounts[cfgAgent.QualifiedName()]
@@ -1714,10 +1721,12 @@ func retainScaleCheckPartialPoolDesired(cfg *config.City, counts map[string]int,
 }
 
 // Preserve dormant affected-template beads during transient scale_check
-// failures, but do not count them as awake demand.
+// failures, but do not count them as awake demand. Sessions that are already
+// mid-drain or past-drain (draining/drained/archived) are not preserved so a
+// partial read cannot interrupt an in-progress drain lifecycle.
 func scaleCheckPartialSessionPreservable(b beads.Bead) bool {
 	switch strings.TrimSpace(b.Metadata["state"]) {
-	case "", "active", "awake", "start-pending", "creating", "asleep", "stopped", "suspended", "quarantined", "draining", "drained", "archived":
+	case "", "active", "awake", "start-pending", "creating", "asleep", "stopped", "suspended", "quarantined":
 		return true
 	default:
 		return isPendingPoolCreate(b)
@@ -1726,9 +1735,12 @@ func scaleCheckPartialSessionPreservable(b beads.Bead) bool {
 
 func scaleCheckPartialSessionRetainable(b beads.Bead) bool {
 	switch strings.TrimSpace(b.Metadata["state"]) {
-	case "active", "awake", "start-pending", "creating":
+	case "active", "awake":
 		return true
 	default:
+		// A fresh in-flight create that still holds an active pending_create_claim
+		// lease counts as retained capacity. Stale creates (lease expired/cleared)
+		// return false so they stop inflating the desired count.
 		return isPendingPoolCreate(b)
 	}
 }
@@ -2058,8 +2070,15 @@ func discoverSessionBeadsWithRoots(
 				desiredHasCanonicalNonExpandingPoolSession(desired, template, cfgAgent) {
 				continue
 			}
+			// Use a narrower partial-alive guard than scaleCheckPartial here: for
+			// creating/start-pending beads, only protect in-flight creates with an
+			// active pending_create_claim lease; stale creates (lease cleared/expired)
+			// roll back even during a partial tick. For all other states (active, awake,
+			// asleep, stopped, ...) the broad preservable rule applies unchanged.
+			poolPartialAlive := (poolScaleCheckPartial || namedScaleCheckPartial) &&
+				(isPendingPoolCreate(b) || (!creating && scaleCheckPartialSessionPreservable(b)))
 			if controllerManagedPool && !manualSession && !isNamedSessionBead(b) &&
-				!sessionAlreadyDesired && !templateDesired && !scaleCheckPartial {
+				!sessionAlreadyDesired && !templateDesired && !poolPartialAlive {
 				continue
 			}
 			if !manualSession && (!creating || isStaleCreating(b)) && !templateDesired && !pendingCreate && !scaleCheckPartial {
@@ -2349,9 +2368,15 @@ func realizePoolDesiredSessions(
 			}
 			sessionBead, slot, plan, err := selectOrPlanPoolSessionBead(bp, cfgAgent, qualifiedName, prefer, request, used, usedSlots)
 			if err != nil {
-				if errors.Is(err, errPoolSessionCreateBudgetExhausted) {
+				switch {
+				case errors.Is(err, errPoolSessionCreateBudgetExhausted):
 					fmt.Fprintf(stderr, "buildDesiredState: pool %q request: %v (fresh create deferred)\n", qualifiedName, err) //nolint:errcheck
-				} else {
+				case errors.Is(err, errPoolSessionCreatePartial):
+					fmt.Fprintf(stderr, "buildDesiredState: pool %q request: %v (partial demand read, fresh create blocked)\n", qualifiedName, err) //nolint:errcheck
+				case errors.Is(err, errPoolSessionCreateProviderRed):
+					// debug-level: fires every tick during a red episode; not operator noise
+					fmt.Fprintf(stderr, "buildDesiredState: pool %q request: %v (provider red, fresh create blocked)\n", qualifiedName, err) //nolint:errcheck
+				default:
 					fmt.Fprintf(stderr, "buildDesiredState: pool %q request: %v (skipping)\n", qualifiedName, err) //nolint:errcheck
 				}
 				item.skip = true
@@ -3334,6 +3359,28 @@ func selectOrPlanPoolSessionBead(
 	slot := claimDesiredPoolSlot(bp.city, cfgAgent, beads.Bead{}, usedSlots)
 	_, qualifiedInstance, poolSlot := poolDesiredRequestIdentity(cfgAgent, slot)
 	metadata := poolTriggerMetadata(bp, cfgAgent, qualifiedInstance, request)
+
+	if bp.poolScaleCheckPartialTemplates[template] {
+		delete(usedSlots, slot)
+		return beads.Bead{}, 0, nil, errPoolSessionCreatePartial
+	}
+
+	// Provider-health gate: refuse new creates when the registry reports this
+	// agent's provider as red. Reuse paths above are unaffected (they return
+	// before reaching this point). loadProviderHealthSnapshot always returns a
+	// non-nil snapshot; check() fails-open when the registry is absent or stale.
+	// Symmetric with the respawn gate in session_reconciler.go.
+	provName := strings.TrimSpace(cfgAgent.Provider)
+	if provName == "" {
+		provName = strings.TrimSpace(cfgAgent.InheritedProvider)
+	}
+	if provName == "" && bp.workspace != nil {
+		provName = strings.TrimSpace(bp.workspace.Provider)
+	}
+	if healthy, present := bp.providerHealthSnapshot.check(provName); present && !healthy {
+		delete(usedSlots, slot)
+		return beads.Bead{}, 0, nil, errPoolSessionCreateProviderRed
+	}
 
 	if !bp.tryClaimPoolSessionCreate(template) {
 		delete(usedSlots, slot)
