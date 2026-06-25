@@ -8,10 +8,10 @@
   "artifact_root_relative": "plans/fork-upstream-audit-20260624/audit-doltlite-ready-parity",
   "manifest_path": "/data/projects/doltlite-gascity/gascity/plans/fork-upstream-audit-20260624/audit-doltlite-ready-parity/manifest.json",
   "manifest_path_relative": "plans/fork-upstream-audit-20260624/audit-doltlite-ready-parity/manifest.json",
-  "docs_change_id": "kzwpnwxukwopnsrnzlmyuwvlvzyzkswx",
-  "source_workspace": "",
-  "source_workspace_path": "",
-  "source_change_id": "",
+  "docs_change_id": "kypwosprvvuqyurwlnrmlysyzrptnmvk",
+  "source_workspace": "gascity",
+  "source_workspace_path": "/data/projects/doltlite-gascity/gascity/.gc/workspaces/gascity/packs/gascity",
+  "source_change_id": "snrynqzxtknnntlruwytvklunnsxqtly",
   "documents": [
     {
       "name": "requirements",
@@ -28,6 +28,22 @@
       "absolute_path": "/data/projects/doltlite-gascity/gascity/plans/fork-upstream-audit-20260624/audit-doltlite-ready-parity/implementation-plan.md",
       "hash": "sha256:2803afa47f0c4d4f92d123fd70f58940691badd759fbb59237767babdefedc84",
       "change_id": "kzwpnwxukwopnsrnzlmyuwvlvzyzkswx"
+    },
+    {
+      "name": "decomposition",
+      "schema": "gc.build.decomposition.v1",
+      "path": "plans/fork-upstream-audit-20260624/audit-doltlite-ready-parity/decomposition.md",
+      "absolute_path": "/data/projects/doltlite-gascity/gascity/plans/fork-upstream-audit-20260624/audit-doltlite-ready-parity/decomposition.md",
+      "hash": "sha256:fe1d48a2eedd8c05d4c48a7a4f1924f262487025b691ad7016e552f10b8d91d2",
+      "change_id": "kypwosprvvuqyurwlnrmlysyzrptnmvk"
+    },
+    {
+      "name": "workspace-prep-summary",
+      "schema": "gc.build.workspace-prep-summary.v1",
+      "path": "plans/fork-upstream-audit-20260624/audit-doltlite-ready-parity/implementation-items/workspace-prep-summary.md",
+      "absolute_path": "/data/projects/doltlite-gascity/gascity/plans/fork-upstream-audit-20260624/audit-doltlite-ready-parity/implementation-items/workspace-prep-summary.md",
+      "hash": "sha256:733923e88d5d8695eaf0829875261f8e11afbf3ad0d904119a67949ed3974337",
+      "change_id": "kypwosprvvuqyurwlnrmlysyzrptnmvk"
     }
   ]
 }

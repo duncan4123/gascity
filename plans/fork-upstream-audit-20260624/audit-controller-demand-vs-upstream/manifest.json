@@ -8,10 +8,10 @@
   "artifact_root_relative": "plans/fork-upstream-audit-20260624/audit-controller-demand-vs-upstream",
   "manifest_path": "/data/projects/doltlite-gascity/gascity/plans/fork-upstream-audit-20260624/audit-controller-demand-vs-upstream/manifest.json",
   "manifest_path_relative": "plans/fork-upstream-audit-20260624/audit-controller-demand-vs-upstream/manifest.json",
-  "docs_change_id": "qrozssznnnywnvknoszozqskmnrypulp",
-  "source_workspace": "",
-  "source_workspace_path": "",
-  "source_change_id": "",
+  "docs_change_id": "kypwosprvvuqyurwlnrmlysyzrptnmvk",
+  "source_workspace": "gascity-jj-base",
+  "source_workspace_path": "/data/projects/doltlite-gascity/gascity/.gc/workspaces/gascity/packs/gascity-jj-base",
+  "source_change_id": "yqwwsuuurskrqytnovpqzstsmyywnmml",
   "documents": [
     {
       "name": "requirements",
@@ -44,6 +44,14 @@
       "path_relative": "plans/fork-upstream-audit-20260624/audit-controller-demand-vs-upstream/decomposition.md",
       "hash": "sha256:e245c72107094d6c4d035bd2e95ff1abb3b66585bea979ac03aa188f42980fe2",
       "change_id": "qrozssznnnywnvknoszozqskmnrypulp"
+    },
+    {
+      "name": "implementation-summary",
+      "schema": "gc.build.implementation-summary.v1",
+      "path": "/data/projects/doltlite-gascity/gascity/plans/fork-upstream-audit-20260624/audit-controller-demand-vs-upstream/implementation-summary-gc-vgvj.md",
+      "path_relative": "plans/fork-upstream-audit-20260624/audit-controller-demand-vs-upstream/implementation-summary-gc-vgvj.md",
+      "hash": "sha256:7180b70ce4d683fe96de3ea9d296b2a9e5420d391b39204bed63c0483bdcf96e",
+      "change_id": "kypwosprvvuqyurwlnrmlysyzrptnmvk"
     }
   ]
 }
