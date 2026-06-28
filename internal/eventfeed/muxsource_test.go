@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/events"
-	"github.com/gastownhall/gascity/internal/testutil"
 	"github.com/gastownhall/gascity/pkg/eventexport"
 )
 
@@ -90,11 +89,7 @@ func TestMuxSource_YieldsAndPicksUpNewCity(t *testing.T) {
 		}
 		return false
 	}
-	// The deadline races the consumer goroutine and the 15ms MuxSource rebuild
-	// loop; under the parallel fast-test CPU storm a 2s constant flakes
-	// ("condition not met within 2s"). See TESTING.md "Test deadline rule": use
-	// the shared goroutine-race floor since this timer is not the subject here.
-	waitFor(t, testutil.GoroutineRaceTimeout, func() bool { return has("c1", 1) && has("c1", 2) })
+	waitFor(t, 2*time.Second, func() bool { return has("c1", 1) && has("c1", 2) })
 
 	// add a second city after launch; it must be picked up on a rebuild.
 	f2 := events.NewFake()
@@ -103,7 +98,7 @@ func TestMuxSource_YieldsAndPicksUpNewCity(t *testing.T) {
 	pmu.Unlock()
 	time.Sleep(40 * time.Millisecond) // let a rebuild floor c2 at 0
 	f2.Record(events.Event{Seq: 1, Type: "bead.created", Ts: time.Now(), Actor: "b", Subject: "mc-9"})
-	waitFor(t, testutil.GoroutineRaceTimeout, func() bool { return has("c2", 1) })
+	waitFor(t, 2*time.Second, func() bool { return has("c2", 1) })
 }
 
 // TestAdapter_NoLeakFromPayload proves the events.Event -> primitive conversion

@@ -34,14 +34,10 @@ func repoRoot(t *testing.T) string {
 	return filepath.Dir(filename)
 }
 
-// filteredEnv returns os.Environ() with the supplied keys removed and
-// every GC_* / DOLT_* entry stripped unconditionally. The blanket
-// scrub keeps shell-script tests hermetic when invoked from an agent
-// worktree, where the host shell carries managed-runtime
-// state (GC_DOLT_STATE_FILE, GC_CITY_RUNTIME_DIR, GC_DOLT_PORT, etc.)
-// that would otherwise override the test fixture's temp paths and
-// route runtime.sh at the production state file. The explicit keys
-// argument remains for non-GC_/DOLT_ scrubbing such as PATH.
+// filteredEnv returns os.Environ() with the supplied keys removed and every
+// GC_* / DOLT_* entry stripped unconditionally. The blanket scrub keeps
+// shell-script tests hermetic when invoked from an agent worktree where the
+// host shell carries managed-runtime state.
 func filteredEnv(keys ...string) []string {
 	blocked := make(map[string]struct{}, len(keys))
 	for _, key := range keys {
@@ -63,12 +59,6 @@ func filteredEnv(keys ...string) []string {
 	return env
 }
 
-// TestFilteredEnvStripsGCAndDOLTPrefixes is the unit-level regression
-// guard for the env scrub. The TestRuntimeScriptPortPrecedence* tests
-// only fail when the host shell happens to carry leaking GC_* values,
-// so a revert of the prefix scrub goes undetected on clean machines.
-// This test injects the leak explicitly and asserts it never reaches
-// the returned slice.
 func TestFilteredEnvStripsGCAndDOLTPrefixes(t *testing.T) {
 	t.Setenv("GC_DOLT_STATE_FILE", "/host/leak/dolt-state.json")
 	t.Setenv("GC_DOLT_PORT", "38676")

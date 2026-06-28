@@ -49,8 +49,8 @@ func TestBdBackupFreshnessCheck(t *testing.T) {
 		}
 	})
 
-	t.Run("missing backup_state.json is skipped (OK, not this check's job)", func(t *testing.T) {
-		scope := t.TempDir() // no .beads/backup at all
+	t.Run("missing backup_state.json is skipped", func(t *testing.T) {
+		scope := t.TempDir()
 		r := NewBdBackupFreshnessCheckForScopeRoots("", []string{scope}, maxAge, clock).Run(nil)
 		if r.Status != StatusOK {
 			t.Fatalf("no backup: want StatusOK, got %v (%s)", r.Status, r.Message)

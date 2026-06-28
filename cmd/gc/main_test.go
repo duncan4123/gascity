@@ -109,13 +109,6 @@ func configureSupervisorHooksForTests() {
 	ensureSupervisorRunningHook = func(_, _ io.Writer) int { return 0 }
 	reloadSupervisorHook = func(_, _ io.Writer) int { return 0 }
 	supervisorAliveHook = func() int { return 0 }
-	// Neutralize systemd lingering so install tests never spawn loginctl
-	// or mutate the test runner's real linger state. Reporting linger as
-	// already enabled makes ensureSupervisorLinger a silent no-op, keeping
-	// existing install-path stdout/stderr assertions intact. Dedicated
-	// linger tests override these locally.
-	supervisorLoginctlRun = func(_ ...string) error { return nil }
-	supervisorLingerEnabled = func(_ string) bool { return true }
 	startNudgePoller = func(string, string, string) error { return nil }
 	initLookPath = func(file string) (string, error) { return file, nil }
 	initProbeProvidersReadiness = func(_ context.Context, providers []string, _ bool) (map[string]api.ReadinessItem, error) {
@@ -2812,10 +2805,10 @@ schema = 2
 
 [imports]
 [imports.bd]
-source = "https://github.com/gastownhall/gascity/tree/main/examples/bd"
+source = "https://github.com/gastownhall/gascity.git//examples/bd"
 version = "` + config.BundledPackImportVersion + `"
 [imports.core]
-source = "https://github.com/gastownhall/gascity/tree/main/internal/bootstrap/packs/core"
+source = "https://github.com/gastownhall/gascity.git//internal/bootstrap/packs/core"
 version = "` + config.BundledPackImportVersion + `"
 [imports.gascity]
 source = "https://github.com/gastownhall/gascity-packs/tree/main/gascity"

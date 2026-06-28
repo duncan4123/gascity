@@ -2400,7 +2400,7 @@ func TestBdStoreReadyDoesNotSpecialCaseSyntheticMetadata(t *testing.T) {
 	}{
 		`bd ready --json --limit 0`: {
 			out: []byte(`[
-				{"id":"bd-synthetic","title":"synthetic unit","status":"open","issue_type":"convoy","created_at":"2025-01-15T10:29:00Z","metadata":{"gc.synthetic":"true"}},
+				{"id":"bd-synthetic","title":"synthetic unit","status":"open","issue_type":"task","created_at":"2025-01-15T10:29:00Z","metadata":{"gc.synthetic":"true"}},
 				{"id":"bd-task","title":"ready one","status":"open","issue_type":"task","created_at":"2025-01-15T10:30:00Z"},
 				{"id":"bd-extra","title":"ready two","status":"open","issue_type":"task","created_at":"2025-01-15T10:31:00Z"}
 			]`),
