@@ -70,7 +70,7 @@ func TestPeekEventsProvider(t *testing.T) {
 // cmd/gc depends on: the bundled pack set, and a registered source plus
 // embedded FS for every name requiredBuiltinPackNames can return.
 func TestBuiltinPacksUseCanonicalRegistry(t *testing.T) {
-	want := []string{"core", "bd", "dolt", "gastown", "gascity"}
+	want := []string{"core", "bd", "dolt", "beads-doltlite", "gastown", "gascity"}
 	registry := builtinpacks.All()
 	got := make([]string, 0, len(registry))
 	for _, pack := range registry {
@@ -460,11 +460,9 @@ func TestRequiredBuiltinPackNames(t *testing.T) {
 			t.Fatalf("requiredBuiltinImports order = %v, want [core bd]", ordered)
 		}
 		for _, name := range ordered {
-			// requiredBuiltinImports authors the dereferenceable tree-URL
-			// form (issue #3644), not the internal //subpath form.
-			source, ok := builtinpacks.CanonicalImportSource(name)
+			source, ok := builtinpacks.Source(name)
 			if !ok {
-				t.Fatalf("builtinpacks.CanonicalImportSource(%q) not registered", name)
+				t.Fatalf("builtinpacks.Source(%q) not registered", name)
 			}
 			imp, ok := imports[name]
 			if !ok {
@@ -472,9 +470,6 @@ func TestRequiredBuiltinPackNames(t *testing.T) {
 			}
 			if imp.Source != source {
 				t.Errorf("imports[%q].Source = %q, want %q", name, imp.Source, source)
-			}
-			if !strings.Contains(imp.Source, "/tree/") || strings.Contains(imp.Source, ".git//") {
-				t.Errorf("imports[%q].Source = %q, want a resolvable tree URL, not the .git//subpath form", name, imp.Source)
 			}
 			if imp.Version != config.BundledPackImportVersion {
 				t.Errorf("imports[%q].Version = %q, want %q", name, imp.Version, config.BundledPackImportVersion)
@@ -539,21 +534,13 @@ func TestBuiltinImportsForNames(t *testing.T) {
 		t.Fatalf("builtinImportsForNames imports = %#v, want 3 entries", imports)
 	}
 	for _, name := range ordered {
-		// gc init authors the dereferenceable tree-URL form, not the
-		// internal //subpath recognition form returned by Source.
-		source, ok := builtinpacks.CanonicalImportSource(name)
+		source, ok := builtinpacks.Source(name)
 		if !ok {
-			t.Fatalf("builtinpacks.CanonicalImportSource(%q) not registered", name)
+			t.Fatalf("builtinpacks.Source(%q) not registered", name)
 		}
 		imp := imports[name]
 		if imp.Source != source {
 			t.Errorf("imports[%q].Source = %q, want %q", name, imp.Source, source)
-		}
-		if !strings.Contains(imp.Source, "/tree/") {
-			t.Errorf("imports[%q].Source = %q, want a dereferenceable GitHub tree URL", name, imp.Source)
-		}
-		if strings.Contains(imp.Source, ".git//") {
-			t.Errorf("imports[%q].Source = %q, must not author the legacy .git//subpath form", name, imp.Source)
 		}
 		if imp.Version != config.BundledPackImportVersion {
 			t.Errorf("imports[%q].Version = %q, want %q", name, imp.Version, config.BundledPackImportVersion)
@@ -574,68 +561,29 @@ func TestBuiltinImportsForInit(t *testing.T) {
 			{provider: "exec:/tmp/custom-store", want: "core"},
 			{provider: "exec:/tmp/gc-beads-bd", want: "core,bd"},
 		} {
-			_, ordered := builtinImportsForInit(tt.provider)
+			_, ordered := builtinImportsForInit(tt.provider, "")
 			if got := strings.Join(ordered, ","); got != tt.want {
 				t.Errorf("builtinImportsForInit(%q) = %v, want %s", tt.provider, ordered, tt.want)
 			}
 		}
 	})
 
+	t.Run("backend_required_packs", func(t *testing.T) {
+		clearGCEnv(t)
+		_, ordered := builtinImportsForInit("bd", "doltlite")
+		if got := strings.Join(ordered, ","); got != "core,bd,beads-doltlite" {
+			t.Errorf("builtinImportsForInit bd/doltlite = %v, want core,bd,beads-doltlite", ordered)
+		}
+	})
+
 	t.Run("gc_beads_env_wins_over_city_provider", func(t *testing.T) {
 		clearGCEnv(t)
 		t.Setenv("GC_BEADS", "file")
-		_, ordered := builtinImportsForInit("bd")
+		_, ordered := builtinImportsForInit("bd", "doltlite")
 		if got := strings.Join(ordered, ","); got != "core" {
 			t.Errorf("builtinImportsForInit with GC_BEADS=file = %v, want core only", ordered)
 		}
 	})
-}
-
-// TestCanonicalImportSourcePublicPacksMatchConstants asserts the public-pack
-// branch of CanonicalImportSource produces exactly the durable source
-// constants gc init and the wave-1 doctor migration write for the public
-// gascity-packs packs, so the bundled generator and the init/doctor paths
-// never diverge on spelling.
-func TestCanonicalImportSourcePublicPacksMatchConstants(t *testing.T) {
-	cases := map[string]string{
-		"gastown": config.PublicGastownPackSource,
-		"gascity": config.PublicGascityPackSource,
-	}
-	for name, want := range cases {
-		got, ok := builtinpacks.CanonicalImportSource(name)
-		if !ok {
-			t.Fatalf("CanonicalImportSource(%q) ok = false, want true", name)
-		}
-		if got != want {
-			t.Errorf("CanonicalImportSource(%q) = %q, want %q", name, got, want)
-		}
-	}
-}
-
-// TestCanonicalImportSourceCacheKeyParity is the safety property the whole
-// "change generation, leave recognition unchanged" strategy rests on: the
-// authored tree-URL spelling and the internal //subpath spelling must resolve
-// to the same repo cache slot at the canonical pin. If this ever diverges, a
-// freshly-initialized city and an old-form city would fight over (or miss)
-// the same bundled synthetic cache.
-func TestCanonicalImportSourceCacheKeyParity(t *testing.T) {
-	commit := strings.TrimPrefix(config.BundledPackImportVersion, "sha:")
-	for _, name := range []string{"core", "bd", "dolt"} {
-		legacy, ok := builtinpacks.Source(name)
-		if !ok {
-			t.Fatalf("Source(%q) not registered", name)
-		}
-		canonical, ok := builtinpacks.CanonicalImportSource(name)
-		if !ok {
-			t.Fatalf("CanonicalImportSource(%q) not registered", name)
-		}
-		if legacy == canonical {
-			t.Fatalf("Source(%q) and CanonicalImportSource(%q) are the same spelling %q; parity test is vacuous", name, name, legacy)
-		}
-		if packman.RepoCacheKey(legacy, commit) != packman.RepoCacheKey(canonical, commit) {
-			t.Errorf("RepoCacheKey diverges for %q: legacy %q vs canonical %q", name, legacy, canonical)
-		}
-	}
 }
 
 func TestNoMaintenanceBuiltinPack(t *testing.T) {
@@ -741,6 +689,75 @@ func TestEnsureBuiltinRuntimeAssetsSkipsShimForNonBdCity(t *testing.T) {
 	}
 	if err := builtinpacks.ValidateSyntheticRepo(coreCache, commit); err != nil {
 		t.Errorf("core cache invalid after hydration: %v", err)
+	}
+}
+
+func TestBeadsDoltlitePackIncludesLibdoltliteBuildCommand(t *testing.T) {
+	packDir := bundledPackDirForTest(t, "beads-doltlite")
+	manifestPath := filepath.Join(packDir, "commands", "build", "command.toml")
+	manifest, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", manifestPath, err)
+	}
+	if !strings.Contains(string(manifest), "Build gc, bd, or the DoltLite client against libdoltlite") {
+		t.Fatalf("build command manifest missing libdoltlite description:\n%s", manifest)
+	}
+
+	scriptPath := filepath.Join(packDir, "commands", "build", "run.sh")
+	script, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", scriptPath, err)
+	}
+	text := string(script)
+	for _, want := range []string{
+		"usage: gc beads-doltlite build [gc|bd|client|all]",
+		"--gc-source",
+		"--bd-source",
+		"--gc-output",
+		"--bd-output",
+		"--install",
+		"--install-dir",
+		"--gc-install",
+		"--bd-install",
+		"CGO_ENABLED=1",
+		"-tags=${tags}",
+		"gascity_doltlite_lib,libsqlite3",
+		"common_env_prefix \"libsqlite3\"",
+		"install_binary",
+		"mv -f \"$tmp\" \"$dest\"",
+		"./cmd/gc",
+		"./cmd/bd",
+		"CGO_LDFLAGS",
+		"-ldoltlite",
+		"libdoltlite",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("build script missing %q:\n%s", want, text)
+		}
+	}
+	for _, forbidden := range []string{
+		"gascity_native_beads",
+		"CGO_ENABLED=0",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("build script must not use %q:\n%s", forbidden, text)
+		}
+	}
+}
+
+func TestBeadsDoltlitePackIncludesDoltliteSkill(t *testing.T) {
+	skill := readBundledPackFileForTest(t, "beads-doltlite", "skills/doltlite/SKILL.md")
+	for _, want := range []string{
+		"name: doltlite",
+		"doltlite-client",
+		"<city-root>/doltlite/README.md",
+		"../../../../../doltlite/README.md",
+		"SELECT dolt_gc();",
+		"PRAGMA wal_checkpoint(TRUNCATE)",
+	} {
+		if !strings.Contains(skill, want) {
+			t.Fatalf("doltlite skill missing %q:\n%s", want, skill)
+		}
 	}
 }
 
