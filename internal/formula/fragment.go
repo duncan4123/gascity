@@ -162,7 +162,7 @@ func stripFragmentRecipe(recipe *Recipe) *FragmentRecipe {
 		if step.IsRoot {
 			continue
 		}
-		if step.Metadata[beadmeta.KindMetadataKey] == beadmeta.KindWorkflowFinalize {
+		if step.Metadata[beadmeta.KindMetadataKey] == "workflow-finalize" {
 			continue
 		}
 		steps = append(steps, step)
@@ -214,9 +214,9 @@ func ApplyFragmentRecipeGraphControls(fragment *FragmentRecipe) {
 
 		replacements[step.ID] = controlID
 		meta := map[string]string{
-			beadmeta.KindMetadataKey:       beadmeta.KindScopeCheck,
+			beadmeta.KindMetadataKey:       "scope-check",
 			beadmeta.ScopeRefMetadataKey:   step.Metadata[beadmeta.ScopeRefMetadataKey],
-			beadmeta.ScopeRoleMetadataKey:  beadmeta.ScopeRoleControl,
+			beadmeta.ScopeRoleMetadataKey:  "control",
 			beadmeta.ControlForMetadataKey: step.ID,
 		}
 		for _, key := range []string{beadmeta.StepIDMetadataKey, beadmeta.RalphStepIDMetadataKey, beadmeta.AttemptMetadataKey, beadmeta.OnFailMetadataKey} {
@@ -256,10 +256,15 @@ func recipeStepNeedsScopeCheck(step RecipeStep) bool {
 	if step.Metadata[beadmeta.ScopeRefMetadataKey] == "" {
 		return false
 	}
-	if step.Metadata[beadmeta.ScopeRoleMetadataKey] == beadmeta.ScopeRoleTeardown {
+	if step.Metadata[beadmeta.ScopeRoleMetadataKey] == "teardown" {
 		return false
 	}
-	return !beadmeta.IsScopeCheckExemptKind(step.Metadata[beadmeta.KindMetadataKey])
+	switch step.Metadata[beadmeta.KindMetadataKey] {
+	case "scope", "scope-check", "workflow-finalize", "fanout", "check", "spec":
+		return false
+	default:
+		return true
+	}
 }
 
 func fragmentEntryStepIDs(fragment *FragmentRecipe) []string {

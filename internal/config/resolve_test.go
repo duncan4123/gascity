@@ -102,31 +102,6 @@ func TestResolveProviderAgentStartCommandHonorsExplicitPromptMode(t *testing.T) 
 	}
 }
 
-func TestResolveProviderForkFlag(t *testing.T) {
-	// claude carries the fork verb; the resolved provider must surface it so the
-	// fork-launch command form (--resume <parent> --fork-session --session-id) is
-	// available.
-	claude := &Agent{Name: "warm", Provider: "claude"}
-	rp, err := ResolveProvider(claude, nil, explicitBuiltins("claude"), lookPathOnly("claude"))
-	if err != nil {
-		t.Fatalf("ResolveProvider(claude): %v", err)
-	}
-	if rp.ForkFlag != "--fork-session" {
-		t.Errorf("claude ForkFlag = %q, want --fork-session", rp.ForkFlag)
-	}
-
-	// codex has no fork verb; ForkFlag must stay empty so a fork launch on codex
-	// fails loud rather than silently degrading to fresh.
-	codex := &Agent{Name: "cold", Provider: "codex"}
-	rpc, err := ResolveProvider(codex, nil, explicitBuiltins("codex"), lookPathOnly("codex"))
-	if err != nil {
-		t.Fatalf("ResolveProvider(codex): %v", err)
-	}
-	if rpc.ForkFlag != "" {
-		t.Errorf("codex ForkFlag = %q, want empty", rpc.ForkFlag)
-	}
-}
-
 func TestResolveProviderAgentProvider(t *testing.T) {
 	agent := &Agent{Name: "mayor", Provider: "claude"}
 	rp, err := ResolveProvider(agent, nil, explicitBuiltins("claude"), lookPathOnly("claude"))
@@ -167,9 +142,11 @@ func TestResolveProviderWorkspaceProvider(t *testing.T) {
 	if rp.Name != "codex" {
 		t.Errorf("Name = %q, want %q", rp.Name, "codex")
 	}
-	// After migration, CommandString() is just "codex" -- schema flags come from ResolveDefaultArgs.
-	if rp.CommandString() != "codex" {
-		t.Errorf("CommandString() = %q, want %q", rp.CommandString(), "codex")
+	// After migration, CommandString() contains only provider base args;
+	// schema flags come from ResolveDefaultArgs.
+	wantCommand := "codex"
+	if rp.CommandString() != wantCommand {
+		t.Errorf("CommandString() = %q, want %q", rp.CommandString(), wantCommand)
 	}
 	defaultArgs := rp.ResolveDefaultArgs()
 	codexWantArgs := []string{
@@ -1262,7 +1239,7 @@ func TestResolveProviderChainLeafArgsOverrideInheritedCodexDefaults(t *testing.T
 		t.Fatalf("resolved launch command = %q, inherited max model leaked into mini provider", command)
 	}
 	if strings.Count(command, "gpt-5.3-codex") != 1 {
-		t.Fatalf("resolved launch command = %q, want one Codex model flag", command)
+		t.Fatalf("resolved launch command = %q, want one spark model flag", command)
 	}
 	if strings.Count(command, "model_reasoning_effort=medium") != 1 {
 		t.Fatalf("resolved launch command = %q, want one medium effort flag", command)
@@ -2191,7 +2168,6 @@ func TestMergeProviderOverBuiltinFieldSync(t *testing.T) {
 		ResumeStyle:            "flag",
 		ResumeCommand:          "custom-cmd --resume {{.SessionKey}}",
 		SessionIDFlag:          "--session-id",
-		ForkFlag:               "--fork-session",
 		PermissionModes:        map[string]string{"yolo": "--yolo"},
 		OptionDefaults:         map[string]string{"permission_mode": "yolo"},
 		OptionsSchema:          []ProviderOption{{Key: "model"}},

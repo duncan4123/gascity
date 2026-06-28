@@ -36,7 +36,7 @@ type bindingMembershipEnsurer interface {
 	EnsureMembership(ctx context.Context, input EnsureMembershipInput) (ConversationMembershipRecord, error)
 	RemoveMembership(ctx context.Context, input RemoveMembershipInput) error
 	ensureMembershipLocked(input EnsureMembershipInput) (ConversationMembershipRecord, error)
-	ensureMembershipLockedWriter(w membershipWriter, input EnsureMembershipInput) (ConversationMembershipRecord, error)
+	ensureMembershipLockedWriter(tx beads.Tx, input EnsureMembershipInput) (ConversationMembershipRecord, error)
 	removeMembershipLocked(input RemoveMembershipInput) error
 }
 
@@ -1016,7 +1016,7 @@ func (s *bindingService) activeBinding(ctx context.Context, history []SessionBin
 	})
 }
 
-func (s *bindingService) updateBindingMetadata(w beads.Tx, record SessionBindingRecord, meta map[string]string, expiresAt *time.Time, now time.Time) error {
+func (s *bindingService) updateBindingMetadata(tx beads.Tx, record SessionBindingRecord, meta map[string]string, expiresAt *time.Time, now time.Time) error {
 	fields := map[string]string{
 		"expires_at":      formatTimePtr(expiresAt),
 		"last_touched_at": formatTime(now),
@@ -1028,7 +1028,7 @@ func (s *bindingService) updateBindingMetadata(w beads.Tx, record SessionBinding
 	if len(kvs) == 0 {
 		return nil
 	}
-	return w.SetMetadataBatch(record.ID, kvs)
+	return tx.SetMetadataBatch(record.ID, kvs)
 }
 
 func (s *bindingService) getBinding(id string) (SessionBindingRecord, error) {

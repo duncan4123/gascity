@@ -68,7 +68,7 @@ func expandRetry(step *Step) ([]*Step, error) {
 	control.Children = nil
 	control.Assignee = ""
 	control.Metadata = withMetadata(control.Metadata, map[string]string{
-		beadmeta.KindMetadataKey:         beadmeta.KindRetry,
+		beadmeta.KindMetadataKey:         "retry",
 		beadmeta.StepIDMetadataKey:       step.ID,
 		beadmeta.MaxAttemptsMetadataKey:  strconv.Itoa(step.Retry.MaxAttempts),
 		beadmeta.OnExhaustedMetadataKey:  onExhausted,

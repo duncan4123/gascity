@@ -1649,6 +1649,10 @@ func (tx *bdStoreTx) item(id string) (*bdStoreTxItem, error) {
 	return item, nil
 }
 
+func (tx *bdStoreTx) Create(b Bead) (Bead, error) {
+	return tx.store.Create(b)
+}
+
 func (tx *bdStoreTx) Update(id string, opts UpdateOpts) error {
 	if !hasUpdateOpts(opts) {
 		return nil

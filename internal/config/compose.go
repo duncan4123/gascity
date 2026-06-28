@@ -680,6 +680,8 @@ func LoadWithIncludesOptions(fs fsys.FS, path string, opts LoadOptions, extraInc
 		return nil, nil, err
 	}
 
+	applyBeadsCompatibilityDefaults(root)
+
 	// Validate all duration strings in the fully-merged config.
 	prov.Warnings = append(prov.Warnings, ValidateDurations(root, path)...)
 	prov.Warnings = append(prov.Warnings, ValidateEventsRotation(root)...)
@@ -768,6 +770,19 @@ func LoadWithIncludesOptions(fs fsys.FS, path string, opts LoadOptions, extraInc
 	prov.captureRevisionSnapshot(fs, root, cityRoot)
 
 	return root, prov, nil
+}
+
+func applyBeadsCompatibilityDefaults(root *City) {
+	if root == nil {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(root.Beads.Backend), "doltlite") {
+		return
+	}
+	if strings.TrimSpace(root.Beads.BDCompatibility) != "" {
+		return
+	}
+	root.Beads.BDCompatibility = BeadsBDCompatibility105
 }
 
 // adjustPatchPaths resolves patch path fields rooted at the declaring config
@@ -1041,9 +1056,6 @@ func mergeFragment(base, fragment *City, fragMeta toml.MetaData, fragPath string
 	}
 	if fragMeta.IsDefined("orders") {
 		base.Orders = fragment.Orders
-	}
-	if fragMeta.IsDefined("extmsg", "default_route") {
-		base.ExtMsg.DefaultRoutes = append(base.ExtMsg.DefaultRoutes, fragment.ExtMsg.DefaultRoutes...)
 	}
 	if fragMeta.IsDefined("api") {
 		base.API = fragment.API
