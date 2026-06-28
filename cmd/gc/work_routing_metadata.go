@@ -8,7 +8,7 @@ import (
 )
 
 func legacyWorkflowRunTarget(b beads.Bead) string {
-	if strings.TrimSpace(b.Metadata[beadmeta.KindMetadataKey]) != beadmeta.KindWorkflow {
+	if strings.TrimSpace(b.Metadata[beadmeta.KindMetadataKey]) != "workflow" {
 		return ""
 	}
 	if strings.TrimSpace(b.Metadata[beadmeta.RoutedToMetadataKey]) != "" {
