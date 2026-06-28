@@ -126,7 +126,7 @@ func (s *Server) buildWorkflowSnapshot(workflowID, fallbackScopeKind, fallbackSc
 			}
 			roots, err := info.store.List(beads.ListQuery{
 				Metadata: map[string]string{
-					beadmeta.KindMetadataKey:       beadmeta.KindWorkflow,
+					beadmeta.KindMetadataKey:       "workflow",
 					beadmeta.WorkflowIDMetadataKey: workflowID,
 				},
 				IncludeClosed: true,
@@ -264,7 +264,7 @@ func (s *Server) snapshotFromStore(info workflowStoreInfo, root beads.Bead, fall
 }
 
 func isWorkflowRoot(bead beads.Bead) bool {
-	return strings.TrimSpace(bead.Metadata[beadmeta.KindMetadataKey]) == beadmeta.KindWorkflow
+	return strings.TrimSpace(bead.Metadata[beadmeta.KindMetadataKey]) == "workflow"
 }
 
 // isGraphConvoyBead reports whether a bead is a formula-compiled graph
@@ -338,8 +338,8 @@ func workflowEventScope(info workflowStoreInfo, root beads.Bead, cityScopeRef st
 	// event scopes aligned with the snapshot API's preserved city-scope reads
 	// for those legacy workflows, while root_store_ref still exposes the
 	// physical store for callers that need it.
-	if info.scopeKind == beadmeta.ScopeKindRig {
-		return beadmeta.ScopeKindCity, workflowCityScopeRef(cityScopeRef)
+	if info.scopeKind == "rig" {
+		return "city", workflowCityScopeRef(cityScopeRef)
 	}
 	return info.scopeKind, info.scopeRef
 }
@@ -378,7 +378,7 @@ func parseWorkflowRequestScope(rawScopeKind, rawScopeRef string) (string, string
 		return "", "", "scope_kind and scope_ref must be provided together"
 	}
 	switch scopeKind {
-	case beadmeta.ScopeKindCity, beadmeta.ScopeKindRig:
+	case "city", "rig":
 		return scopeKind, scopeRef, ""
 	default:
 		return "", "", "scope_kind must be 'city' or 'rig'"
@@ -551,9 +551,9 @@ func workflowStatus(bead beads.Bead) string {
 	switch strings.TrimSpace(bead.Status) {
 	case "closed":
 		switch outcome {
-		case beadmeta.OutcomeFail:
+		case "fail":
 			return "failed"
-		case beadmeta.OutcomeSkipped:
+		case "skipped":
 			return "skipped"
 		}
 		return "completed"
@@ -566,9 +566,9 @@ func workflowStatus(bead beads.Bead) string {
 		return "pending"
 	default:
 		switch outcome {
-		case beadmeta.OutcomeFail:
+		case "fail":
 			return "failed"
-		case beadmeta.OutcomeSkipped:
+		case "skipped":
 			return "skipped"
 		}
 		return strings.TrimSpace(bead.Status)
@@ -583,7 +583,7 @@ func workflowStores(state State) []workflowStoreInfo {
 	if cityStore := state.CityBeadStore(); cityStore != nil {
 		stores = append(stores, workflowStoreInfo{
 			ref:       "city:" + cityName,
-			scopeKind: beadmeta.ScopeKindCity,
+			scopeKind: "city",
 			scopeRef:  cityName,
 			store:     cityStore,
 		})
@@ -599,7 +599,7 @@ func workflowStores(state State) []workflowStoreInfo {
 		}
 		stores = append(stores, workflowStoreInfo{
 			ref:       "rig:" + rigName,
-			scopeKind: beadmeta.ScopeKindRig,
+			scopeKind: "rig",
 			scopeRef:  rigName,
 			store:     store,
 		})
@@ -624,7 +624,7 @@ func workflowStoreByRef(state State, ref string) (workflowStoreInfo, bool) {
 	}
 
 	switch strings.TrimSpace(kind) {
-	case beadmeta.ScopeKindCity:
+	case "city":
 		cityStore := state.CityBeadStore()
 		cityName := workflowCityScopeRef(state.CityName())
 		if cityStore == nil || scopeRef != cityName {
@@ -632,18 +632,18 @@ func workflowStoreByRef(state State, ref string) (workflowStoreInfo, bool) {
 		}
 		return workflowStoreInfo{
 			ref:       "city:" + cityName,
-			scopeKind: beadmeta.ScopeKindCity,
+			scopeKind: "city",
 			scopeRef:  cityName,
 			store:     cityStore,
 		}, true
-	case beadmeta.ScopeKindRig:
+	case "rig":
 		store := state.BeadStore(scopeRef)
 		if store == nil {
 			return workflowStoreInfo{}, false
 		}
 		return workflowStoreInfo{
 			ref:       "rig:" + scopeRef,
-			scopeKind: beadmeta.ScopeKindRig,
+			scopeKind: "rig",
 			scopeRef:  scopeRef,
 			store:     store,
 		}, true
