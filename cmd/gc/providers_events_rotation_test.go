@@ -227,7 +227,7 @@ archive_retain_age = "24h"
 `), 0o644); err != nil {
 		t.Fatalf("write city.toml: %v", err)
 	}
-	writeBuiltinImportsFixture(t, cityDir, "core", "bd")
+	writeBuiltinImportsFixture(t, cityDir, "core", "bd", "dolt")
 
 	var stderr strings.Builder
 	ep, code := openCityEventsProvider(&stderr, "test")

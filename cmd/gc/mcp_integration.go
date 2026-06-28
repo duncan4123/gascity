@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/fsys"
@@ -399,7 +398,7 @@ func resolveSessionMCPProjection(
 	if identity == "" {
 		identity = agent.QualifiedName()
 	}
-	workDir := strings.TrimSpace(bead.Metadata[beadmeta.LegacyWorkDirMetadataKey])
+	workDir := strings.TrimSpace(bead.Metadata["work_dir"])
 	if workDir == "" {
 		workDir, err = resolveWorkDirForQualifiedName(cityPath, cfg, agent, identity)
 		if err != nil {

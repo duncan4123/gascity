@@ -107,8 +107,6 @@ func (h *SessionHandle) historyWithRequest(req HistoryRequest) (*HistorySnapshot
 		return nil, err
 	}
 	h.maybePersistDerivedSessionKey(id, info, snapshot)
-	// After any session-key persist, so the keyed transcript path can resolve.
-	h.writeTranscriptSessionMeta()
 	if req.TailCompactions > 0 {
 		return cloneHistorySnapshot(snapshot), nil
 	}

@@ -280,7 +280,6 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 	// ready open work assigned to it must stay awake. Open work must carry
 	// Ready=true so a blocked routed assignment cannot become wake demand if
 	// a future caller accidentally broadens the collection query.
-	//
 	// When the session bead records currently_processing_bead_id, prefer the
 	// matching work bead as the anchor so crash recovery brings a session
 	// back to the bead it last owned even when other beads share the
@@ -288,7 +287,7 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 	// to the first matching work bead and flag the divergence — the
 	// reconciler reads this to decide whether to cycle the conversation for
 	// wake_mode=fresh.
-	assignedAnchor := make(map[string]string) // sessionName → matched work bead ID
+	assignedAnchor := make(map[string]string) // sessionName -> matched work bead ID
 	for _, bead := range input.SessionBeads {
 		if bead.State == "closed" {
 			continue
@@ -458,12 +457,10 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 		// ("named-demand", "work-query") are also exempt: that demand means
 		// there is pending work for this specific session, so an idle window
 		// must not put it back to sleep. Without this, an asleep on_demand
-		// named session (e.g. a refinery) with routed work that already exists
-		// (open_count==desired_count==1) is re-slept every tick and the work
-		// is wedged forever — the reconciler reports reason_code=retained
-		// indefinitely. A fresh cold-create wakes only because it has no
-		// idle reference. The "work done, no demand" drain still fires via the
-		// "on-demand:running" reason, which is NOT exempt. See #3413.
+		// named session with routed work that already exists can be re-slept
+		// every tick and wedge the work forever. The "work done, no demand"
+		// drain still fires via the "on-demand:running" reason, which is not
+		// exempt. See #3413.
 		if decision.ShouldWake && !input.AttachedSessions[name] && !input.PendingSessions[name] && !bead.Pinned && !bead.IdleSince.IsZero() &&
 			!isAlwaysNamedSession(input.NamedSessions, bead) &&
 			desired[name] != "assigned-work" && desired[name] != "min-active" &&

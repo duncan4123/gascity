@@ -628,7 +628,7 @@ func TestInstantiateRetriesTransientGraphApplyBeforeFallback(t *testing.T) {
 	recipe := &formula.Recipe{
 		Name: "wf",
 		Steps: []formula.RecipeStep{
-			{ID: "wf", Title: "Workflow", Type: "task", IsRoot: true, Metadata: map[string]string{"gc.kind": "workflow"}},
+			{ID: "wf", Title: "Workflow", Type: "task", IsRoot: true},
 			{ID: "wf.step", Title: "Work", Type: "task"},
 		},
 		Deps: []formula.RecipeDep{
@@ -666,7 +666,7 @@ func TestInstantiateFallsBackWhenGraphApplyDoltConnectionTimesOut(t *testing.T) 
 	recipe := &formula.Recipe{
 		Name: "wf",
 		Steps: []formula.RecipeStep{
-			{ID: "wf", Title: "Workflow", Type: "task", IsRoot: true, Metadata: map[string]string{"gc.kind": "workflow"}},
+			{ID: "wf", Title: "Workflow", Type: "task", IsRoot: true},
 			{ID: "wf.step", Title: "Work", Type: "task"},
 		},
 		Deps: []formula.RecipeDep{
@@ -706,7 +706,7 @@ func TestInstantiateFallsBackWhenNativeGraphApplyCycleCheckTimesOut(t *testing.T
 	recipe := &formula.Recipe{
 		Name: "wf",
 		Steps: []formula.RecipeStep{
-			{ID: "wf", Title: "Workflow", Type: "task", IsRoot: true, Metadata: map[string]string{"gc.kind": "workflow"}},
+			{ID: "wf", Title: "Workflow", Type: "task", IsRoot: true},
 			{ID: "wf.step", Title: "Work", Type: "task"},
 		},
 		Deps: []formula.RecipeDep{
@@ -771,6 +771,55 @@ func TestIsTransientGraphApplyErrorTreatsCommandTimeoutAsTransient(t *testing.T)
 	err := fmt.Errorf("bd create --graph: timed out after 45s")
 	if !isTransientGraphApplyError(err) {
 		t.Fatalf("isTransientGraphApplyError(%v) = false, want true", err)
+	}
+}
+
+func TestIsTransientGraphApplyErrorTreatsDoltLiteLockAsTransient(t *testing.T) {
+	tests := []error{
+		fmt.Errorf("bd create --graph: graph create: doltlite add dependencies: database is locked"),
+		fmt.Errorf("native graph apply: adding edge wf->step: database is busy"),
+		fmt.Errorf("bd create --graph: graph create: adding edge bd-1->bd-2: SQLITE_BUSY"),
+		fmt.Errorf("bd create --graph: graph create: adding edge bd-1->bd-2: database table is locked"),
+	}
+	for _, err := range tests {
+		if !isTransientGraphApplyError(err) {
+			t.Fatalf("isTransientGraphApplyError(%v) = false, want true", err)
+		}
+	}
+}
+
+func TestInstantiateGraphWorkflowDoltLiteLockDoesNotFallbackSequentially(t *testing.T) {
+	store := &graphApplySpyStore{
+		MemStore: beads.NewMemStore(),
+		err:      fmt.Errorf("bd create --graph: graph create: doltlite add dependencies: database is locked"),
+	}
+	prev := IsGraphApplyEnabled()
+	SetGraphApplyEnabled(true)
+	t.Cleanup(func() { SetGraphApplyEnabled(prev) })
+	recipe := &formula.Recipe{
+		Name: "wf",
+		Steps: []formula.RecipeStep{
+			{ID: "wf", Title: "Workflow", Type: "task", IsRoot: true, Metadata: map[string]string{"gc.kind": "workflow"}},
+			{ID: "wf.step", Title: "Work", Type: "task"},
+		},
+		Deps: []formula.RecipeDep{
+			{StepID: "wf.step", DependsOnID: "wf", Type: "parent-child"},
+		},
+	}
+
+	_, err := Instantiate(context.Background(), store, recipe, Options{})
+	if err == nil {
+		t.Fatal("Instantiate error = nil, want graph apply lock error")
+	}
+	if store.calls != 1 {
+		t.Fatalf("ApplyGraphPlan calls = %d, want 1 so sling can reconcile before retrying", store.calls)
+	}
+	beads, listErr := store.ListOpen()
+	if listErr != nil {
+		t.Fatalf("ListOpen: %v", listErr)
+	}
+	if len(beads) != 0 {
+		t.Fatalf("fallback created %d beads after graph workflow lock", len(beads))
 	}
 }
 
@@ -2885,71 +2934,6 @@ func TestBuildRecipeApplyPlan_PreserveRootTypeKeepsTaskRoot(t *testing.T) {
 	}
 	if plan.Nodes[0].Type != "task" {
 		t.Fatalf("plan root type = %q, want task", plan.Nodes[0].Type)
-	}
-}
-
-func TestBuildRecipeApplyPlanStampsFormulaHash(t *testing.T) {
-	recipe := &formula.Recipe{
-		Name:          "mol-hash-check",
-		Description:   "Test hash stamping",
-		ContentHash:   "abc123def456",
-		FormulaSource: "/path/to/mol-hash-check.toml",
-		Steps: []formula.RecipeStep{
-			{ID: "mol-hash-check", Title: "Root", Type: "molecule", IsRoot: true},
-			{ID: "mol-hash-check.step-a", Title: "Step A", Type: "task"},
-		},
-		Deps: []formula.RecipeDep{
-			{StepID: "mol-hash-check.step-a", DependsOnID: "mol-hash-check", Type: "parent-child"},
-		},
-	}
-
-	plan, _, rootKey, err := buildRecipeApplyPlan(recipe, Options{})
-	if err != nil {
-		t.Fatalf("buildRecipeApplyPlan: %v", err)
-	}
-	if rootKey != "mol-hash-check" {
-		t.Fatalf("rootKey = %q, want mol-hash-check", rootKey)
-	}
-
-	root := nodeByKey(plan.Nodes, "mol-hash-check")
-	if root == nil {
-		t.Fatal("root node missing")
-	}
-	if got := root.Metadata["gc.formula_hash"]; got != "abc123def456" {
-		t.Errorf("gc.formula_hash = %q, want %q", got, "abc123def456")
-	}
-	if got := root.Metadata["gc.formula_source"]; got != "/path/to/mol-hash-check.toml" {
-		t.Errorf("gc.formula_source = %q, want %q", got, "/path/to/mol-hash-check.toml")
-	}
-
-	stepA := nodeByKey(plan.Nodes, "mol-hash-check.step-a")
-	if stepA == nil {
-		t.Fatal("step-a node missing")
-	}
-	if _, ok := stepA.Metadata["gc.formula_hash"]; ok {
-		t.Error("non-root node should not have gc.formula_hash")
-	}
-}
-
-func TestBuildRecipeApplyPlanNoHashWhenEmpty(t *testing.T) {
-	recipe := &formula.Recipe{
-		Name: "mol-no-hash",
-		Steps: []formula.RecipeStep{
-			{ID: "mol-no-hash", Title: "Root", Type: "molecule", IsRoot: true},
-		},
-	}
-
-	plan, _, _, err := buildRecipeApplyPlan(recipe, Options{})
-	if err != nil {
-		t.Fatalf("buildRecipeApplyPlan: %v", err)
-	}
-
-	root := nodeByKey(plan.Nodes, "mol-no-hash")
-	if root == nil {
-		t.Fatal("root node missing")
-	}
-	if _, ok := root.Metadata["gc.formula_hash"]; ok {
-		t.Error("gc.formula_hash should not be set when ContentHash is empty")
 	}
 }
 

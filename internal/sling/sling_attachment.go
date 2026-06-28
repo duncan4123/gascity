@@ -100,8 +100,8 @@ func IsAttachedRoot(b beads.Bead) bool {
 
 // IsWorkflowAttachment reports whether a bead is a graph.v2 workflow attachment.
 func IsWorkflowAttachment(b beads.Bead) bool {
-	return strings.EqualFold(strings.TrimSpace(b.Metadata[beadmeta.KindMetadataKey]), beadmeta.KindWorkflow) ||
-		strings.EqualFold(strings.TrimSpace(b.Metadata[beadmeta.FormulaContractMetadataKey]), beadmeta.FormulaContractGraphV2)
+	return strings.EqualFold(strings.TrimSpace(b.Metadata[beadmeta.KindMetadataKey]), "workflow") ||
+		strings.EqualFold(strings.TrimSpace(b.Metadata[beadmeta.FormulaContractMetadataKey]), "graph.v2")
 }
 
 // IsMoleculeAttachment reports whether a bead is a molecule attachment.
@@ -364,10 +364,7 @@ func hasLiveTrackingConvoy(store beads.Store, itemID string) bool {
 		return false
 	}
 	for _, convoy := range convoys {
-		// These are convoys by construction, so the convoy type's Ready
-		// exclusion (#3591) does not apply here — only skip convoys excluded
-		// by infrastructure label (session/order-tracking bookkeeping).
-		if beads.HasReadyExcludedLabel(convoy) {
+		if beads.IsReadyExcludedBead(convoy) {
 			continue
 		}
 		if !convoycore.IsTerminalStatus(convoy.Status) {

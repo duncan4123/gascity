@@ -412,27 +412,6 @@ func TestNamedOnDemand_NamedSessionDemandWakesExistingIdentity(t *testing.T) {
 	assertReason(t, result, "hello-world--refinery", "named-demand")
 }
 
-func TestNamedOnDemand_NamedSessionDemandWakesSingletonTemplateResolvedIdentity(t *testing.T) {
-	result := ComputeAwakeSet(AwakeInput{
-		Agents:             []AwakeAgent{{QualifiedName: "worker"}},
-		NamedSessions:      []AwakeNamedSession{{Identity: "primary", Template: "worker", Mode: "on_demand"}},
-		SessionBeads:       []AwakeSessionBead{{ID: "mc-1", SessionName: "primary", Template: "worker", State: "asleep", NamedIdentity: "primary"}},
-		NamedSessionDemand: map[string]bool{"primary": true},
-		Now:                now,
-	})
-	assertAwake(t, result, "primary")
-	assertReason(t, result, "primary", "named-demand")
-}
-
-// TestNamedOnDemand_NamedSessionDemandWakesIdleAsleepSession is the #3413
-// regression: an asleep on_demand named session (sleep_reason=idle) with
-// routed/assigned demand must wake even when it has been idle past its
-// timeout. Before the fix, the idle-sleep suppression below only exempted
-// "assigned-work"/"min-active"/"reset-pending", so a session woken by
-// "named-demand" that was idle got re-slept every tick — leaving the work
-// wedged forever (reconciler emits reason_code=retained indefinitely).
-// Being idle while routed work is pending is the stuck state, not a drain
-// trigger.
 func TestNamedOnDemand_NamedSessionDemandWakesIdleAsleepSession(t *testing.T) {
 	idleSince := now.Add(-(defaultOnDemandIdleTimeout + time.Minute))
 	result := ComputeAwakeSet(AwakeInput{
@@ -446,9 +425,6 @@ func TestNamedOnDemand_NamedSessionDemandWakesIdleAsleepSession(t *testing.T) {
 	assertReason(t, result, "hello-world--refinery", "named-demand")
 }
 
-// TestNamedOnDemand_WorkQueryWakesIdleAsleepSession is the work-query variant
-// of #3413: a named session whose backing template's work-query found pending
-// work (NamedSessionWorkQ) must also wake despite being idle past timeout.
 func TestNamedOnDemand_WorkQueryWakesIdleAsleepSession(t *testing.T) {
 	idleSince := now.Add(-(defaultOnDemandIdleTimeout + time.Minute))
 	result := ComputeAwakeSet(AwakeInput{
@@ -460,6 +436,18 @@ func TestNamedOnDemand_WorkQueryWakesIdleAsleepSession(t *testing.T) {
 	})
 	assertAwake(t, result, "hello-world--refinery")
 	assertReason(t, result, "hello-world--refinery", "work-query")
+}
+
+func TestNamedOnDemand_NamedSessionDemandWakesSingletonTemplateResolvedIdentity(t *testing.T) {
+	result := ComputeAwakeSet(AwakeInput{
+		Agents:             []AwakeAgent{{QualifiedName: "worker"}},
+		NamedSessions:      []AwakeNamedSession{{Identity: "primary", Template: "worker", Mode: "on_demand"}},
+		SessionBeads:       []AwakeSessionBead{{ID: "mc-1", SessionName: "primary", Template: "worker", State: "asleep", NamedIdentity: "primary"}},
+		NamedSessionDemand: map[string]bool{"primary": true},
+		Now:                now,
+	})
+	assertAwake(t, result, "primary")
+	assertReason(t, result, "primary", "named-demand")
 }
 
 func TestNamedOnDemand_PendingCreateWakesWithoutDemand(t *testing.T) {
@@ -2233,7 +2221,7 @@ func TestAssignedWork_SameAsCurrentBead_NoFreshCycle(t *testing.T) {
 		t.Fatalf("AssignedWorkBeadID = %q, want %q", d.AssignedWorkBeadID, "wb-77")
 	}
 	if d.RequiresFreshCycle {
-		t.Fatalf("RequiresFreshCycle = true, want false — recorded bead still anchors")
+		t.Fatalf("RequiresFreshCycle = true, want false - recorded bead still anchors")
 	}
 }
 
@@ -2259,16 +2247,16 @@ func TestAssignedWork_DifferentBead_EmitsFreshCycle(t *testing.T) {
 		t.Fatalf("AssignedWorkBeadID = %q, want %q", d.AssignedWorkBeadID, "wb-2")
 	}
 	if !d.RequiresFreshCycle {
-		t.Fatal("RequiresFreshCycle = false, want true — assigned bead differs from recorded current")
+		t.Fatal("RequiresFreshCycle = false, want true - assigned bead differs from recorded current")
 	}
 }
 
 func TestAssignedWork_PrefersRecordedCurrentBeadOverOthers(t *testing.T) {
 	// Crash recovery: two work beads are assigned to the same session, and
 	// the bead recorded as the current one is among them. ComputeAwakeSet
-	// must pick the recorded bead as the anchor — otherwise the agent
-	// would restart on whichever bead happened to be listed first and
-	// abandon the work it was last actively processing.
+	// must pick the recorded bead as the anchor; otherwise the agent would
+	// restart on whichever bead happened to be listed first and abandon the
+	// work it was last actively processing.
 	result := ComputeAwakeSet(AwakeInput{
 		Agents:        []AwakeAgent{{QualifiedName: "gascity/witness"}},
 		NamedSessions: []AwakeNamedSession{{Identity: "gascity/witness", Template: "gascity/witness", Mode: "on_demand"}},
@@ -2285,10 +2273,10 @@ func TestAssignedWork_PrefersRecordedCurrentBeadOverOthers(t *testing.T) {
 	})
 	d := result["gascity--witness"]
 	if d.AssignedWorkBeadID != "wb-current" {
-		t.Fatalf("AssignedWorkBeadID = %q, want wb-current — recorded current bead must win the anchor selection", d.AssignedWorkBeadID)
+		t.Fatalf("AssignedWorkBeadID = %q, want wb-current - recorded current bead must win the anchor selection", d.AssignedWorkBeadID)
 	}
 	if d.RequiresFreshCycle {
-		t.Fatal("RequiresFreshCycle = true, want false — recorded bead still in assigned set")
+		t.Fatal("RequiresFreshCycle = true, want false - recorded bead still in assigned set")
 	}
 }
 
@@ -2311,6 +2299,6 @@ func TestAssignedWork_NoRecordedCurrent_FirstMatchAnchors(t *testing.T) {
 		t.Fatalf("AssignedWorkBeadID = %q, want wb-a (first match when no current bead recorded)", d.AssignedWorkBeadID)
 	}
 	if d.RequiresFreshCycle {
-		t.Fatal("RequiresFreshCycle = true, want false — no recorded current means no divergence")
+		t.Fatal("RequiresFreshCycle = true, want false - no recorded current means no divergence")
 	}
 }

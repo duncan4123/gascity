@@ -1778,20 +1778,14 @@ func doConvoyAutoclose(beadID string, stdout, stderr io.Writer) {
 	rec := openCityRecorderAt(cityPath, stderr)
 
 	// The bd on_close hook is spawned from the supervisor and inherits its
-	// cwd/env, so storeRoot resolves to the supervisor's (city) store even
-	// when the closed bead lives in a rig store. Resolve the store that
-	// actually owns the bead — prefix-aware, across the city and every rig —
-	// so rig-store closes autoclose their convoys instead of silently
-	// no-op'ing (#3411).
+	// cwd/env, so storeRoot resolves to the supervisor's city store even when
+	// the closed bead lives in a rig store. Resolve the store that actually
+	// owns the bead across the city and every rig.
 	if store, _, ok := autocloseOwningStore(beadID, cityPath); ok {
 		doConvoyAutocloseWith(store, rec, beadID, stdout, stderr)
 		return
 	}
 
-	// Fallback: a standalone store reachable only via cwd/BEADS_DIR/
-	// GC_STORE_ROOT (e.g. an external rig checkout with no city.toml), or a
-	// city whose config could not be loaded. Preserve the original
-	// single-store resolution.
 	store, err := openStoreAtForCity(storeRoot, cityPath)
 	if err != nil {
 		return
@@ -1801,10 +1795,8 @@ func doConvoyAutoclose(beadID string, stdout, stderr io.Writer) {
 
 // autocloseOwningStore resolves the store that owns beadID, and the store
 // directory it was found in, by probing each prefix-aware convoy store
-// candidate (city + rigs) rooted at cityPath. It returns ok=false when the
-// city config cannot be loaded or no candidate store holds the bead, so the
-// caller can fall back to cwd-rooted resolution. The store directory lets
-// molecule autoclose derive the matching store-ref label.
+// candidate rooted at cityPath. ok=false keeps standalone/cwd-rooted stores on
+// the previous fallback path.
 func autocloseOwningStore(beadID, cityPath string) (beads.Store, string, bool) {
 	cfg, _, err := config.LoadWithIncludes(fsys.OSFS{}, filepath.Join(cityPath, "city.toml"))
 	if err != nil {

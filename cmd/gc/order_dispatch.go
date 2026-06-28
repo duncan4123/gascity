@@ -76,6 +76,8 @@ const (
 	orderTrackingHistoryIndexLimit   = 2048
 	defaultMaxOrderDispatchesPerTick = 4
 	orderTrackingSweepCloseBudget    = 4
+	orderDispatchStoreRetryAttempts  = 3
+	orderDispatchStoreRetryDelay     = 25 * time.Millisecond
 
 	// orderTrackingRetentionWatchdogInterval is the minimum time between
 	// controller-driven closed-bead retention sweeps. 15 minutes balances
@@ -282,6 +284,9 @@ type memoryOrderDispatcher struct {
 	cfg                  *config.City
 	cityName             string
 	cityPath             string
+	checkRoleConfigured  func() error
+	storeRetryAttempts   int
+	storeRetryDelay      time.Duration
 	cacheMu              sync.Mutex
 	lastRunCache         map[string]time.Time
 	gateBackoffUntil     map[string]time.Time
@@ -412,12 +417,80 @@ func buildOrderDispatcherFromOrderSet(cityPath string, cfg *config.City, allAA [
 		stderr:               lockedStderr(stderr),
 		maxTimeout:           cfg.Orders.MaxTimeoutDuration(),
 		maxDispatchesPerTick: defaultMaxOrderDispatchesPerTick,
+		checkRoleConfigured:  ensureBeadsRoleConfigured,
+		storeRetryAttempts:   orderDispatchStoreRetryAttempts,
+		storeRetryDelay:      orderDispatchStoreRetryDelay,
 		cfg:                  cfg,
 		cityName:             loadedCityName(cfg, cityPath),
 		cityPath:             cityPath,
 		dispatchCtx:          dispatchCtx,
 		dispatchCancel:       dispatchCancel,
 	}
+}
+
+func ensureBeadsRoleConfigured() error {
+	out, err := exec.Command("git", "config", "--global", "beads.role").Output()
+	if err != nil {
+		return fmt.Errorf("checking beads.role: %w", err)
+	}
+	if strings.TrimSpace(string(out)) == "" {
+		return fmt.Errorf("beads.role not configured")
+	}
+	return nil
+}
+
+func isRetryableBeadsStoreError(err error) bool {
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "database is busy")
+}
+
+func (m *memoryOrderDispatcher) storeRetryConfig() (int, time.Duration) {
+	attempts := m.storeRetryAttempts
+	if attempts <= 0 {
+		attempts = orderDispatchStoreRetryAttempts
+	}
+	delay := m.storeRetryDelay
+	return attempts, delay
+}
+
+func (m *memoryOrderDispatcher) retryStoreWrite(op string, fn func() error) error {
+	attempts, delay := m.storeRetryConfig()
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err := fn(); err != nil {
+			if !isRetryableBeadsStoreError(err) || attempt >= attempts {
+				return err
+			}
+			logDispatchError(m.stderr, "gc: order dispatch: %s (attempt %d/%d): %v", op, attempt, attempts, err)
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+			continue
+		}
+		return nil
+	}
+	return nil
+}
+
+func (m *memoryOrderDispatcher) createTrackingBeadWithRetry(store beads.Store, scoped string, b beads.Bead) (beads.Bead, error) {
+	var tracking beads.Bead
+	err := m.retryStoreWrite(fmt.Sprintf("creating tracking bead for %s", scoped), func() error {
+		var err error
+		tracking, err = store.Create(b)
+		return err
+	})
+	return tracking, err
+}
+
+func (m *memoryOrderDispatcher) updateTrackingBeadWithRetry(store beads.Store, id, scoped, label string, opts beads.UpdateOpts) error {
+	return m.retryStoreWrite(fmt.Sprintf("updating %s for %s", label, scoped), func() error {
+		return store.Update(id, opts)
+	})
+}
+
+func (m *memoryOrderDispatcher) updateBeadWithRetry(store beads.Store, id, scoped, what string, opts beads.UpdateOpts) error {
+	return m.retryStoreWrite(fmt.Sprintf("%s for %s", what, scoped), func() error {
+		return store.Update(id, opts)
+	})
 }
 
 func (m *memoryOrderDispatcher) dispatch(ctx context.Context, cityPath string, now time.Time) {
@@ -427,6 +500,12 @@ func (m *memoryOrderDispatcher) dispatch(ctx context.Context, cityPath string, n
 	if m.cfg != nil {
 		st, _ := loadSuspensionState(fsys.OSFS{}, m.cityPath)
 		if citySuspendedWithState(m.cfg, st) {
+			return
+		}
+	}
+	if m.checkRoleConfigured != nil {
+		if err := m.checkRoleConfigured(); err != nil {
+			logDispatchError(m.stderr, "gc: order dispatch: validating beads role: %v", err)
 			return
 		}
 	}
@@ -560,7 +639,7 @@ func (m *memoryOrderDispatcher) dispatch(ctx context.Context, cityPath string, n
 			logDispatchError(m.stderr, "gc: order dispatch: building trigger env for %s: %s", a.ScopedName(), redacted)
 			// Leave this open so the existing open-work gate suppresses repeat
 			// ticks until the normal stale tracking sweep gives the order another try.
-			trackingBead, createErr := store.Create(beads.Bead{
+			trackingBead, createErr := m.createTrackingBeadWithRetry(store, scoped, beads.Bead{
 				Title:     "order:" + scoped,
 				Labels:    []string{"order-run:" + scoped, labelOrderTracking, labelTriggerEnvFailed},
 				NoHistory: true,
@@ -629,7 +708,7 @@ func (m *memoryOrderDispatcher) dispatch(ctx context.Context, cityPath string, n
 
 		// Create tracking bead synchronously BEFORE dispatch goroutine.
 		// This prevents the cooldown trigger from re-firing on the next tick.
-		trackingBead, err := store.Create(beads.Bead{
+		trackingBead, err := m.createTrackingBeadWithRetry(store, scoped, beads.Bead{
 			Title:     "order:" + scoped,
 			Labels:    []string{"order-run:" + scoped, labelOrderTracking},
 			NoHistory: true,
@@ -828,15 +907,14 @@ func (idx *orderDispatchTrackingIndex) lastRunFunc(
 				latest = last
 			}
 		}
-		// The in-memory history index (limit orderTrackingHistoryIndexLimit,
-		// newest-first) is authoritative for any recently-run order: a non-zero
-		// entry is that order's true last run. Only a genuine index miss pays
-		// the per-order fallback query. Without this gate, every cooldown/cron
-		// order runs the fallback on each cold-cache (post-reload) dispatch —
-		// N serial bd-queries that hang gc reload/gc doctor (#3201; residual of
-		// #3191, which #3197's per-query cap bounded but did not eliminate).
-		if latest.IsZero() && fallback != nil {
-			return fallback(scopedName)
+		if fallback != nil {
+			last, err := fallback(scopedName)
+			if err != nil {
+				return time.Time{}, err
+			}
+			if last.After(latest) {
+				latest = last
+			}
 		}
 		return latest, nil
 	}
@@ -991,12 +1069,6 @@ func (m *memoryOrderDispatcher) rememberLastRun(orderName string, storeKeys []st
 	}
 }
 
-// carryLastRunCacheFrom copies warm last-run entries from a previous
-// dispatcher into this one, so a reload/rescan-triggered rebuild reuses them
-// instead of cold-starting and re-querying every order (#3201). last-run times
-// are historical truth unaffected by a config reload; entries only ever move
-// forward. Callers invoke this after draining the previous dispatcher, when no
-// goroutine still writes its cache.
 func (m *memoryOrderDispatcher) carryLastRunCacheFrom(prev *memoryOrderDispatcher) {
 	if m == nil || prev == nil {
 		return
@@ -1012,7 +1084,7 @@ func (m *memoryOrderDispatcher) carryLastRunCacheFrom(prev *memoryOrderDispatche
 		m.lastRunCache = make(map[string]time.Time, len(prev.lastRunCache))
 	}
 	for key, last := range prev.lastRunCache {
-		if existing, ok := m.lastRunCache[key]; !ok || last.After(existing) {
+		if existing, ok := m.lastRunCache[key]; !ok || existing.IsZero() || last.After(existing) {
 			m.lastRunCache[key] = last
 		}
 	}
@@ -1158,6 +1230,9 @@ func closeAndVerifyOrderTrackingBeads(ctx context.Context, store beads.Store, id
 		}
 		openIDs, err := openOrderTrackingIDs(store, ids)
 		if err != nil {
+			if errors.Is(err, beads.ErrStoreClosed) {
+				return closed, nil
+			}
 			lastErr = fmt.Errorf("verifying order-tracking close for %s: %w", strings.Join(ids, ", "), err)
 			if attempt < orderTrackingCloseVerifyAttempts {
 				if waitErr := waitOrderTrackingCloseRetry(ctx); waitErr != nil {
@@ -1237,7 +1312,7 @@ func (m *memoryOrderDispatcher) dispatchExec(ctx context.Context, store beads.St
 			errMsg := fmt.Sprintf("reading event cursor: %v", err)
 			labels = []string{"exec-failed"}
 			logDispatchError(m.stderr, "gc: order dispatch: reading event cursor for %s: %v", scoped, err)
-			if updateErr := store.Update(trackingID, beads.UpdateOpts{Labels: labels}); updateErr != nil {
+			if updateErr := m.updateTrackingBeadWithRetry(store, trackingID, scoped, "event-failed", beads.UpdateOpts{Labels: labels}); updateErr != nil {
 				logDispatchError(m.stderr, "gc: order %s: failed to label exec tracking bead %s: %v", scoped, trackingID, updateErr)
 			}
 			m.rec.Record(events.Event{
@@ -1251,10 +1326,10 @@ func (m *memoryOrderDispatcher) dispatchExec(ctx context.Context, store beads.St
 		hasEventCursor = true
 		// Event-triggered exec orders persist the cursor before the command
 		// runs; otherwise a crash after the side effect can replay the event.
-		if err := store.Update(trackingID, beads.UpdateOpts{Labels: eventCursorLabels(scoped, headSeq)}); err != nil {
+		if err := m.updateTrackingBeadWithRetry(store, trackingID, scoped, "event-cursor", beads.UpdateOpts{Labels: eventCursorLabels(scoped, headSeq)}); err != nil {
 			logDispatchError(m.stderr, "gc: order %s: failed to label exec event cursor on tracking bead %s: %v", scoped, trackingID, err)
 			labels = []string{"exec-failed"}
-			if updateErr := store.Update(trackingID, beads.UpdateOpts{Labels: labels}); updateErr != nil {
+			if updateErr := m.updateTrackingBeadWithRetry(store, trackingID, scoped, "exec-failed", beads.UpdateOpts{Labels: labels}); updateErr != nil {
 				logDispatchError(m.stderr, "gc: order %s: failed to label exec tracking bead %s: %v", scoped, trackingID, updateErr)
 			}
 			m.rec.Record(events.Event{
@@ -1280,18 +1355,24 @@ func (m *memoryOrderDispatcher) dispatchExec(ctx context.Context, store beads.St
 		output, err = m.execRun(ctx, a.Exec, target.ScopeRoot, env)
 		if err != nil {
 			redactionEnv := append(os.Environ(), env...)
-			execErrMsg = execenv.RedactText(err.Error(), redactionEnv)
-			labels = []string{"exec-failed"}
-			logDispatchError(m.stderr, "gc: order exec %s failed: %s", scoped, execErrMsg)
-			if len(output) > 0 {
-				logDispatchError(m.stderr, "gc: order exec %s output: %s", scoped, execenv.RedactText(string(output), redactionEnv))
+			if shouldSkipWorkspaceReportExec(a, output, err) {
+				reason := workspaceReportSkipOutcome(a.Name, output)
+				labels = []string{"exec-skipped"}
+				logDispatchError(m.stderr, "gc: order %s skipped: %s", scoped, reason)
+			} else {
+				execErrMsg = execenv.RedactText(err.Error(), redactionEnv)
+				labels = []string{"exec-failed"}
+				logDispatchError(m.stderr, "gc: order exec %s failed: %s", scoped, execErrMsg)
+				if len(output) > 0 {
+					logDispatchError(m.stderr, "gc: order exec %s output: %s", scoped, execenv.RedactText(string(output), redactionEnv))
+				}
 			}
 		}
 	}
 
 	// Label tracking bead with outcome via store (not CLI). For event execs,
 	// cursor labels were already persisted before the command ran.
-	if err := store.Update(trackingID, beads.UpdateOpts{Labels: labels}); err != nil {
+	if err := m.updateTrackingBeadWithRetry(store, trackingID, scoped, "outcome", beads.UpdateOpts{Labels: labels}); err != nil {
 		logDispatchError(m.stderr, "gc: order %s: failed to label exec tracking bead %s: %v", scoped, trackingID, err)
 		msg := fmt.Sprintf("exec tracking bead %s label failed: %v", trackingID, err)
 		if hasEventCursor {
@@ -1322,6 +1403,33 @@ func (m *memoryOrderDispatcher) dispatchExec(ctx context.Context, store beads.St
 		Actor:   "controller",
 		Subject: scoped,
 	})
+}
+
+func shouldSkipWorkspaceReportExec(a orders.Order, output []byte, err error) bool {
+	if strings.TrimSpace(a.Name) != "workspace-report" {
+		return false
+	}
+	if err == nil {
+		return false
+	}
+	return strings.Contains(string(output), "not in a jjw-enabled repository")
+}
+
+func workspaceReportSkipOutcome(orderName string, output []byte) string {
+	payload := map[string]string{
+		"order":        orderName,
+		"outcome":      "skipped",
+		"reason":       "not-a-jjw-enabled-repository",
+		"log_fragment": strings.TrimSpace(string(output)),
+	}
+	if payload["log_fragment"] == "" {
+		payload["log_fragment"] = "not in a jjw-enabled repository"
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Sprintf(`{"order":"%s","outcome":"skipped","reason":"not-a-jjw-enabled-repository"}`, orderName)
+	}
+	return string(b)
 }
 
 func prepareOrderWispRecipe(ctx context.Context, store beads.Store, a orders.Order, searchPaths []string) (*formula.Recipe, error) {
@@ -1357,7 +1465,7 @@ func (m *memoryOrderDispatcher) dispatchWisp(ctx context.Context, store beads.St
 			Subject: scoped,
 			Message: err.Error(),
 		})
-		store.Update(trackingID, beads.UpdateOpts{Labels: []string{"wisp", "wisp-canceled"}}) //nolint:errcheck // best-effort
+		_ = m.updateTrackingBeadWithRetry(store, trackingID, scoped, "canceled", beads.UpdateOpts{Labels: []string{"wisp", "wisp-canceled"}})
 		return
 	}
 
@@ -1460,7 +1568,7 @@ func (m *memoryOrderDispatcher) dispatchWisp(ctx context.Context, store beads.St
 	if a.Pool != "" {
 		update.Metadata = map[string]string{beadmeta.RoutedToMetadataKey: pool}
 	}
-	if err := store.Update(rootID, update); err != nil {
+	if err := m.updateBeadWithRetry(store, rootID, scoped, "labeling wisp", update); err != nil {
 		// Label failure is critical for duplicate-dispatch prevention.
 		// Log and emit an event so operators can investigate.
 		logDispatchError(m.stderr, "gc: order %s: failed to label wisp %s: %v", scoped, rootID, err)
@@ -1481,7 +1589,7 @@ func (m *memoryOrderDispatcher) dispatchWisp(ctx context.Context, store beads.St
 	})
 
 	// Label tracking bead with outcome.
-	store.Update(trackingID, beads.UpdateOpts{Labels: []string{"wisp"}}) //nolint:errcheck // best-effort
+	_ = m.updateTrackingBeadWithRetry(store, trackingID, scoped, "wisp", beads.UpdateOpts{Labels: []string{"wisp"}}) //nolint:errcheck // best-effort
 }
 
 // orderRigSuspended reports whether the order targets a suspended rig.
@@ -1508,7 +1616,7 @@ func (m *memoryOrderDispatcher) markTrackingFailure(store beads.Store, trackingI
 	if a.Trigger == "event" && headSeq > 0 {
 		labels = append(labels, eventCursorLabels(scoped, headSeq)...)
 	}
-	if err := store.Update(trackingID, beads.UpdateOpts{Labels: labels}); err != nil {
+	if err := m.updateTrackingBeadWithRetry(store, trackingID, scoped, "failure", beads.UpdateOpts{Labels: labels}); err != nil {
 		logDispatchError(m.stderr, "gc: order %s: failed to mark tracking bead %s as failed: %v", scoped, trackingID, err)
 	}
 }
@@ -1602,11 +1710,11 @@ func isOrderWispRootCandidate(b beads.Bead) bool {
 	if beads.IsMoleculeType(b.Type) {
 		return true
 	}
-	return b.Metadata[beadmeta.KindMetadataKey] == beadmeta.KindWorkflow || b.Metadata[beadmeta.KindMetadataKey] == beadmeta.KindWisp
+	return b.Metadata[beadmeta.KindMetadataKey] == "workflow" || b.Metadata[beadmeta.KindMetadataKey] == "wisp"
 }
 
 func isOrderRootOnlyWispCandidate(b beads.Bead) bool {
-	return b.Metadata[beadmeta.KindMetadataKey] == beadmeta.KindWisp && !beads.IsMoleculeType(b.Type)
+	return b.Metadata[beadmeta.KindMetadataKey] == "wisp" && !beads.IsMoleculeType(b.Type)
 }
 
 // isTransientNotificationBead reports whether a bead is a short-lived delivery

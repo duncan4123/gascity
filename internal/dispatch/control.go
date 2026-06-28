@@ -28,7 +28,7 @@ func processRetryControl(store beads.Store, bead beads.Bead, opts ProcessOptions
 	}
 	onExhausted := bead.Metadata[beadmeta.OnExhaustedMetadataKey]
 	if onExhausted == "" {
-		onExhausted = beadmeta.DispositionHardFail
+		onExhausted = "hard_fail"
 	}
 
 	// Find the most recent attempt.
@@ -81,7 +81,7 @@ func processRetryControl(store beads.Store, bead beads.Bead, opts ProcessOptions
 	case "pass":
 		closeMetadata := map[string]string{
 			beadmeta.AttemptLogMetadataKey: attemptLog,
-			beadmeta.OutcomeMetadataKey:    beadmeta.OutcomePass,
+			beadmeta.OutcomeMetadataKey:    "pass",
 		}
 		clearControllerSpawnErrorMetadata(closeMetadata)
 		if outputJSON := attempt.Metadata[beadmeta.OutputJSONMetadataKey]; outputJSON != "" {
@@ -100,11 +100,11 @@ func processRetryControl(store beads.Store, bead beads.Bead, opts ProcessOptions
 	case "hard":
 		closeMetadata := map[string]string{
 			beadmeta.AttemptLogMetadataKey:       attemptLog,
-			beadmeta.OutcomeMetadataKey:          beadmeta.OutcomeFail,
+			beadmeta.OutcomeMetadataKey:          "fail",
 			beadmeta.FailedAttemptMetadataKey:    strconv.Itoa(attemptNum),
-			beadmeta.FailureClassMetadataKey:     beadmeta.FailureClassHard,
+			beadmeta.FailureClassMetadataKey:     "hard",
 			beadmeta.FailureReasonMetadataKey:    result.Reason,
-			beadmeta.FinalDispositionMetadataKey: beadmeta.DispositionHardFail,
+			beadmeta.FinalDispositionMetadataKey: "hard_fail",
 		}
 		clearControllerSpawnErrorMetadata(closeMetadata)
 		if err := updateMetadataAndClose(store, bead.ID, closeMetadata); err != nil {
@@ -228,7 +228,7 @@ func processRalphControl(store beads.Store, bead beads.Bead, opts ProcessOptions
 	if checkResult.Outcome == convergence.GatePass {
 		closeMetadata := map[string]string{
 			beadmeta.AttemptLogMetadataKey: attemptLog,
-			beadmeta.OutcomeMetadataKey:    beadmeta.OutcomePass,
+			beadmeta.OutcomeMetadataKey:    "pass",
 		}
 		clearControllerSpawnErrorMetadata(closeMetadata)
 		if outputJSON := iteration.Metadata[beadmeta.OutputJSONMetadataKey]; outputJSON != "" {
@@ -247,7 +247,7 @@ func processRalphControl(store beads.Store, bead beads.Bead, opts ProcessOptions
 	if iterationNum >= maxAttempts {
 		closeMetadata := map[string]string{
 			beadmeta.AttemptLogMetadataKey:    attemptLog,
-			beadmeta.OutcomeMetadataKey:       beadmeta.OutcomeFail,
+			beadmeta.OutcomeMetadataKey:       "fail",
 			beadmeta.FailedAttemptMetadataKey: strconv.Itoa(iterationNum),
 		}
 		clearControllerSpawnErrorMetadata(closeMetadata)
@@ -318,17 +318,17 @@ func markControllerSpawnError(store beads.Store, beadID string, err error, opts 
 		beadmeta.ControllerErrorMetadataKey: err.Error(),
 	}
 	if IsTransientControllerError(err) && !isPartialAttemptAttachError(err) {
-		metadata[beadmeta.ControllerErrorClassMetadataKey] = beadmeta.FailureClassTransient
+		metadata[beadmeta.ControllerErrorClassMetadataKey] = "transient"
 		metadata[beadmeta.ControllerRetryableMetadataKey] = "true"
 		_ = store.SetMetadataBatch(beadID, metadata)
 		return true
 	}
 
-	metadata[beadmeta.ControllerErrorClassMetadataKey] = beadmeta.FailureClassHard
+	metadata[beadmeta.ControllerErrorClassMetadataKey] = "hard"
 	metadata[beadmeta.ControllerRetryableMetadataKey] = ""
-	metadata[beadmeta.FinalDispositionMetadataKey] = beadmeta.DispositionControllerError
+	metadata[beadmeta.FinalDispositionMetadataKey] = "controller_error"
 	_ = store.SetMetadataBatch(beadID, metadata)
-	_ = setOutcomeAndClose(store, beadID, beadmeta.OutcomeFail)
+	_ = setOutcomeAndClose(store, beadID, "fail")
 	// Reconcile any enclosing scope so a controller_error terminal closure
 	// does not leave the scope body stalled.
 	_, _ = reconcileClosedScopeMemberWithOptions(store, beadID, opts)
@@ -417,14 +417,14 @@ func isTransientWorkQueryFailure(msg string) bool {
 }
 
 func handleRetryExhaustion(store beads.Store, beadID string, attemptNum int, reason, onExhausted, attemptLog string) (ControlResult, error) {
-	if onExhausted == beadmeta.DispositionSoftFail {
+	if onExhausted == "soft_fail" {
 		closeMetadata := map[string]string{
 			beadmeta.AttemptLogMetadataKey:       attemptLog,
-			beadmeta.OutcomeMetadataKey:          beadmeta.OutcomePass,
+			beadmeta.OutcomeMetadataKey:          "pass",
 			beadmeta.FailedAttemptMetadataKey:    strconv.Itoa(attemptNum),
-			beadmeta.FailureClassMetadataKey:     beadmeta.FailureClassTransient,
+			beadmeta.FailureClassMetadataKey:     "transient",
 			beadmeta.FailureReasonMetadataKey:    reason,
-			beadmeta.FinalDispositionMetadataKey: beadmeta.DispositionSoftFail,
+			beadmeta.FinalDispositionMetadataKey: "soft_fail",
 		}
 		clearControllerSpawnErrorMetadata(closeMetadata)
 		if err := updateMetadataAndClose(store, beadID, closeMetadata); err != nil {
@@ -435,11 +435,11 @@ func handleRetryExhaustion(store beads.Store, beadID string, attemptNum int, rea
 
 	closeMetadata := map[string]string{
 		beadmeta.AttemptLogMetadataKey:       attemptLog,
-		beadmeta.OutcomeMetadataKey:          beadmeta.OutcomeFail,
+		beadmeta.OutcomeMetadataKey:          "fail",
 		beadmeta.FailedAttemptMetadataKey:    strconv.Itoa(attemptNum),
-		beadmeta.FailureClassMetadataKey:     beadmeta.FailureClassTransient,
+		beadmeta.FailureClassMetadataKey:     "transient",
 		beadmeta.FailureReasonMetadataKey:    reason,
-		beadmeta.FinalDispositionMetadataKey: beadmeta.DispositionHardFail,
+		beadmeta.FinalDispositionMetadataKey: "hard_fail",
 	}
 	clearControllerSpawnErrorMetadata(closeMetadata)
 	if err := updateMetadataAndClose(store, beadID, closeMetadata); err != nil {
@@ -475,7 +475,7 @@ func spawnNextAttempt(ctx context.Context, store beads.Store, control beads.Bead
 	executionRigContext := strings.TrimSpace(control.Metadata[beadmeta.ExecutionRigContextMetadataKey])
 	routeCfg := loadAttemptRouteConfig(opts.CityPath)
 	for i := range recipe.Steps {
-		if recipe.Steps[i].Metadata[beadmeta.KindMetadataKey] == beadmeta.KindSpec {
+		if recipe.Steps[i].Metadata[beadmeta.KindMetadataKey] == "spec" {
 			continue
 		}
 		if executionRigContext != "" && strings.TrimSpace(recipe.Steps[i].Metadata[beadmeta.ExecutionRigContextMetadataKey]) == "" {
@@ -620,9 +620,9 @@ func buildAttemptRecipe(step *formula.Step, control beads.Bead, attemptNum int) 
 	// Root step for the attempt sub-DAG.
 	// For ralph iterations with children, the root is a scope bead.
 	// For simple retries, it's the work bead itself (no wrapper).
-	rootKind := beadmeta.KindTask
+	rootKind := "task"
 	if step.Ralph != nil && len(step.Children) > 0 {
-		rootKind = beadmeta.KindScope
+		rootKind = "scope"
 	}
 	rootMeta := make(map[string]string, len(step.Metadata))
 	// Preserve formula-specified retry metadata such as required artifacts.
@@ -637,8 +637,8 @@ func buildAttemptRecipe(step *formula.Step, control beads.Bead, attemptNum int) 
 		rootMeta[beadmeta.OutputJSONRequiredMetadataKey] = "true"
 	}
 	// Ralph iterations need scope metadata for grouping.
-	if rootKind == beadmeta.KindScope {
-		rootMeta[beadmeta.ScopeRoleMetadataKey] = beadmeta.ScopeRoleBody
+	if rootKind == "scope" {
+		rootMeta[beadmeta.ScopeRoleMetadataKey] = "body"
 		rootMeta[beadmeta.ScopeNameMetadataKey] = stepID
 		rootMeta[beadmeta.RalphStepIDMetadataKey] = stepID
 	}
@@ -690,7 +690,7 @@ func buildAttemptRecipe(step *formula.Step, control beads.Bead, attemptNum int) 
 				beadmeta.StepIDMetadataKey:      child.ID,
 				beadmeta.ScopeRefMetadataKey:    attemptPrefix,
 				beadmeta.RalphStepIDMetadataKey: stepID,
-				beadmeta.ScopeRoleMetadataKey:   beadmeta.ScopeRoleMember,
+				beadmeta.ScopeRoleMetadataKey:   "member",
 				beadmeta.OnFailMetadataKey:      "abort_scope",
 			}
 			// Copy formula-defined metadata from the child step.
@@ -704,13 +704,13 @@ func buildAttemptRecipe(step *formula.Step, control beads.Bead, attemptNum int) 
 			}
 			// Derive gc.kind and control metadata from retry/ralph config.
 			if child.Retry != nil {
-				childMeta[beadmeta.KindMetadataKey] = beadmeta.KindRetry
+				childMeta[beadmeta.KindMetadataKey] = "retry"
 				childMeta[beadmeta.MaxAttemptsMetadataKey] = strconv.Itoa(child.Retry.MaxAttempts)
 				childMeta[beadmeta.ControlEpochMetadataKey] = "1"
 				if child.Retry.OnExhausted != "" {
 					childMeta[beadmeta.OnExhaustedMetadataKey] = child.Retry.OnExhausted
 				} else {
-					childMeta[beadmeta.OnExhaustedMetadataKey] = beadmeta.DispositionHardFail
+					childMeta[beadmeta.OnExhaustedMetadataKey] = "hard_fail"
 				}
 				// Emit a spec bead for the nested retry so it can spawn
 				// its own attempts without oversized metadata.
@@ -719,7 +719,7 @@ func buildAttemptRecipe(step *formula.Step, control beads.Bead, attemptNum int) 
 				}
 			}
 			if child.Ralph != nil {
-				childMeta[beadmeta.KindMetadataKey] = beadmeta.KindRalph
+				childMeta[beadmeta.KindMetadataKey] = "ralph"
 				childMeta[beadmeta.MaxAttemptsMetadataKey] = strconv.Itoa(child.Ralph.MaxAttempts)
 				childMeta[beadmeta.ControlEpochMetadataKey] = "1"
 				if child.Ralph.Check != nil {
@@ -744,12 +744,6 @@ func buildAttemptRecipe(step *formula.Step, control beads.Bead, attemptNum int) 
 				nestedSeedSteps = append(nestedSeedSteps, seedSteps...)
 				nestedSeedDeps = append(nestedSeedDeps, seedDeps...)
 			}
-			// Drain children are themselves control beads: re-apply the
-			// compiler's drain contract (gc.kind=drain + gc.drain_* keys) so
-			// re-spawned iterations keep the shape minted by flattenSteps.
-			// Validation forbids combining drain with retry/ralph, so this
-			// never overwrites the nested-control kinds above.
-			formula.ApplyDrainControlMetadata(childMeta, child.Drain)
 			childStep := formula.RecipeStep{
 				ID:          childID,
 				Title:       child.Title,
@@ -846,30 +840,24 @@ func buildAttemptRecipeFanoutControl(source formula.RecipeStep, onComplete *form
 		sourceRef = source.ID
 	}
 	meta := map[string]string{
-		beadmeta.KindMetadataKey:       beadmeta.KindFanout,
+		beadmeta.KindMetadataKey:       "fanout",
 		beadmeta.ControlForMetadataKey: sourceRef,
 		beadmeta.ForEachMetadataKey:    onComplete.ForEach,
 		beadmeta.BondMetadataKey:       onComplete.Bond,
-		beadmeta.FanoutModeMetadataKey: beadmeta.FanoutModeParallel,
+		beadmeta.FanoutModeMetadataKey: "parallel",
 	}
 	if onComplete.Sequential {
-		meta[beadmeta.FanoutModeMetadataKey] = beadmeta.FanoutModeSequential
+		meta[beadmeta.FanoutModeMetadataKey] = "sequential"
 	}
 	if len(onComplete.Vars) > 0 {
 		if data, err := json.Marshal(onComplete.Vars); err == nil {
 			meta[beadmeta.BondVarsMetadataKey] = string(data)
 		}
 	}
-	for _, key := range []string{beadmeta.ScopeRefMetadataKey, beadmeta.OnFailMetadataKey, beadmeta.StepIDMetadataKey, beadmeta.RalphStepIDMetadataKey, beadmeta.AttemptMetadataKey} {
+	for _, key := range []string{beadmeta.ScopeRefMetadataKey, beadmeta.ScopeRoleMetadataKey, beadmeta.OnFailMetadataKey, beadmeta.StepIDMetadataKey, beadmeta.RalphStepIDMetadataKey, beadmeta.AttemptMetadataKey} {
 		if value := source.Metadata[key]; value != "" {
 			meta[key] = value
 		}
-	}
-	// Control infrastructure is never a scope member: stamp the control role
-	// explicitly (mirroring minted scope-checks) instead of inheriting the
-	// host step's role (see the identical stamp in formula's applyGraphControls).
-	if meta[beadmeta.ScopeRefMetadataKey] != "" {
-		meta[beadmeta.ScopeRoleMetadataKey] = beadmeta.ScopeRoleControl
 	}
 	control := formula.RecipeStep{
 		ID:       source.ID + "-fanout",
@@ -885,11 +873,6 @@ func buildAttemptRecipeFanoutControl(source formula.RecipeStep, onComplete *form
 	return control, dep, true
 }
 
-// applyAttemptRecipeScopeChecks re-mints paired scope-check controls for the
-// scoped steps of a re-spawned attempt recipe, mirroring the compile-time
-// shape injected by formula.ApplyGraphControls: each scope-check blocks on
-// its subject step, and deps that waited on the subject are rewritten to
-// wait on the scope-check instead.
 func applyAttemptRecipeScopeChecks(recipe *formula.Recipe) {
 	if recipe == nil || len(recipe.Steps) == 0 {
 		return
@@ -914,9 +897,9 @@ func applyAttemptRecipeScopeChecks(recipe *formula.Recipe) {
 
 		replacements[step.ID] = controlID
 		meta := map[string]string{
-			beadmeta.KindMetadataKey:       beadmeta.KindScopeCheck,
+			beadmeta.KindMetadataKey:       "scope-check",
 			beadmeta.ScopeRefMetadataKey:   step.Metadata[beadmeta.ScopeRefMetadataKey],
-			beadmeta.ScopeRoleMetadataKey:  beadmeta.ScopeRoleControl,
+			beadmeta.ScopeRoleMetadataKey:  "control",
 			beadmeta.ControlForMetadataKey: step.ID,
 		}
 		for _, key := range []string{beadmeta.StepIDMetadataKey, beadmeta.RalphStepIDMetadataKey, beadmeta.AttemptMetadataKey, beadmeta.OnFailMetadataKey} {
@@ -954,10 +937,15 @@ func attemptRecipeStepNeedsScopeCheck(step formula.RecipeStep) bool {
 	if step.Metadata[beadmeta.ScopeRefMetadataKey] == "" {
 		return false
 	}
-	if step.Metadata[beadmeta.ScopeRoleMetadataKey] == beadmeta.ScopeRoleTeardown {
+	if step.Metadata[beadmeta.ScopeRoleMetadataKey] == "teardown" {
 		return false
 	}
-	return !beadmeta.IsScopeCheckExemptKind(step.Metadata[beadmeta.KindMetadataKey])
+	switch step.Metadata[beadmeta.KindMetadataKey] {
+	case "scope", "scope-check", "workflow-finalize", "fanout", "check", "spec":
+		return false
+	default:
+		return true
+	}
 }
 
 func loadAttemptRouteConfig(cityPath string) *config.City {
@@ -1049,37 +1037,29 @@ func controlDispatcherTargetForExecutionTarget(executionTarget, rigContext strin
 			rigContext = executionTarget[:slash]
 		}
 	}
-	// Prefer the city-level singleton deterministic dispatcher for every scope
-	// (the one whose session actually runs given max_active_sessions=1), falling
-	// back to a rig-scoped instance only when no city-level dispatcher exists.
-	// This keeps attempt-time control re-routing in lockstep with the graph.v2
-	// decoration path; without it an attempt-kind control bead would re-stamp a
-	// <rig>/control-dispatcher route the lone singleton session never claims.
-	if agentCfg, ok := config.PreferredDeterministicControlDispatcher(cfg, rigContext); ok {
-		return agentCfg.QualifiedName()
+	if cfg != nil {
+		for _, agentCfg := range cfg.Agents {
+			if !config.IsDeterministicControlDispatcher(&agentCfg) {
+				continue
+			}
+			if strings.TrimSpace(agentCfg.Dir) == rigContext {
+				return agentCfg.QualifiedName()
+			}
+		}
 	}
-	// String fallbacks for configs with no deterministic dispatcher at all.
 	if rigContext != "" {
 		return rigContext + "/" + config.ControlDispatcherAgentName
 	}
 	return config.ControlDispatcherAgentName
 }
 
-// isAttemptControlKind reports whether an Attach-path recipe step should be
-// routed to the control dispatcher rather than a worker: exactly the kinds
-// the dispatcher's ProcessControl switch executes (beadmeta.ControlKinds).
-// Pinned to the authoritative set by TestIsAttemptControlKindMatchesControlKinds.
 func isAttemptControlKind(kind string) bool {
-	return beadmeta.IsControlKind(kind)
-}
-
-// latestAttemptCandidateIsControlInfrastructure reports whether a bead kind
-// is control infrastructure (never selectable as the latest-attempt work
-// bead): every control kind plus the workflow topology root. Scope beads are
-// deliberately NOT included — for ralph controls, scope beads ARE the
-// iterations, and the caller handles that case.
-func latestAttemptCandidateIsControlInfrastructure(kind string) bool {
-	return beadmeta.IsControlKind(kind) || kind == beadmeta.KindWorkflow
+	switch kind {
+	case beadmeta.KindCheck, beadmeta.KindFanout, beadmeta.KindRetryEval, beadmeta.KindScopeCheck, beadmeta.KindWorkflowFinalize, beadmeta.KindRetry, beadmeta.KindRalph:
+		return true
+	default:
+		return false
+	}
 }
 
 type attemptRouteBinding struct {
@@ -1202,7 +1182,7 @@ func findSpecBead(store beads.Store, control beads.Bead) (beads.Bead, error) {
 		return beads.Bead{}, err
 	}
 	for _, b := range all {
-		if b.Metadata[beadmeta.KindMetadataKey] != beadmeta.KindSpec {
+		if b.Metadata[beadmeta.KindMetadataKey] != "spec" {
 			continue
 		}
 		if stepRef != "" && b.Metadata[beadmeta.SpecForRefMetadataKey] == stepRef {
@@ -1210,7 +1190,7 @@ func findSpecBead(store beads.Store, control beads.Bead) (beads.Bead, error) {
 		}
 	}
 	for _, b := range all {
-		if b.Metadata[beadmeta.KindMetadataKey] == beadmeta.KindSpec && b.Metadata[beadmeta.SpecForMetadataKey] == stepID {
+		if b.Metadata[beadmeta.KindMetadataKey] == "spec" && b.Metadata[beadmeta.SpecForMetadataKey] == stepID {
 			return b, nil
 		}
 	}
@@ -1243,12 +1223,12 @@ func closeAttachedSpecBeads(store beads.Store, recipe *formula.Recipe, result *m
 	}
 	var fallbackRefs []string
 	for _, step := range recipe.Steps {
-		if step.Metadata[beadmeta.KindMetadataKey] != beadmeta.KindSpec {
+		if step.Metadata[beadmeta.KindMetadataKey] != "spec" {
 			continue
 		}
 		beadID := result.IDMapping[step.ID]
 		if beadID != "" {
-			if err := setOutcomeAndClose(store, beadID, beadmeta.OutcomePass); err != nil {
+			if err := setOutcomeAndClose(store, beadID, "pass"); err != nil {
 				return fmt.Errorf("closing spec bead %s: %w", beadID, err)
 			}
 			continue
@@ -1282,7 +1262,7 @@ func closeGeneratedSpecBeadsForAttempt(store beads.Store, control, attempt beads
 		return err
 	}
 	for _, bead := range all {
-		if bead.Status == "closed" || bead.Metadata[beadmeta.KindMetadataKey] != beadmeta.KindSpec {
+		if bead.Status == "closed" || bead.Metadata[beadmeta.KindMetadataKey] != "spec" {
 			continue
 		}
 		ref := strings.TrimSpace(bead.Metadata[beadmeta.StepRefMetadataKey])
@@ -1292,7 +1272,7 @@ func closeGeneratedSpecBeadsForAttempt(store beads.Store, control, attempt beads
 		if !strings.HasPrefix(ref, attemptRef+".") {
 			continue
 		}
-		if err := setOutcomeAndClose(store, bead.ID, beadmeta.OutcomePass); err != nil {
+		if err := setOutcomeAndClose(store, bead.ID, "pass"); err != nil {
 			return fmt.Errorf("closing spec bead %s: %w", bead.ID, err)
 		}
 	}
@@ -1314,7 +1294,7 @@ func closeSpecBeadsByRefs(store beads.Store, rootID string, refs []string) error
 		return err
 	}
 	for _, bead := range all {
-		if bead.Status == "closed" || bead.Metadata[beadmeta.KindMetadataKey] != beadmeta.KindSpec {
+		if bead.Status == "closed" || bead.Metadata[beadmeta.KindMetadataKey] != "spec" {
 			continue
 		}
 		ref := strings.TrimSpace(bead.Metadata[beadmeta.StepRefMetadataKey])
@@ -1324,7 +1304,7 @@ func closeSpecBeadsByRefs(store beads.Store, rootID string, refs []string) error
 		if _, ok := wanted[ref]; !ok {
 			continue
 		}
-		if err := setOutcomeAndClose(store, bead.ID, beadmeta.OutcomePass); err != nil {
+		if err := setOutcomeAndClose(store, bead.ID, "pass"); err != nil {
 			return fmt.Errorf("closing spec bead %s: %w", bead.ID, err)
 		}
 	}
@@ -1407,11 +1387,13 @@ func latestAttemptFromCandidates(control beads.Bead, candidates []beads.Bead) be
 		// Skip beads that are control infrastructure, not actual work.
 		// For ralph controls, scope beads ARE the iterations — don't skip them.
 		kind := b.Metadata[beadmeta.KindMetadataKey]
-		if latestAttemptCandidateIsControlInfrastructure(kind) {
+		switch kind {
+		case "scope-check", "workflow-finalize", "fanout", "check", "retry-eval", "retry", "ralph", "workflow":
 			continue
-		}
-		if kind == beadmeta.KindScope && controlKind != "ralph" {
-			continue
+		case "scope":
+			if controlKind != "ralph" {
+				continue
+			}
 		}
 
 		ref := b.Metadata[beadmeta.StepRefMetadataKey]

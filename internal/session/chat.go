@@ -316,12 +316,71 @@ func (m *Manager) sessionBead(id string) (beads.Bead, string, error) {
 	return m.loadSessionBead(id, false)
 }
 
+func (m *Manager) runtimeConfigForLiveSession(id string, b *beads.Bead, sessName string, hints runtime.Config) (runtime.Config, error) {
+	cfg := hints
+	if cfg.WorkDir == "" {
+		cfg.WorkDir = b.Metadata["work_dir"]
+	}
+	generation, err := strconv.Atoi(b.Metadata["generation"])
+	if err != nil || generation <= 0 {
+		generation = DefaultGeneration
+	}
+	continuationEpoch, err := strconv.Atoi(b.Metadata["continuation_epoch"])
+	if err != nil || continuationEpoch <= 0 {
+		continuationEpoch = DefaultContinuationEpoch
+	}
+	instanceToken := b.Metadata["instance_token"]
+	if instanceToken == "" {
+		instanceToken = NewInstanceToken()
+		if err := m.store.SetMetadata(id, "instance_token", instanceToken); err != nil {
+			return runtime.Config{}, fmt.Errorf("storing instance token: %w", err)
+		}
+		if b.Metadata == nil {
+			b.Metadata = make(map[string]string)
+		}
+		b.Metadata["instance_token"] = instanceToken
+	}
+	cfg.Env = mergeEnv(cfg.Env, RuntimeEnvWithSessionContext(
+		id,
+		sessName,
+		strings.TrimSpace(b.Metadata["alias"]),
+		strings.TrimSpace(b.Metadata["template"]),
+		strings.TrimSpace(b.Metadata["session_origin"]),
+		generation,
+		continuationEpoch,
+		instanceToken,
+	))
+	if gcProvider := strings.TrimSpace(b.Metadata["provider_kind"]); gcProvider != "" {
+		cfg.Env = mergeEnv(cfg.Env, map[string]string{"GC_PROVIDER": gcProvider})
+	} else if provider := strings.TrimSpace(b.Metadata["provider"]); provider != "" {
+		cfg.Env = mergeEnv(cfg.Env, map[string]string{"GC_PROVIDER": provider})
+	}
+	return runtime.SyncWorkDirEnv(cfg), nil
+}
+
+func (m *Manager) runLiveForExistingSession(id string, b *beads.Bead, sessName string, hints runtime.Config) error {
+	if len(hints.SessionLive) == 0 {
+		return nil
+	}
+	cfg, err := m.runtimeConfigForLiveSession(id, b, sessName, hints)
+	if err != nil {
+		return err
+	}
+	if err := m.sp.RunLive(sessName, cfg); err != nil {
+		return fmt.Errorf("reapplying session_live: %w", err)
+	}
+	return nil
+}
+
 func (m *Manager) ensureRunning(ctx context.Context, id string, b beads.Bead, sessName, resumeCommand string, hints runtime.Config) error {
 	transport, transportVerified := m.transportForBead(b, sessName)
 	unroute := m.routeACPIfNeeded(b.Metadata["provider"], transport, sessName)
 	if State(b.Metadata["state"]) != StateSuspended && m.sp.IsRunning(sessName) {
 		if b.Metadata["transport"] == "" && transportVerified {
 			m.persistTransport(id, b.Metadata["provider"], transport)
+		}
+		if err := m.runLiveForExistingSession(id, &b, sessName, hints); err != nil {
+			return err
 		}
 		if err := m.confirmLiveSessionState(id, &b); err != nil {
 			return err
@@ -435,6 +494,9 @@ func (m *Manager) ensureRunningRuntimeOnly(ctx context.Context, id string, b bea
 	transport, _ := m.transportForBead(b, sessName)
 	unroute := m.routeACPIfNeeded(b.Metadata["provider"], transport, sessName)
 	if m.sp.IsRunning(sessName) {
+		if err := m.runLiveForExistingSession(id, &b, sessName, hints); err != nil {
+			return err
+		}
 		return nil
 	}
 	if resumeCommand == "" {
@@ -1002,54 +1064,4 @@ func (m *Manager) TranscriptPath(id string, searchPaths []string) (string, error
 		}
 	}
 	return workertranscript.DiscoverPath(searchPaths, provider, workDir, ""), nil
-}
-
-// KeyedTranscriptPath returns the transcript path only when it resolves to a
-// single session's file by a stable per-session key — never by the ambiguous
-// workdir/newest-mtime fallback. Callers that must attribute a file to exactly
-// one session (e.g. writing a session-id sidecar next to it) use this instead
-// of TranscriptPath, which additionally serves that workdir fallback for
-// history rendering.
-//
-// Coverage is whatever has both a captured per-session id and a 1:1 lookup:
-// claude/kimi/pi/antigravity (keyed-path construction) and codex (its rollout
-// filename carries the session-id suffix; the id is captured by the SessionStart
-// hook). It returns "" for gemini/opencode/mimocode, which have a session id but
-// no 1:1 by-id lookup, so only the unsafe workdir fallback would be available.
-func (m *Manager) KeyedTranscriptPath(id string, searchPaths []string) (string, error) {
-	b, _, err := m.loadSessionBead(id, true)
-	if err != nil {
-		return "", err
-	}
-	workDir := b.Metadata["work_dir"]
-	if workDir == "" {
-		return "", nil
-	}
-	provider := strings.TrimSpace(b.Metadata["provider_kind"])
-	if provider == "" {
-		provider = strings.TrimSpace(b.Metadata["provider"])
-	}
-	if len(searchPaths) == 0 {
-		searchPaths = sessionlog.DefaultSearchPaths()
-	}
-	sessionKey := strings.TrimSpace(b.Metadata["session_key"])
-	if path := workertranscript.DiscoverKeyedPath(searchPaths, provider, workDir, sessionKey); path != "" {
-		return path, nil
-	}
-	// Codex rollouts are keyed by the session-id suffix in the filename, but
-	// gc's general discovery resolves codex by workdir. For a 1:1 sidecar we use
-	// the identity lookup directly when the session_key (the rollout uuid,
-	// captured by the SessionStart hook) is known, exactly as invocation
-	// telemetry does. A keyed miss returns "" with NO window fallback — a
-	// different-suffix rollout would be a misattribution. The [CreatedAt, anchor]
-	// window bounds the scan; the anchor is the latest wake, falling back to
-	// bead creation.
-	if sessionKey != "" && sessionlog.ProviderFamily(provider) == "codex" {
-		anchor := b.CreatedAt
-		if woke, err := time.Parse(time.RFC3339, strings.TrimSpace(b.Metadata["last_woke_at"])); err == nil {
-			anchor = woke
-		}
-		return sessionlog.FindCodexSessionFileByID(searchPaths, workDir, sessionKey, b.CreatedAt, anchor), nil
-	}
-	return "", nil
 }

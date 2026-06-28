@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 	sessionpkg "github.com/gastownhall/gascity/internal/session"
@@ -186,7 +185,7 @@ func resolveSessionLogContext(cityPath string, cfg *config.City, store beads.Sto
 	if err != nil {
 		return sessionLogContext{}, false
 	}
-	workDir := strings.TrimSpace(b.Metadata[beadmeta.LegacyWorkDirMetadataKey])
+	workDir := strings.TrimSpace(b.Metadata["work_dir"])
 	if workDir == "" {
 		return sessionLogContext{}, false
 	}
@@ -237,7 +236,7 @@ func canFallbackStoredSessionLogByWorkDir(store beads.Store, logCtx sessionLogCo
 		if !sessionpkg.IsSessionBeadOrRepairable(b) {
 			continue
 		}
-		if strings.TrimSpace(b.Metadata[beadmeta.LegacyWorkDirMetadataKey]) != logCtx.workDir {
+		if strings.TrimSpace(b.Metadata["work_dir"]) != logCtx.workDir {
 			continue
 		}
 		provider := strings.TrimSpace(b.Metadata["provider_kind"])
@@ -271,14 +270,14 @@ func sessionLogFallbackCandidates(store beads.Store, workDir, provider string) (
 		return nil
 	}
 	if strings.TrimSpace(provider) == "" {
-		if err := add(map[string]string{beadmeta.LegacyWorkDirMetadataKey: workDir}); err != nil {
+		if err := add(map[string]string{"work_dir": workDir}); err != nil {
 			return nil, err
 		}
 	} else {
-		if err := add(map[string]string{beadmeta.LegacyWorkDirMetadataKey: workDir, "provider": provider}); err != nil {
+		if err := add(map[string]string{"work_dir": workDir, "provider": provider}); err != nil {
 			return nil, err
 		}
-		if err := add(map[string]string{beadmeta.LegacyWorkDirMetadataKey: workDir, "provider_kind": provider}); err != nil {
+		if err := add(map[string]string{"work_dir": workDir, "provider_kind": provider}); err != nil {
 			return nil, err
 		}
 	}
