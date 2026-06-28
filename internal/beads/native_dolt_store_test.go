@@ -887,6 +887,67 @@ func TestNativeDoltStoreSetMetadataBatchRejectsInvalidExistingMetadata(t *testin
 	}
 }
 
+func TestNativeDoltStoreSetMetadataBatchRunsInTransactionAndMergesMetadata(t *testing.T) {
+	var inTransaction bool
+	runInTransactionCalled := false
+	var storage *nativeDoltStorageSpy
+	storage = &nativeDoltStorageSpy{
+		getIssue: func(context.Context, string) (*beadslib.Issue, error) {
+			if !inTransaction {
+				t.Fatal("GetIssue was called outside RunInTransaction")
+			}
+			raw, err := metadataRawFromMap(map[string]string{
+				"existing": "keep",
+			})
+			if err != nil {
+				t.Fatalf("metadataRawFromMap: %v", err)
+			}
+			return &beadslib.Issue{
+				ID:        "gc-race",
+				Title:     "concurrent metadata",
+				Status:    beadslib.StatusOpen,
+				IssueType: beadslib.TypeTask,
+				Priority:  2,
+				Metadata:  raw,
+			}, nil
+		},
+		updateIssue: func(_ context.Context, _ string, updates map[string]interface{}, _ string) error {
+			if !inTransaction {
+				t.Fatal("UpdateIssue was called outside RunInTransaction")
+			}
+			raw, ok := updates["metadata"].(json.RawMessage)
+			if !ok {
+				t.Fatalf("metadata update type = %T, want json.RawMessage", updates["metadata"])
+			}
+			merged, err := metadataMapFromNative(raw)
+			if err != nil {
+				t.Fatalf("metadataMapFromNative: %v", err)
+			}
+			if merged["existing"] != "keep" {
+				t.Fatalf("merged metadata existing = %q, want keep", merged["existing"])
+			}
+			if merged["new"] != "value" {
+				t.Fatalf("merged metadata new = %q, want value", merged["new"])
+			}
+			return nil
+		},
+		runInTransaction: func(_ context.Context, _ string, fn func(beadslib.Transaction) error) error {
+			runInTransactionCalled = true
+			inTransaction = true
+			defer func() { inTransaction = false }()
+			return fn(nativeDoltTransactionForTest{storage: storage})
+		},
+	}
+	store := newNativeDoltStoreForTest(storage)
+
+	if err := store.SetMetadataBatch("gc-race", map[string]string{"new": "value"}); err != nil {
+		t.Fatalf("SetMetadataBatch: %v", err)
+	}
+	if !runInTransactionCalled {
+		t.Fatal("RunInTransaction was not called")
+	}
+}
+
 func TestNativeDoltStoreReadyFiltersGasCityExcludedTypesBeforeLimit(t *testing.T) {
 	storage := &nativeDoltStorageSpy{
 		getReadyWork: func(_ context.Context, filter beadslib.WorkFilter) ([]*beadslib.Issue, error) {
@@ -950,97 +1011,6 @@ func TestNativeDoltStoreTxAppliesCallbackWrites(t *testing.T) {
 	}
 	if got.Metadata["initial"] != "true" || got.Metadata["phase"] != "updated" || got.Metadata["step"] != "done" {
 		t.Fatalf("Metadata = %#v, want merged tx metadata", got.Metadata)
-	}
-}
-
-// commitCountingMemStorage counts how many RunInTransaction (i.e. DOLT_COMMIT)
-// boundaries a sequence of store writes crosses.
-type commitCountingMemStorage struct {
-	*nativeDoltMemStorage
-	commits int
-}
-
-func (s *commitCountingMemStorage) RunInTransaction(ctx context.Context, msg string, fn func(beadslib.Transaction) error) error {
-	s.commits++
-	return s.nativeDoltMemStorage.RunInTransaction(ctx, msg, fn)
-}
-
-func TestNativeDoltStoreTxCoalescesWritesIntoSingleCommit(t *testing.T) {
-	counting := &commitCountingMemStorage{nativeDoltMemStorage: newNativeDoltMemStorage()}
-	store := newNativeDoltStoreForTest(counting)
-
-	seed, err := store.Create(Bead{Title: "seed", Metadata: map[string]string{"k": "v"}})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	commitsBeforeTx := counting.commits
-	var membershipID string
-	if err := store.Tx("coalesced bind", func(tx Tx) error {
-		created, err := tx.Create(Bead{Title: "membership", Metadata: map[string]string{"role": "member"}})
-		if err != nil {
-			return err
-		}
-		membershipID = created.ID
-		if err := tx.SetMetadataBatch(seed.ID, map[string]string{"touched": "yes"}); err != nil {
-			return err
-		}
-		if err := tx.Update(seed.ID, UpdateOpts{Metadata: map[string]string{"phase": "bound"}}); err != nil {
-			return err
-		}
-		return tx.Close(membershipID)
-	}); err != nil {
-		t.Fatalf("Tx: %v", err)
-	}
-
-	if got := counting.commits - commitsBeforeTx; got != 1 {
-		t.Fatalf("Tx with 4 writes issued %d commits, want exactly 1", got)
-	}
-
-	gotSeed, err := store.Get(seed.ID)
-	if err != nil {
-		t.Fatalf("Get seed: %v", err)
-	}
-	if gotSeed.Metadata["touched"] != "yes" || gotSeed.Metadata["phase"] != "bound" || gotSeed.Metadata["k"] != "v" {
-		t.Fatalf("seed metadata = %#v, want merged tx writes", gotSeed.Metadata)
-	}
-	gotMembership, err := store.Get(membershipID)
-	if err != nil {
-		t.Fatalf("Get membership: %v", err)
-	}
-	if gotMembership.Status != "closed" {
-		t.Fatalf("membership status = %q, want closed", gotMembership.Status)
-	}
-	if gotMembership.Metadata["role"] != "member" {
-		t.Fatalf("membership metadata = %#v, want created-in-tx fields", gotMembership.Metadata)
-	}
-}
-
-// TestNativeDoltStoreTxRollsBackOnError verifies the coalesced transaction is
-// atomic: a failure mid-callback leaves none of the writes committed.
-func TestNativeDoltStoreTxRollsBackOnError(t *testing.T) {
-	store := newNativeDoltStoreForTest(newNativeDoltMemStorage())
-	seed, err := store.Create(Bead{Title: "seed", Metadata: map[string]string{"phase": "initial"}})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	sentinel := errors.New("boom")
-	if err := store.Tx("rollback", func(tx Tx) error {
-		if err := tx.SetMetadataBatch(seed.ID, map[string]string{"phase": "mutated"}); err != nil {
-			return err
-		}
-		return sentinel
-	}); !errors.Is(err, sentinel) {
-		t.Fatalf("Tx error = %v, want sentinel", err)
-	}
-
-	got, err := store.Get(seed.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if got.Metadata["phase"] != "initial" {
-		t.Fatalf("phase = %q, want initial (rolled back)", got.Metadata["phase"])
 	}
 }
 
@@ -1455,6 +1425,30 @@ func TestOpenNativeDoltStoreAtProjectsScopedEnvDuringOpen(t *testing.T) {
 	}
 }
 
+func TestOpenNativeDoltStoreAtFallsBackToEnvIssuePrefix(t *testing.T) {
+	oldOpen := nativeDoltOpenBestAvailable
+	t.Cleanup(func() {
+		nativeDoltOpenBestAvailable = oldOpen
+	})
+	nativeDoltOpenBestAvailable = func(context.Context, string) (beadslib.Storage, error) {
+		return &nativeDoltStorageSpy{
+			getConfig: func(context.Context, string) (string, error) {
+				return "", nil
+			},
+		}, nil
+	}
+
+	store, err := OpenNativeDoltStoreAt(context.Background(), filepath.Join(t.TempDir(), "scope"), map[string]string{
+		"GC_BEADS_PREFIX": "dg",
+	})
+	if err != nil {
+		t.Fatalf("OpenNativeDoltStoreAt: %v", err)
+	}
+	if got := store.IDPrefix(); got != "dg" {
+		t.Fatalf("IDPrefix = %q, want env prefix dg", got)
+	}
+}
+
 func TestProcessEnvSnapshotWaitsForNativeDoltOpenEnvRestore(t *testing.T) {
 	t.Setenv("BEADS_DOLT_SERVER_HOST", "ambient.example.com")
 	restoreEnv, err := withNativeDoltOpenEnv(map[string]string{
@@ -1674,11 +1668,9 @@ func assertNativeDependency(t *testing.T, deps []Dep, issueID, dependsOnID, depT
 }
 
 type nativeDoltTransactionTestStorage interface {
-	CreateIssue(context.Context, *beadslib.Issue, string) error
 	CreateIssues(context.Context, []*beadslib.Issue, string) error
 	GetIssue(context.Context, string) (*beadslib.Issue, error)
 	UpdateIssue(context.Context, string, map[string]interface{}, string) error
-	CloseIssue(context.Context, string, string, string, string) error
 	AddLabel(context.Context, string, string, string) error
 	RemoveLabel(context.Context, string, string, string) error
 	AddDependency(context.Context, *beadslib.Dependency, string) error
@@ -1691,16 +1683,8 @@ type nativeDoltTransactionForTest struct {
 	storage nativeDoltTransactionTestStorage
 }
 
-func (tx nativeDoltTransactionForTest) CreateIssue(ctx context.Context, issue *beadslib.Issue, actor string) error {
-	return tx.storage.CreateIssue(ctx, issue, actor)
-}
-
 func (tx nativeDoltTransactionForTest) CreateIssues(ctx context.Context, issues []*beadslib.Issue, actor string) error {
 	return tx.storage.CreateIssues(ctx, issues, actor)
-}
-
-func (tx nativeDoltTransactionForTest) CloseIssue(ctx context.Context, id, reason, actor, session string) error {
-	return tx.storage.CloseIssue(ctx, id, reason, actor, session)
 }
 
 func (tx nativeDoltTransactionForTest) GetIssue(ctx context.Context, id string) (*beadslib.Issue, error) {

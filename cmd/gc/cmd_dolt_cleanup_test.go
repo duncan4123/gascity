@@ -1249,11 +1249,6 @@ func TestRunDoltCleanup_RigsProtectedReadsDoltDatabaseFromMetadata(t *testing.T)
 }
 
 func TestRunDoltCleanup_SkipsNonDoltBackedRig(t *testing.T) {
-	// az-374: a rig whose metadata.json declares a non-dolt backend (e.g.
-	// mysql) has no dolt database for dolt-cleanup to verify, drop, or purge.
-	// It MUST be skipped — excluded from rigs_protected and never counted as a
-	// rig-protection force_blocker — rather than being treated as one for
-	// lacking dolt_database. A dolt-backed rig in the same city is unaffected.
 	fs := fsys.NewFake()
 	fs.Files["/city/.beads/metadata.json"] = []byte(`{"backend":"mysql","database":"anthony_beads"}`)
 	fs.Files["/rigs/doltrig/.beads/metadata.json"] = []byte(`{"dolt_database":"doltrig_db"}`)
@@ -1277,22 +1272,18 @@ func TestRunDoltCleanup_SkipsNonDoltBackedRig(t *testing.T) {
 		t.Fatalf("Unmarshal: %v\nstdout: %s", err, stdout.String())
 	}
 
-	// The mysql-backed rig must not trip rig-protection.
 	if len(r.ForceBlockers) != 0 {
-		t.Fatalf("ForceBlockers = %+v, want none (mysql-backed rig must be skipped)", r.ForceBlockers)
+		t.Fatalf("ForceBlockers = %+v, want none", r.ForceBlockers)
 	}
 	if hasRigProtectionError(&r) {
-		t.Fatalf("unexpected rig-protection error; mysql-backed rig must be skipped: %+v", r.Errors)
+		t.Fatalf("unexpected rig-protection error: %+v", r.Errors)
 	}
 	if r.Summary.ErrorsTotal != 0 {
 		t.Fatalf("Summary.ErrorsTotal = %d, want 0; errors=%+v", r.Summary.ErrorsTotal, r.Errors)
 	}
-
-	// The mysql-backed rig is skipped (absent from rigs_protected); the
-	// dolt-backed rig is still protected with its metadata dolt_database.
 	for _, rp := range r.RigsProtected {
 		if rp.Rig == "city" {
-			t.Errorf("mysql-backed rig 'city' must be skipped, but found in RigsProtected: %+v", rp)
+			t.Errorf("non-dolt-backed rig 'city' must be skipped, got %+v", r.RigsProtected)
 		}
 	}
 	want := CleanupRigProtection{Rig: "doltrig", DB: "doltrig_db"}

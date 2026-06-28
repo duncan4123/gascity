@@ -238,11 +238,6 @@ name = "demo"
 	}
 }
 
-// TestDoConvoyAutocloseResolvesRigStoreForRigBead is the regression for #3411:
-// the bd on_close hook is spawned from the supervisor and inherits its (city)
-// cwd/env, but the closed bead can live in a rig store. Autoclose must resolve
-// the store that actually owns the bead, not the cwd-rooted city store, or
-// completed rig convoys strand open in the ready list.
 func TestDoConvoyAutocloseResolvesRigStoreForRigBead(t *testing.T) {
 	configureIsolatedRuntimeEnv(t)
 	t.Setenv("GC_BEADS", "file")
@@ -269,8 +264,6 @@ prefix = "OP"
 		t.Fatal(err)
 	}
 
-	// Convoy + tracked child live in the RIG store only; the city store is
-	// empty, matching the live case where a rig-prefixed bead closes.
 	rigStore, err := openScopeLocalFileStore(rigDir)
 	if err != nil {
 		t.Fatal(err)
@@ -287,7 +280,6 @@ prefix = "OP"
 		t.Fatal(err)
 	}
 
-	// The hook runs from the supervisor's (city) cwd, not the rig checkout.
 	chdirProviderAwareTest(t, cityDir)
 
 	var stdout, stderr bytes.Buffer
@@ -302,18 +294,13 @@ prefix = "OP"
 		t.Fatal(err)
 	}
 	if updated.Status != "closed" {
-		t.Fatalf("rig convoy status = %q, want closed (autoclose did not resolve the rig store)", updated.Status)
+		t.Fatalf("rig convoy status = %q, want closed", updated.Status)
 	}
 	if !strings.Contains(stdout.String(), "Auto-closed convoy") {
 		t.Fatalf("stdout = %q, want autoclose message", stdout.String())
 	}
 }
 
-// TestDoMoleculeAutocloseResolvesRigStoreForRigBead is the molecule sibling of
-// the #3411 regression: closing the last step of a molecule whose subtree
-// lives in a rig store must auto-close the root, even though the on_close hook
-// runs from the supervisor's (city) cwd. It also exercises the store-ref being
-// derived from the resolved rig store rather than the city store.
 func TestDoMoleculeAutocloseResolvesRigStoreForRigBead(t *testing.T) {
 	configureIsolatedRuntimeEnv(t)
 	t.Setenv("GC_BEADS", "file")
@@ -370,7 +357,7 @@ prefix = "OP"
 		t.Fatal(err)
 	}
 	if updated.Status != "closed" {
-		t.Fatalf("rig molecule root status = %q, want closed (autoclose did not resolve the rig store)", updated.Status)
+		t.Fatalf("rig molecule root status = %q, want closed", updated.Status)
 	}
 	if !strings.Contains(stdout.String(), "Auto-closed molecule "+root.ID) {
 		t.Fatalf("stdout = %q, want molecule auto-close message", stdout.String())
