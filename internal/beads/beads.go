@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -37,6 +38,13 @@ var ErrParentProjectionSuperseded = errors.New("parent projection superseded by 
 // release an assignment based on the current status and assignee.
 var ErrConditionalReleaseUnsupported = errors.New("conditional assignment release unsupported")
 
+// ErrStatusConflict reports that a status transition raced with another write.
+var ErrStatusConflict = errors.New("bead status conflict")
+
+func statusConflictError(id, expected, current string) error {
+	return fmt.Errorf("updating bead %q: %w (expected status %q, got %q)", id, ErrStatusConflict, expected, current)
+}
+
 // ErrBDSilentFallback reports that a bd-backed store operation saw bd exit
 // successfully after falling back to on-disk JSONL auto-import mode. BdStore
 // surfaces this as an error for reads and writes because the command may have
@@ -65,6 +73,10 @@ type Bead struct {
 	Labels       []string          `json:"labels,omitempty"`
 	Metadata     map[string]string `json:"metadata,omitempty"`
 	Dependencies []Dep             `json:"dependencies,omitempty"`
+	// DependencyCount carries bd's count of active blocking dependencies when
+	// available from list-style output. It is advisory; readiness decisions
+	// should prefer IsBlocked because bd owns the denormalized ready projection.
+	DependencyCount int `json:"dependency_count,omitempty"`
 	// Ephemeral routes the bead to the wisps tier on Create. Wisps live in
 	// a separate Dolt table, are not git-synced, and are eligible for TTL
 	// garbage collection. Reads must opt in via ListQuery.TierMode (or the
@@ -86,16 +98,17 @@ type Bead struct {
 
 // UpdateOpts specifies which fields to change. Nil pointers are skipped.
 type UpdateOpts struct {
-	Title        *string // set title (nil = no change)
-	Status       *string // set status (nil = no change)
-	Type         *string // set issue type (nil = no change)
-	Priority     *int    // set priority (nil = no change)
-	Description  *string
-	ParentID     *string
-	Assignee     *string  // set assignee (nil = no change)
-	Labels       []string // append these labels (nil = no change)
-	RemoveLabels []string // remove these labels (nil = no change)
-	Metadata     map[string]string
+	Title          *string // set title (nil = no change)
+	Status         *string // set status (nil = no change)
+	ExpectedStatus *string
+	Type           *string // set issue type (nil = no change)
+	Priority       *int    // set priority (nil = no change)
+	Description    *string
+	ParentID       *string
+	Assignee       *string  // set assignee (nil = no change)
+	Labels         []string // append these labels (nil = no change)
+	RemoveLabels   []string // remove these labels (nil = no change)
+	Metadata       map[string]string
 }
 
 // ConditionalAssignmentReleaser is implemented by stores that can release an
@@ -129,7 +142,6 @@ func StoreSupportsAtomicTx(store Store) bool {
 // Keep this interface limited to methods needed by current transactional
 // write pairs; do not add Store methods speculatively.
 type Tx interface {
-	Create(b Bead) (Bead, error)
 	Update(id string, opts UpdateOpts) error
 	SetMetadataBatch(id string, kvs map[string]string) error
 	Close(id string) error
@@ -220,6 +232,17 @@ func IsReadyBlockingDependencyType(t string) bool {
 	return readyBlockingDependencyTypes[t]
 }
 
+// IsReadyDependencySatisfied reports whether a blocking dependency target
+// releases downstream Ready work. Failed closed workflow steps intentionally
+// keep dependents blocked so cancelled/failing graph branches do not spawn
+// workers for work that claim paths will never return.
+func IsReadyDependencySatisfied(status string, metadata map[string]string) bool {
+	if strings.TrimSpace(status) != "closed" {
+		return false
+	}
+	return strings.TrimSpace(metadata["gc.outcome"]) != "fail"
+}
+
 // IsReadyExcludedType reports whether the bead type is excluded from
 // Ready() results by default.
 func IsReadyExcludedType(t string) bool {
@@ -257,16 +280,9 @@ func IsReadyCandidateForTier(b Bead, now time.Time, tier TierMode) bool {
 // IsReadyExcludedBead reports whether a bead is infrastructure rather than
 // actionable Ready work.
 func IsReadyExcludedBead(b Bead) bool {
-	return IsReadyExcludedType(b.Type) || HasReadyExcludedLabel(b)
-}
-
-// HasReadyExcludedLabel reports whether a bead carries a label that marks it
-// as infrastructure bookkeeping (session continuity, order tracking) rather
-// than actionable Ready work. Distinct from IsReadyExcludedType: a bead may be
-// label-excluded regardless of its type. Callers that have already constrained
-// the bead's type (e.g. iterating known-convoy beads) use this to test only
-// the label dimension.
-func HasReadyExcludedLabel(b Bead) bool {
+	if IsReadyExcludedType(b.Type) {
+		return true
+	}
 	for _, label := range b.Labels {
 		switch label {
 		case "gc:session", "gc:order-tracking", "order-tracking":
