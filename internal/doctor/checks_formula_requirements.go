@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/formula"
 	"github.com/gastownhall/gascity/internal/pathutil"
@@ -100,7 +99,7 @@ func (c *FormulaRequirementsCheck) collectIssues() []formulaRequirementIssue {
 				})
 				continue
 			}
-			if strings.EqualFold(strings.TrimSpace(f.Contract), beadmeta.FormulaContractGraphV2) {
+			if strings.EqualFold(strings.TrimSpace(f.Contract), "graph.v2") {
 				addIssue(formulaRequirementIssue{
 					severity: StatusWarning,
 					scope:    scope.name,

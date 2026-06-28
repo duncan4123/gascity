@@ -14,24 +14,11 @@ import (
 	"github.com/gastownhall/gascity/internal/config"
 )
 
-// defaultBackupFreshnessMaxAge is how stale a rig's last bd backup sync may be
-// before BdBackupFreshnessCheck warns. bd's auto-backup interval is minutes, so
-// a day-old (or older) last sync means the backup pipeline is disabled, broken,
-// or the rig is unattended — the silent gap that turns a recoverable store loss
-// into a near-permanent one when the only surviving backup is weeks stale.
 const defaultBackupFreshnessMaxAge = 24 * time.Hour
 
-// BdBackupFreshnessCheck warns when a rig that HAS a local bd backup
-// (.beads/backup/backup_state.json) has not synced within maxAge. It is the
-// freshness complement to the existing backup checks: DoltBackupCheck verifies
-// a backup is registered, BdBackupSizeCheck guards the backup footprint, and
-// BdBackupStateCheck flags quarantines and stale registrations — none notice
-// that a configured backup has simply stopped running. Reading only the
-// on-disk backup_state.json keeps the check DB-free.
-//
-// A backup that exists but stopped syncing is invisible to every other signal:
-// the registration still looks healthy and the artifact dir is still present,
-// so the rig appears protected while its recovery point silently ages out.
+// BdBackupFreshnessCheck warns when bd's backup state exists but has not
+// advanced recently. Backup presence alone is not enough: a disabled or broken
+// sync pipeline can leave an old recovery point that still looks configured.
 type BdBackupFreshnessCheck struct {
 	cityPath   string
 	scopeRoots []string
@@ -39,9 +26,6 @@ type BdBackupFreshnessCheck struct {
 	now        func() time.Time
 }
 
-// NewBdBackupFreshnessCheckForConfig creates a freshness check across the city
-// and all managed rig scope roots, using preloaded city config to avoid
-// reparsing city.toml during doctor registration.
 func NewBdBackupFreshnessCheckForConfig(cityPath string, cfg *config.City, cfgErr error) *BdBackupFreshnessCheck {
 	return &BdBackupFreshnessCheck{
 		cityPath:   cityPath,
@@ -51,8 +35,6 @@ func NewBdBackupFreshnessCheckForConfig(cityPath string, cfg *config.City, cfgEr
 	}
 }
 
-// NewBdBackupFreshnessCheckForScopeRoots creates a freshness check over an
-// explicit scope-root list with an injectable max age and clock. Used by tests.
 func NewBdBackupFreshnessCheckForScopeRoots(cityPath string, scopeRoots []string, maxAge time.Duration, now func() time.Time) *BdBackupFreshnessCheck {
 	if maxAge <= 0 {
 		maxAge = defaultBackupFreshnessMaxAge
@@ -63,24 +45,14 @@ func NewBdBackupFreshnessCheckForScopeRoots(cityPath string, scopeRoots []string
 	return &BdBackupFreshnessCheck{cityPath: cityPath, scopeRoots: scopeRoots, maxAge: maxAge, now: now}
 }
 
-// Name returns the check identifier.
 func (c *BdBackupFreshnessCheck) Name() string { return "bd-backup-freshness" }
 
-// WarmupEligible returns false: backup freshness is a steady-state hygiene
-// signal, not a fail-fast gate that should block `gc start`.
 func (c *BdBackupFreshnessCheck) WarmupEligible() bool { return false }
 
-// CanFix returns false: re-enabling or repairing a backup pipeline is operator
-// policy, not a mechanical fix.
 func (c *BdBackupFreshnessCheck) CanFix() bool { return false }
 
-// Fix is a no-op; the check is report-only.
 func (c *BdBackupFreshnessCheck) Fix(_ *CheckContext) error { return nil }
 
-// Run reads each scope's .beads/backup/backup_state.json and warns on any whose
-// last sync is older than maxAge (or whose timestamp is missing or
-// unparseable). Scopes with no backup_state.json are skipped — "no backup at
-// all" is reported by DoltBackupCheck / BdBackupSizeCheck, not here.
 func (c *BdBackupFreshnessCheck) Run(_ *CheckContext) *CheckResult {
 	r := &CheckResult{Name: c.Name()}
 	now := c.now()
@@ -141,9 +113,6 @@ func (c *BdBackupFreshnessCheck) freshnessScanTargets() []bdBackupFreshnessTarge
 	return targets
 }
 
-// scanBackupFreshness reads <beadsDir>/backup/backup_state.json and returns a
-// finding when the last sync is older than maxAge or the timestamp cannot be
-// read. A missing backup_state.json returns ("", false) — not this check's job.
 func scanBackupFreshness(label, beadsDir string, now time.Time, maxAge time.Duration) (string, bool) {
 	path := filepath.Join(beadsDir, "backup", "backup_state.json")
 	data, err := os.ReadFile(path)
@@ -168,7 +137,7 @@ func scanBackupFreshness(label, beadsDir string, now time.Time, maxAge time.Dura
 		return fmt.Sprintf("%s: backup_state.json timestamp %q is unparseable: %v", label, ts, err), true
 	}
 	if age := now.Sub(synced); age > maxAge {
-		return fmt.Sprintf("%s: last bd backup sync was %s ago (> %s) — backup pipeline may be disabled or broken",
+		return fmt.Sprintf("%s: last bd backup sync was %s ago (> %s) - backup pipeline may be disabled or broken",
 			label, age.Round(time.Minute), maxAge), true
 	}
 	return "", false

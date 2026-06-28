@@ -63,7 +63,6 @@ func toExport(te events.TaggedEvent) eventexport.TaggedEvent {
 		Subject:   te.Subject,
 		RunID:     te.RunID,
 		SessionID: te.SessionID,
-		StepID:    te.StepID,
 	}
 }
 
