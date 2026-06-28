@@ -54,7 +54,7 @@ func (dl *doltliteBackend) NeedsDoltBinary() bool          { return false }
 func (dl *doltliteBackend) MinBDVersion() string           { return "1.0.3" }
 func (dl *doltliteBackend) NeedsBeadHooks() bool           { return false }
 func (dl *doltliteBackend) NeedsDoltDoctorChecks() bool    { return false }
-func (dl *doltliteBackend) RequiredBuiltinPacks() []string { return []string{"beads-doltlite"} }
+func (dl *doltliteBackend) RequiredBuiltinPacks() []string { return []string{"beads-doltlite-init"} }
 
 func (dl *doltliteBackend) MetadataInit(fs fsys.FS, scopeRoot, doltDatabase string, preserveExisting bool) error {
 	return ensureCanonicalDoltliteScopeMetadata(fs, scopeRoot, doltDatabase, preserveExisting)

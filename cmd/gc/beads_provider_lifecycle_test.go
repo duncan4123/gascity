@@ -7547,6 +7547,50 @@ func TestGcBeadsBdStartDoltliteDoesNotStartManagedDolt(t *testing.T) {
 	}
 }
 
+func TestInitDirIfReadyDoltliteSkipsManagedDoltLifecycle(t *testing.T) {
+	cityPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[workspace]\nname = \"demo\"\n\n[beads]\nbackend = \"doltlite\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	origEnsure := initDirIfReadyEnsureBeadsProvider
+	origInit := initDirIfReadyInitAndHookDir
+	origWait := initDirIfReadyWaitForManagedDolt
+	t.Cleanup(func() {
+		initDirIfReadyEnsureBeadsProvider = origEnsure
+		initDirIfReadyInitAndHookDir = origInit
+		initDirIfReadyWaitForManagedDolt = origWait
+	})
+
+	initCalls := 0
+	initDirIfReadyEnsureBeadsProvider = func(string) error {
+		t.Fatal("DoltLite init must not start a managed Dolt provider")
+		return nil
+	}
+	initDirIfReadyWaitForManagedDolt = func(string, time.Duration) error {
+		t.Fatal("DoltLite init must not wait for managed Dolt")
+		return nil
+	}
+	initDirIfReadyInitAndHookDir = func(gotCityPath, gotDir, gotPrefix string) error {
+		initCalls++
+		if gotCityPath != cityPath || gotDir != cityPath || gotPrefix != "gc" {
+			t.Fatalf("initAndHookDir args = (%q, %q, %q), want (%q, %q, gc)", gotCityPath, gotDir, gotPrefix, cityPath, cityPath)
+		}
+		return nil
+	}
+
+	deferred, err := initDirIfReady(cityPath, cityPath, "gc")
+	if err != nil {
+		t.Fatalf("initDirIfReady: %v", err)
+	}
+	if deferred {
+		t.Fatal("initDirIfReady deferred = true, want false")
+	}
+	if initCalls != 1 {
+		t.Fatalf("initAndHookDir calls = %d, want 1", initCalls)
+	}
+}
+
 func TestGcBeadsBdInitDoltliteRejectsUnsafeCustomTypes(t *testing.T) {
 	cityPath := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(cityPath, ".gc"), 0o755); err != nil {

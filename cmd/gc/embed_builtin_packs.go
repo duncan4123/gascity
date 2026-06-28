@@ -188,6 +188,29 @@ func builtinImportsForInit(cityProvider, cityBackend string) (map[string]config.
 	return builtinImportsForNames(names)
 }
 
+func externalImportsForInit(cityProvider, cityBackend string) (map[string]config.Import, []string) {
+	provider := strings.TrimSpace(os.Getenv("GC_BEADS"))
+	if provider == "" {
+		provider = strings.TrimSpace(cityProvider)
+	}
+	if provider == "" {
+		provider = "bd"
+	}
+	backend := strings.TrimSpace(os.Getenv("GC_BEADS_BACKEND"))
+	if backend == "" {
+		backend = strings.TrimSpace(cityBackend)
+	}
+	if !providerUsesBdStoreContract(provider) || resolveBeadsBackendName(backend).Name() != "doltlite" {
+		return nil, nil
+	}
+	return map[string]config.Import{
+		"beads-doltlite": {
+			Source:  config.PublicBeadsDoltlitePackSource,
+			Version: config.PublicBeadsDoltlitePackVersion,
+		},
+	}, []string{"beads-doltlite"}
+}
+
 func builtinImportsForNames(names []string) (map[string]config.Import, []string) {
 	imports := make(map[string]config.Import, len(names))
 	ordered := make([]string, 0, len(names))

@@ -163,9 +163,9 @@ func applyInitBeadsBackend(cfg *config.City, backend string) {
 	}
 }
 
-// runWizard runs the interactive init wizard, asking the user to choose a
-// config template and a coding agent provider. If stdin is nil, returns
-// defaultWizardConfig() (non-interactive).
+// runWizard runs the interactive init wizard. It asks for the bead backend
+// before template or provider choices so backend-specific init can shape all
+// later setup. If stdin is nil, returns defaultWizardConfig() (non-interactive).
 func runWizard(stdin io.Reader, stdout io.Writer) wizardConfig {
 	if stdin == nil {
 		return defaultWizardConfig()
@@ -173,7 +173,9 @@ func runWizard(stdin io.Reader, stdout io.Writer) wizardConfig {
 
 	br := bufio.NewReader(stdin)
 
-	fmt.Fprintln(stdout, "Welcome to Gas City SDK!")                                         //nolint:errcheck // best-effort stdout
+	fmt.Fprintln(stdout, "Welcome to Gas City SDK!") //nolint:errcheck // best-effort stdout
+	beadsBackend := askBeadsBackend(br, stdout)
+
 	fmt.Fprintln(stdout, "")                                                                 //nolint:errcheck // best-effort stdout
 	fmt.Fprintln(stdout, "Choose a config template:")                                        //nolint:errcheck // best-effort stdout
 	fmt.Fprintln(stdout, "  1. gascity   — planning & implementation skills pack (default)") //nolint:errcheck // best-effort stdout
@@ -200,7 +202,6 @@ func runWizard(stdin io.Reader, stdout io.Writer) wizardConfig {
 
 	// Custom config → skip agent question, return after backend choice.
 	if configName == "custom" {
-		beadsBackend := askBeadsBackend(br, stdout)
 		return wizardConfig{
 			interactive:  true,
 			configName:   "custom",
@@ -243,7 +244,6 @@ func runWizard(stdin io.Reader, stdout io.Writer) wizardConfig {
 		}
 	}
 
-	beadsBackend := askBeadsBackend(br, stdout)
 	return wizardConfig{
 		interactive:     true,
 		configName:      configName,
@@ -1065,8 +1065,10 @@ func applyInitPackTemplateExtras(dst *initPackConfig, src initPackConfig) {
 func addBuiltinImportsToInitPack(packCfg *initPackConfig, cityProvider, cityBackend string) {
 	imports, names := builtinImportsForInit(cityProvider, cityBackend)
 	if len(names) == 0 {
-		return
+		names = nil
 	}
+	externalImports, externalNames := externalImportsForInit(cityProvider, cityBackend)
+	names = append(names, externalNames...)
 	if packCfg.Imports == nil {
 		packCfg.Imports = make(map[string]config.Import, len(names))
 	}
@@ -1074,8 +1076,83 @@ func addBuiltinImportsToInitPack(packCfg *initPackConfig, cityProvider, cityBack
 		if _, exists := packCfg.Imports[name]; exists {
 			continue
 		}
-		packCfg.Imports[name] = imports[name]
+		if imp, ok := imports[name]; ok {
+			packCfg.Imports[name] = imp
+			continue
+		}
+		if imp, ok := externalImports[name]; ok {
+			packCfg.Imports[name] = imp
+		}
 	}
+}
+
+func ensureInitDoltlitePackImportsCurrent(cityPath string) error {
+	cityCfg, err := config.Load(fsys.OSFS{}, filepath.Join(cityPath, citylayout.CityConfigFile))
+	if err != nil {
+		return err
+	}
+	if resolveBeadsBackendName(cityCfg.Beads.Backend).Name() != "doltlite" {
+		return nil
+	}
+
+	packPath := filepath.Join(cityPath, "pack.toml")
+	data, err := os.ReadFile(packPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			cityName := strings.TrimSpace(cityCfg.Workspace.Name)
+			if cityName == "" {
+				cityName = filepath.Base(cityPath)
+			}
+			packCfg := newInitPackConfig(cityName)
+			addBuiltinImportsToInitPack(&packCfg, cityCfg.Beads.Provider, cityCfg.Beads.Backend)
+			content, marshalErr := marshalInitPackConfig(packCfg)
+			if marshalErr != nil {
+				return marshalErr
+			}
+			return os.WriteFile(packPath, content, 0o644)
+		}
+		return err
+	}
+
+	var packCfg initPackConfig
+	if _, err := toml.Decode(string(data), &packCfg); err != nil {
+		return fmt.Errorf("parse pack.toml: %w", err)
+	}
+	if packCfg.Imports == nil {
+		packCfg.Imports = make(map[string]config.Import)
+	}
+
+	changed := false
+	requiredBuiltin, builtinOrder := builtinImportsForInit(cityCfg.Beads.Provider, cityCfg.Beads.Backend)
+	for _, name := range builtinOrder {
+		want, ok := requiredBuiltin[name]
+		if !ok {
+			continue
+		}
+		if got := packCfg.Imports[name]; got.Source != want.Source || got.Version != want.Version {
+			packCfg.Imports[name] = want
+			changed = true
+		}
+	}
+	requiredExternal, externalOrder := externalImportsForInit(cityCfg.Beads.Provider, cityCfg.Beads.Backend)
+	for _, name := range externalOrder {
+		want, ok := requiredExternal[name]
+		if !ok {
+			continue
+		}
+		if got := packCfg.Imports[name]; got.Source != want.Source || got.Version != want.Version {
+			packCfg.Imports[name] = want
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	content, err := marshalInitPackConfig(packCfg)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(packPath, content, 0o644)
 }
 
 func appendUniqueStrings(dst []string, items ...string) []string {
@@ -1335,8 +1412,8 @@ func doInit(fs fsys.FS, cityPath string, wiz wizardConfig, nameOverride string, 
 		fmt.Fprintf(stderr, "gc init: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
-	// Install Claude Code hooks (settings.json).
-	logInitProgress(stdout, 2, "Installing hooks (Claude Code)")
+	// Install agent hooks.
+	logInitProgress(stdout, 2, "Installing agent hooks")
 	if code := installClaudeHooks(fs, cityPath, stderr); code != 0 {
 		return code
 	}

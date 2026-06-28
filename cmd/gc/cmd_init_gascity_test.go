@@ -124,10 +124,16 @@ func TestDoInitDoltliteBackendImportsBeadsDoltlitePack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing pack.toml: %v", err)
 	}
-	for _, name := range []string{"core", "bd", "beads-doltlite"} {
+	for _, name := range []string{"core", "bd", "beads-doltlite-init", "beads-doltlite"} {
 		if _, ok := packCfg.Imports[name]; !ok {
 			t.Fatalf("pack.toml imports = %v, want %s entry:\n%s", packCfg.Imports, name, packData)
 		}
+	}
+	if got := packCfg.Imports["beads-doltlite"].Source; got != config.PublicBeadsDoltlitePackSource {
+		t.Fatalf("beads-doltlite source = %q, want %q", got, config.PublicBeadsDoltlitePackSource)
+	}
+	if got := packCfg.Imports["beads-doltlite"].Version; got != config.PublicBeadsDoltlitePackVersion {
+		t.Fatalf("beads-doltlite version = %q, want %q", got, config.PublicBeadsDoltlitePackVersion)
 	}
 }
 
