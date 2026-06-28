@@ -127,11 +127,15 @@ func requiredBuiltinPackNames(cityPath string) []string {
 		required = append(required, "bd")
 	}
 	provider := strings.TrimSpace(configuredBeadsProviderValue(cityPath))
+	normalizedProvider := normalizeRawBeadsProvider(cityPath, provider)
 	usesDirectExecLifecycle := strings.HasPrefix(provider, "exec:") &&
 		execProviderBase(provider) == "gc-beads-bd" &&
-		normalizeRawBeadsProvider(cityPath, provider) != "bd"
-	if usesDirectExecLifecycle {
-		required = append(required, "dolt")
+		normalizedProvider != "bd"
+	if providerUsesBdStoreContract(normalizedProvider) || usesDirectExecLifecycle {
+		required = appendRequiredBuiltinPack(required, "bd")
+		for _, name := range resolveBeadsBackend(cityPath).RequiredBuiltinPacks() {
+			required = appendRequiredBuiltinPack(required, name)
+		}
 	}
 	return required
 }
@@ -156,11 +160,11 @@ func requiredBuiltinImports(cityPath string) (map[string]config.Import, []string
 	return builtinImportsForNames(requiredBuiltinPackNames(cityPath))
 }
 
-// builtinImportsForInit resolves the beads provider the same way
-// command-time store selection does — GC_BEADS env first, then the
-// about-to-be-written city.toml provider — so init writes exactly the
-// imports the builtin-pack-imports doctor check will later enforce.
-func builtinImportsForInit(cityProvider string) (map[string]config.Import, []string) {
+// builtinImportsForInit resolves the beads provider and backend the same way
+// command-time store selection does — env first, then the about-to-be-written
+// city.toml values — so init writes exactly the imports the
+// builtin-pack-imports doctor check will later enforce.
+func builtinImportsForInit(cityProvider, cityBackend string) (map[string]config.Import, []string) {
 	provider := strings.TrimSpace(os.Getenv("GC_BEADS"))
 	if provider == "" {
 		provider = strings.TrimSpace(cityProvider)
@@ -168,9 +172,18 @@ func builtinImportsForInit(cityProvider string) (map[string]config.Import, []str
 	if provider == "" {
 		provider = "bd" // matches the rawBeadsProvider default
 	}
+	backend := strings.TrimSpace(os.Getenv("GC_BEADS_BACKEND"))
+	if backend == "" {
+		backend = strings.TrimSpace(cityBackend)
+	}
 	names := []string{"core"}
 	if providerUsesBdStoreContract(provider) {
 		names = append(names, "bd")
+		if backend != "" {
+			for _, name := range resolveBeadsBackendName(backend).RequiredBuiltinPacks() {
+				names = appendRequiredBuiltinPack(names, name)
+			}
+		}
 	}
 	return builtinImportsForNames(names)
 }
@@ -179,11 +192,7 @@ func builtinImportsForNames(names []string) (map[string]config.Import, []string)
 	imports := make(map[string]config.Import, len(names))
 	ordered := make([]string, 0, len(names))
 	for _, name := range names {
-		// CanonicalImportSource authors the dereferenceable tree-URL form
-		// that gc init and the builtin-pack-imports doctor fix write into
-		// pack.toml; the version pin still derives from the normalized
-		// source, which both spellings share.
-		source, ok := builtinpacks.CanonicalImportSource(name)
+		source, ok := builtinpacks.Source(name)
 		if !ok {
 			continue
 		}
@@ -341,6 +350,19 @@ func usesOSFS(fs fsys.FS) bool {
 	default:
 		return false
 	}
+}
+
+func appendRequiredBuiltinPack(names []string, name string) []string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return names
+	}
+	for _, existing := range names {
+		if existing == name {
+			return names
+		}
+	}
+	return append(names, name)
 }
 
 // packExists checks if a pack.toml exists in the given directory.
