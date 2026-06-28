@@ -173,7 +173,7 @@ func wrapWithCachingStore(ctx context.Context, store beads.Store, ep events.Prov
 	if ep != nil {
 		recorder = ep
 	}
-	onChange := func(eventType, beadID, runID, sessionID, stepID string, payload json.RawMessage) {
+	onChange := func(eventType, beadID, runID, sessionID string, payload json.RawMessage) {
 		if recorder != nil {
 			recorder.Record(events.Event{
 				Type:      eventType,
@@ -181,7 +181,6 @@ func wrapWithCachingStore(ctx context.Context, store beads.Store, ep events.Prov
 				Subject:   beadID,
 				RunID:     runID,
 				SessionID: sessionID,
-				StepID:    stepID,
 				Payload:   payload,
 			})
 		}
@@ -344,6 +343,10 @@ func (cs *controllerState) openRigStore(provider, rigName, rigPath, prefix strin
 		},
 		OpenExecStore: openExecStore,
 		OpenNativeStore: func() (beads.Store, error) {
+			bdStore := bdStoreForRig(scopeRoot, cs.cityPath, cfg, prefix)
+			if optimized, ok := openOptimizedDoltliteStore(scopeRoot, cs.cityPath, bdStore); ok {
+				return optimized, nil
+			}
 			env, err := nativeDoltOpenEnvForScope(cs.cityPath, cfg, scopeRoot)
 			if err != nil {
 				return nil, fmt.Errorf("project native rig store env %s: %w", scopeRoot, err)
