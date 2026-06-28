@@ -87,6 +87,26 @@ func bdStoreForRig(rigDir, cityPath string, cfg *config.City, knownPrefix ...str
 	)
 }
 
+func bdStoreForScope(scopeRoot, cityPath string, cfg *config.City, knownPrefix ...string) *beads.BdStore {
+	scopeRoot = resolveStoreScopeRoot(cityPath, scopeRoot)
+	if samePath(scopeRoot, cityPath) {
+		return bdStoreForCity(scopeRoot, cityPath)
+	}
+	return bdStoreForRig(scopeRoot, cityPath, cfg, knownPrefix...)
+}
+
+func openBdStoreForScope(scopeRoot, cityPath string, cfg *config.City, knownPrefix ...string) beads.Store {
+	store := bdStoreForScope(scopeRoot, cityPath, cfg, knownPrefix...)
+	if optimized, ok := openOptimizedDoltliteStore(scopeRoot, cityPath, store); ok {
+		return optimized
+	}
+	return store
+}
+
+func openOptimizedDoltliteStoreForScope(scopeRoot, cityPath string, cfg *config.City, knownPrefix ...string) (beads.Store, bool) {
+	return openOptimizedDoltliteStore(scopeRoot, cityPath, bdStoreForScope(scopeRoot, cityPath, cfg, knownPrefix...))
+}
+
 func bdStoreOptionsForConfig(cfg *config.City) []beads.BdStoreOption {
 	if cfg != nil && cfg.Beads.UsesBD105CLISemantics() {
 		return []beads.BdStoreOption{beads.WithBdStoreListSkipLabels(true)}

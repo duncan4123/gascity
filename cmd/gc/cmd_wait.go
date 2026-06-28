@@ -1141,6 +1141,7 @@ func dispatchReadyWaitNudgesWithSnapshot(cityPath string, cfg *config.City, stor
 	if err != nil {
 		return err
 	}
+	nudgeStore := beads.NudgesStore{Store: resolveNudgesStore(store, cfg, cityPath, nil)}
 	for _, wait := range waits {
 		if wait.Metadata["state"] != waitStateReady {
 			continue
@@ -1160,7 +1161,7 @@ func dispatchReadyWaitNudgesWithSnapshot(cityPath string, cfg *config.City, stor
 		if nudgeID == "" {
 			continue
 		}
-		_, ok, err := findQueuedNudgeBead(beads.NudgesStore{Store: store}, nudgeID)
+		_, ok, err := findQueuedNudgeBead(nudgeStore, nudgeID)
 		if err != nil {
 			if beads.IsLookupLimitError(err) {
 				stampWaitLookupCapDiagnostic(store, sessionID, err, now, "ready-wait-nudge")
@@ -1182,7 +1183,7 @@ func dispatchReadyWaitNudgesWithSnapshot(cityPath string, cfg *config.City, stor
 			ContinuationEpoch: wait.Metadata["registered_epoch"],
 			Reference:         &nudgeReference{Kind: "bead", ID: wait.ID},
 		})
-		if err := enqueueQueuedNudgeWithStore(cityPath, beads.NudgesStore{Store: store}, item); err != nil {
+		if err := enqueueQueuedNudgeWithStore(cityPath, nudgeStore, item); err != nil {
 			return err
 		}
 		if err := store.SetMetadata(wait.ID, "nudge_id", nudgeID); err != nil {
@@ -1227,7 +1228,8 @@ func finalizeReadyWaitFromNudge(store beads.Store, wait beads.Bead, now time.Tim
 	if nudgeID == "" {
 		return false, nil
 	}
-	nudge, ok, err := findAnyQueuedNudgeBead(beads.NudgesStore{Store: store}, nudgeID)
+	nudgeStore := beads.NudgesStore{Store: resolveNudgesStore(store, nil, "", nil)}
+	nudge, ok, err := findAnyQueuedNudgeBead(nudgeStore, nudgeID)
 	if err != nil {
 		if beads.IsLookupLimitError(err) {
 			stampWaitLookupCapDiagnostic(store, wait.Metadata["session_id"], err, now, "ready-wait-finalize-nudge")
