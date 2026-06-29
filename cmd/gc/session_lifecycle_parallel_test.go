@@ -92,6 +92,7 @@ func TestSessionTriggerBeadEnv(t *testing.T) {
 		Metadata: map[string]string{
 			beadmeta.TriggerBeadIDMetadataKey:       "gp-59q",
 			beadmeta.TriggerBeadStoreRefMetadataKey: "rig:gascity-packs",
+			beadmeta.TriggerBeadTitleMetadataKey:    "Review gascity-jj-base",
 		},
 	}
 
@@ -107,6 +108,12 @@ func TestSessionTriggerBeadEnv(t *testing.T) {
 	}
 	if got := env["GC_TRIGGER_WORK_STORE_REF"]; got != "rig:gascity-packs" {
 		t.Fatalf("GC_TRIGGER_WORK_STORE_REF = %q, want rig:gascity-packs", got)
+	}
+	if got := env["GC_TRIGGER_BEAD_TITLE"]; got != "Review gascity-jj-base" {
+		t.Fatalf("GC_TRIGGER_BEAD_TITLE = %q, want Review gascity-jj-base", got)
+	}
+	if got := env["GC_TRIGGER_WORK_BEAD_TITLE"]; got != "Review gascity-jj-base" {
+		t.Fatalf("GC_TRIGGER_WORK_BEAD_TITLE = %q, want Review gascity-jj-base", got)
 	}
 }
 
@@ -829,6 +836,117 @@ func TestPrepareStartCandidate_UsesAssignedWorkSnapshotForTaskWorkDir(t *testing
 	}
 	if store.liveInProgressAssigneeLists != 0 {
 		t.Fatalf("live in-progress assignee List calls = %d, want 0 with snapshot resolver", store.liveInProgressAssigneeLists)
+	}
+}
+
+func TestBuildPreparedStartPrefersConfiguredWorkDirOverSessionMetadata(t *testing.T) {
+	store := beads.NewMemStore()
+	configuredWorkDir := t.TempDir()
+	staleWorkDir := t.TempDir()
+	session, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel, "agent:worker"},
+		Metadata: map[string]string{
+			"template":                        "worker",
+			"session_name":                    "mayor",
+			namedSessionMetadataKey:           boolMetadata(true),
+			namedSessionIdentityMetadata:      "mayor",
+			poolManagedMetadataKey:            boolMetadata(true),
+			beadmeta.WorkDirMetadataKey:       staleWorkDir,
+			beadmeta.LegacyWorkDirMetadataKey: staleWorkDir,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prepared, err := buildPreparedStart(startCandidate{
+		session: &session,
+		tp: TemplateParams{
+			TemplateName: "worker",
+			SessionName:  "mayor",
+			WorkDir:      configuredWorkDir,
+		},
+		order: 0,
+	}, &config.City{}, store)
+	if err != nil {
+		t.Fatalf("buildPreparedStart: %v", err)
+	}
+	if prepared.cfg.WorkDir != configuredWorkDir {
+		t.Fatalf("prepared.cfg.WorkDir = %q, want configured %q", prepared.cfg.WorkDir, configuredWorkDir)
+	}
+}
+
+func TestBuildPreparedStartTriggerPoolMetadataWorkDirOverridesConfiguredWorkDir(t *testing.T) {
+	store := beads.NewMemStore()
+	configuredWorkDir := t.TempDir()
+	triggerWorkDir := t.TempDir()
+	legacyWorkDir := t.TempDir()
+	session, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel, "agent:worker-1"},
+		Metadata: map[string]string{
+			"template":                        "worker",
+			"session_name":                    "worker-1",
+			poolManagedMetadataKey:            boolMetadata(true),
+			beadmeta.TriggerBeadIDMetadataKey: "gp-9gc7",
+			beadmeta.WorkDirMetadataKey:       triggerWorkDir,
+			beadmeta.LegacyWorkDirMetadataKey: legacyWorkDir,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prepared, err := buildPreparedStart(startCandidate{
+		session: &session,
+		tp: TemplateParams{
+			TemplateName: "worker",
+			SessionName:  "worker-1",
+			WorkDir:      configuredWorkDir,
+		},
+		order: 0,
+	}, &config.City{}, store)
+	if err != nil {
+		t.Fatalf("buildPreparedStart: %v", err)
+	}
+	if prepared.cfg.WorkDir != triggerWorkDir {
+		t.Fatalf("prepared.cfg.WorkDir = %q, want trigger metadata %q", prepared.cfg.WorkDir, triggerWorkDir)
+	}
+}
+
+func TestBuildPreparedStartUsesLegacySessionMetadataWorkDirWhenUnconfigured(t *testing.T) {
+	store := beads.NewMemStore()
+	metadataWorkDir := t.TempDir()
+	session, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel, "agent:worker"},
+		Metadata: map[string]string{
+			"template":                        "worker",
+			"session_name":                    "worker",
+			beadmeta.LegacyWorkDirMetadataKey: metadataWorkDir,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	prepared, err := buildPreparedStart(startCandidate{
+		session: &session,
+		tp: TemplateParams{
+			TemplateName: "worker",
+			SessionName:  "worker",
+		},
+		order: 0,
+	}, &config.City{}, store)
+	if err != nil {
+		t.Fatalf("buildPreparedStart: %v", err)
+	}
+	if prepared.cfg.WorkDir != metadataWorkDir {
+		t.Fatalf("prepared.cfg.WorkDir = %q, want metadata %q", prepared.cfg.WorkDir, metadataWorkDir)
 	}
 }
 

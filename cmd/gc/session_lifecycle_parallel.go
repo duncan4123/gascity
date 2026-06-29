@@ -841,7 +841,7 @@ func buildPreparedStartWithWorkDirResolver(
 
 	if wd := resolvePreparedTaskWorkDir(candidate, cfg, store, workDirResolver); wd != "" {
 		agentCfg.WorkDir = wd
-	} else if wd := session.Metadata["work_dir"]; wd != "" {
+	} else if wd := resolvePreparedSessionMetadataWorkDir(session, agentCfg.WorkDir); wd != "" {
 		agentCfg.WorkDir = wd
 	}
 	// Pre-flight stale-resume guard: if the bead carries a session_key whose
@@ -998,6 +998,27 @@ func buildPreparedStartWithWorkDirResolver(
 	}, nil
 }
 
+func resolvePreparedSessionMetadataWorkDir(session *beads.Bead, configuredWorkDir string) string {
+	if session == nil {
+		return ""
+	}
+	metadataWorkDir := strings.TrimSpace(session.Metadata[beadmeta.WorkDirMetadataKey])
+	if metadataWorkDir == "" {
+		metadataWorkDir = strings.TrimSpace(session.Metadata[beadmeta.LegacyWorkDirMetadataKey])
+	}
+	if metadataWorkDir == "" {
+		return ""
+	}
+	if !isNamedSessionBead(*session) &&
+		(isPoolManagedSessionBead(*session) || strings.TrimSpace(session.Metadata[beadmeta.TriggerBeadIDMetadataKey]) != "") {
+		return metadataWorkDir
+	}
+	if strings.TrimSpace(configuredWorkDir) == "" {
+		return metadataWorkDir
+	}
+	return ""
+}
+
 func sessionTriggerBeadEnv(session *beads.Bead) map[string]string {
 	if session == nil {
 		return nil
@@ -1013,6 +1034,10 @@ func sessionTriggerBeadEnv(session *beads.Bead) map[string]string {
 	if storeRef := strings.TrimSpace(session.Metadata[beadmeta.TriggerBeadStoreRefMetadataKey]); storeRef != "" {
 		env["GC_TRIGGER_BEAD_STORE_REF"] = storeRef
 		env["GC_TRIGGER_WORK_STORE_REF"] = storeRef
+	}
+	if title := strings.TrimSpace(session.Metadata[beadmeta.TriggerBeadTitleMetadataKey]); title != "" {
+		env["GC_TRIGGER_BEAD_TITLE"] = title
+		env["GC_TRIGGER_WORK_BEAD_TITLE"] = title
 	}
 	return env
 }

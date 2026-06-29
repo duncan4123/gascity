@@ -157,8 +157,29 @@ fi
 # Order dispatch projects GC_DOLT_PORT explicitly — empty when the city has
 # no canonical Dolt target — so a non-empty port here is city-derived, not
 # inherited operator environment.
+core_city_beads_backend() (
+    metadata="$GC_CITY_PATH/.beads/metadata.json"
+    [ -f "$metadata" ] || return 0
+    sed -n 's/.*"backend"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$metadata" 2>/dev/null | head -1
+)
+
+core_city_metadata_disables_dolt() {
+    backend=$(core_city_beads_backend || true)
+    case "$backend" in
+        ''|dolt|embeddeddolt)
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
 core_city_has_dolt_target() {
     [ -n "${GC_DOLT_PORT:-}" ] && return 0
+    if core_city_metadata_disables_dolt; then
+        return 1
+    fi
     [ -f "$DOLT_STATE_FILE" ] && return 0
     [ -n "${DOLT_PROVIDER_STATE_FILE:-}" ] && [ -f "$DOLT_PROVIDER_STATE_FILE" ] && return 0
     [ -d "$GC_CITY_PATH/.beads/dolt" ] && return 0

@@ -81,10 +81,11 @@ type poolEvalWork struct {
 }
 
 type defaultScaleCheckTarget struct {
-	template string
-	storeKey string
-	store    beads.Store
-	err      error
+	template        string
+	storeKey        string
+	store           beads.Store
+	err             error
+	namedIdentities []string
 }
 
 type scaleCheckDemand struct {
@@ -93,8 +94,9 @@ type scaleCheckDemand struct {
 	Titles      map[string]string
 	Packs       map[string]string
 	Workspaces  map[string]string
+	WorkDirs    map[string]string
 	StoreRefs   map[string]string
-	// ParentSIDs maps work-bead id → gc.brain_parent_sid, carrying the fork
+	// ParentSIDs maps work-bead id -> gc.brain_parent_sid, carrying the fork
 	// parent through to the new pool session bead so the launch path can fork
 	// the warm arm off its pre-built brain.
 	ParentSIDs map[string]string
@@ -514,11 +516,21 @@ func buildDesiredStateWithSessionBeads(
 		if cfg.Agents[i].Suspended {
 			continue
 		}
+		template := cfg.Agents[i].QualifiedName()
 		namedSessionMode := ""
+		var backingNamedIdentities []string
+		templateHasNamedIdentity := false
 		for j := range cfg.NamedSessions {
-			if cfg.NamedSessions[j].TemplateQualifiedName() == cfg.Agents[i].QualifiedName() {
-				namedSessionMode = cfg.NamedSessions[j].ModeOrDefault()
-				break
+			if cfg.NamedSessions[j].TemplateQualifiedName() == template {
+				mode := cfg.NamedSessions[j].ModeOrDefault()
+				if namedSessionMode == "" || mode == "always" {
+					namedSessionMode = mode
+				}
+				identity := cfg.NamedSessions[j].QualifiedName()
+				backingNamedIdentities = append(backingNamedIdentities, identity)
+				if identity == template {
+					templateHasNamedIdentity = true
+				}
 			}
 		}
 		backsNamedSession := namedSessionMode != ""
@@ -533,7 +545,6 @@ func buildDesiredStateWithSessionBeads(
 		}
 
 		hasCustomScaleCheck := strings.TrimSpace(cfg.Agents[i].ScaleCheck) != ""
-		template := cfg.Agents[i].QualifiedName()
 		runningSessions := 0
 		for _, sb := range allOpenSessionBeads {
 			if isPoolManagedSessionBead(sb) && poolSessionIsLive(sb) {
@@ -568,23 +579,22 @@ func buildDesiredStateWithSessionBeads(
 			if rigName != "" && suspendedRigPaths[filepath.Clean(rigRootForName(rigName, cfg.Rigs))] {
 				continue
 			}
-			// Named-session materialization is handled in the named-session pass,
-			// but explicit scale_check/min demand for the backing template still
-			// creates ephemeral capacity through the pool pipeline. The default
-			// routed-work probes treat gc.routed_to=<template> as generic pool
-			// demand. Named sessions wake only from direct Assignee=<identity>
-			// work below; defaultNamedScaleTargets only preserves partial-query
-			// retention for configured named-session beads.
+			// Named-session materialization is handled in the named-session pass.
+			// mode='always': named session is unconditionally desired, so pool
+			// demand is redundant and creates "{name}-N" phantoms. mode='on_demand':
+			// identity-routed default probes feed named-session demand below; only
+			// backing-template routes keep the upstream clamped pool fallback.
 			poolDir := agentCommandDir(cityPath, &cfg.Agents[i], cfg.Rigs)
 			if store != nil && !hasCustomScaleCheck {
 				ownTarget := defaultScaleCheckTargetForAgent(cityPath, cfg, &cfg.Agents[i], store, rigStores)
+				ownTarget.namedIdentities = backingNamedIdentities
 				// mode='always': named session is unconditionally desired by the named
 				// pass; pool demand is redundant and creates {name}-N phantoms when N
 				// routed beads arrive. mode='on_demand': pool demand wakes the sleeping
 				// singleton (namedWorkReady covers only direct Assignee beads, not
 				// gc.routed_to). Leave defaultNamedScaleTargets unchanged for both modes
 				// (partial-query retention).
-				if namedSessionMode != "always" {
+				if namedSessionMode != "always" && !templateHasNamedIdentity {
 					defaultScaleTargets = append(defaultScaleTargets, ownTarget)
 					namedOnDemandTemplates[template] = true
 				}
@@ -598,8 +608,10 @@ func buildDesiredStateWithSessionBeads(
 				// mirrors these probes only for partial-query retention bookkeeping.
 				if isCold && ownTarget.storeKey != "city" && ownTarget.store != nil && ownTarget.err == nil && ownTarget.store != store {
 					cityTarget := defaultScaleCheckTarget{template: template, store: store, storeKey: "city"}
-					if namedSessionMode != "always" {
+					cityTarget.namedIdentities = backingNamedIdentities
+					if namedSessionMode != "always" && !templateHasNamedIdentity {
 						defaultScaleTargets = append(defaultScaleTargets, cityTarget)
+						namedOnDemandTemplates[template] = true
 					}
 					defaultNamedScaleTargets = append(defaultNamedScaleTargets, cityTarget)
 				}
@@ -607,7 +619,12 @@ func buildDesiredStateWithSessionBeads(
 			}
 			if store != nil && isCold {
 				for _, source := range activeStores {
-					defaultNamedScaleTargets = append(defaultNamedScaleTargets, defaultScaleCheckTarget{template: template, store: source.store, storeKey: source.ref})
+					defaultNamedScaleTargets = append(defaultNamedScaleTargets, defaultScaleCheckTarget{
+						template:        template,
+						store:           source.store,
+						storeKey:        source.ref,
+						namedIdentities: backingNamedIdentities,
+					})
 				}
 			}
 			pendingPools = append(pendingPools, poolEvalWork{agentIdx: i, sp: sp, poolDir: poolDir, newDemand: store != nil})
@@ -821,7 +838,7 @@ func buildDesiredStateWithSessionBeads(
 	// Named sessions: materialize session beads for configured [[named_session]]
 	// entries. "always" mode sessions are unconditionally materialized;
 	// "on_demand" sessions are materialized only when they already have a
-	// canonical bead or direct assigned work.
+	// canonical bead, direct assigned work, or identity-routed ready work.
 	namedSpecs := make(map[string]namedSessionSpec)
 	for i := range cfg.NamedSessions {
 		identity := cfg.NamedSessions[i].QualifiedName()
@@ -1418,6 +1435,12 @@ func defaultScaleCheckCountsAndDemand(targets []defaultScaleCheckTarget) (map[st
 				}
 				entry.Workspaces[b.ID] = workspace
 			}
+			if workDir := workBeadWorkDir(b); workDir != "" {
+				if entry.WorkDirs == nil {
+					entry.WorkDirs = make(map[string]string)
+				}
+				entry.WorkDirs[b.ID] = workDir
+			}
 			if entry.StoreRefs == nil {
 				entry.StoreRefs = make(map[string]string)
 			}
@@ -1454,6 +1477,9 @@ func mergeScaleCheckDemand(existing, incoming scaleCheckDemand, count int) scale
 	if existing.Workspaces == nil && len(incoming.Workspaces) > 0 {
 		existing.Workspaces = make(map[string]string, len(incoming.Workspaces))
 	}
+	if existing.WorkDirs == nil && len(incoming.WorkDirs) > 0 {
+		existing.WorkDirs = make(map[string]string, len(incoming.WorkDirs))
+	}
 	if existing.ParentSIDs == nil && len(incoming.ParentSIDs) > 0 {
 		existing.ParentSIDs = make(map[string]string, len(incoming.ParentSIDs))
 	}
@@ -1470,6 +1496,9 @@ func mergeScaleCheckDemand(existing, incoming scaleCheckDemand, count int) scale
 		}
 		if incoming.Workspaces != nil {
 			existing.Workspaces[id] = incoming.Workspaces[id]
+		}
+		if incoming.WorkDirs != nil {
+			existing.WorkDirs[id] = incoming.WorkDirs[id]
 		}
 		if incoming.StoreRefs != nil {
 			existing.StoreRefs[id] = incoming.StoreRefs[id]
@@ -1496,6 +1525,7 @@ func defaultNamedSessionDemand(targets []defaultScaleCheckTarget, _ *config.City
 	type scaleStoreGroup struct {
 		store     beads.Store
 		templates map[string]struct{}
+		routes    map[string]map[string]struct{}
 	}
 	groups := make(map[string]*scaleStoreGroup)
 	var errs []error
@@ -1522,26 +1552,69 @@ func defaultNamedSessionDemand(targets []defaultScaleCheckTarget, _ *config.City
 		}
 		group := groups[key]
 		if group == nil {
-			group = &scaleStoreGroup{store: target.store, templates: make(map[string]struct{})}
+			group = &scaleStoreGroup{
+				store:     target.store,
+				templates: make(map[string]struct{}),
+				routes:    make(map[string]map[string]struct{}),
+			}
 			groups[key] = group
 		}
 		group.templates[template] = struct{}{}
+		for _, identity := range target.namedIdentities {
+			identity = strings.TrimSpace(identity)
+			if identity == "" {
+				continue
+			}
+			addNamedDemandRoute(group.routes, identity, identity)
+			if identity == template {
+				addNamedDemandRoute(group.routes, template, identity)
+			}
+		}
 	}
 
-	// Named sessions are not inferred from gc.routed_to/gc.run_target.
-	// A work item targets a named session by Assignee=<session id/name/alias>.
-	// This probe remains only to mark named-session backing templates partial
-	// when a default demand query is inconclusive, so existing named-session
-	// beads are retained instead of swept on a store/query failure.
+	// A default-routed work item targets a named session when the route names
+	// the configured named identity. A backing-template route only targets a
+	// named session when the identity is the same as the template; named
+	// sessions with a distinct public identity must be routed by that identity
+	// or assigned directly.
 	for key, group := range groups {
-		_, err := readyForControllerDemand(group.store)
+		ready, err := readyForControllerDemand(group.store)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("default scale_check %s templates=%s: Ready(): %w", key, strings.Join(sortedStringSet(group.templates), ","), err))
 			partialTemplates = markScaleCheckPartialSet(partialTemplates, group.templates)
-			continue
+			if !beads.IsPartialResult(err) {
+				ready = nil
+			}
+		}
+		for _, b := range ready {
+			if strings.TrimSpace(b.Assignee) != "" {
+				continue
+			}
+			for _, candidate := range controllerDemandRouteCandidates(b) {
+				identities := group.routes[candidate]
+				if len(identities) == 0 {
+					continue
+				}
+				for identity := range identities {
+					demand[identity] = true
+				}
+				break
+			}
 		}
 	}
 	return demand, partialTemplates, errs
+}
+
+func addNamedDemandRoute(routes map[string]map[string]struct{}, route, identity string) {
+	if routes == nil || route == "" || identity == "" {
+		return
+	}
+	identities := routes[route]
+	if identities == nil {
+		identities = make(map[string]struct{})
+		routes[route] = identities
+	}
+	identities[identity] = struct{}{}
 }
 
 func controllerDemandRouteTarget(b beads.Bead, templates map[string]struct{}) string {
@@ -2024,8 +2097,8 @@ func discoverSessionBeadsWithRoots(
 			// Use a narrower partial-alive guard than scaleCheckPartial here: for
 			// creating/start-pending beads, only protect in-flight creates with an
 			// active pending_create_claim lease; stale creates (lease cleared/expired)
-			// roll back even during a partial tick. For all other states (active, awake,
-			// asleep, stopped, …) the broad preservable rule applies unchanged.
+			// roll back even during a partial tick. For all other states (active,
+			// awake, asleep, stopped, ...) the broad preservable rule applies unchanged.
 			poolPartialAlive := (poolScaleCheckPartial || namedScaleCheckPartial) &&
 				(isPendingPoolCreate(b) || (!creating && scaleCheckPartialSessionPreservable(b)))
 			if controllerManagedPool && !manualSession && !isNamedSessionBead(b) &&
@@ -2473,11 +2546,20 @@ func bindPoolSessionTriggerBead(bp *agentBuildParams, cfgAgent *config.Agent, qu
 	}
 	metadata := map[string]string{}
 	if workBeadID == "" {
-		if strings.TrimSpace(sessionBead.Metadata[beadmeta.TriggerBeadIDMetadataKey]) != "" {
-			metadata[beadmeta.TriggerBeadIDMetadataKey] = ""
-		}
-		if strings.TrimSpace(sessionBead.Metadata[beadmeta.TriggerBeadStoreRefMetadataKey]) != "" {
-			metadata[beadmeta.TriggerBeadStoreRefMetadataKey] = ""
+		for _, key := range []string{
+			beadmeta.TriggerBeadIDMetadataKey,
+			beadmeta.TriggerBeadStoreRefMetadataKey,
+			beadmeta.TriggerBeadTitleMetadataKey,
+			beadmeta.PackMetadataKey,
+			beadmeta.PackRootMetadataKey,
+			beadmeta.PackWorkspaceMetadataKey,
+			beadmeta.BrainParentSIDMetadataKey,
+			beadmeta.WorkDirMetadataKey,
+			beadmeta.LegacyWorkDirMetadataKey,
+		} {
+			if strings.TrimSpace(sessionBead.Metadata[key]) != "" {
+				metadata[key] = ""
+			}
 		}
 		// Q1: a re-pointed session is a new work item; it must not silently
 		// inherit the prior fork's "warm" provenance. Clear the parent sid so the
@@ -2502,6 +2584,8 @@ func bindPoolSessionTriggerBead(bp *agentBuildParams, cfgAgent *config.Agent, qu
 	oldWorkBeadID := strings.TrimSpace(sessionBead.Metadata[beadmeta.TriggerBeadIDMetadataKey])
 	if oldWorkBeadID != workBeadID {
 		metadata[beadmeta.TriggerBeadIDMetadataKey] = workBeadID
+	}
+	if oldWorkBeadID != workBeadID {
 		// Q1: on a genuine reassign to a different work bead, reconcile the fork
 		// parent to the new work's value (set when the new bead carries one,
 		// clear otherwise) so a re-pointed session never inherits the old fork.
@@ -2509,6 +2593,12 @@ func bindPoolSessionTriggerBead(bp *agentBuildParams, cfgAgent *config.Agent, qu
 		if strings.TrimSpace(sessionBead.Metadata[beadmeta.BrainParentSIDMetadataKey]) != newParentSID {
 			metadata[beadmeta.BrainParentSIDMetadataKey] = newParentSID
 		}
+	}
+	workTitle := strings.TrimSpace(request.WorkBeadTitle)
+	if workTitle != "" && strings.TrimSpace(sessionBead.Metadata[beadmeta.TriggerBeadTitleMetadataKey]) != workTitle {
+		metadata[beadmeta.TriggerBeadTitleMetadataKey] = workTitle
+	} else if workTitle == "" && oldWorkBeadID != workBeadID && strings.TrimSpace(sessionBead.Metadata[beadmeta.TriggerBeadTitleMetadataKey]) != "" {
+		metadata[beadmeta.TriggerBeadTitleMetadataKey] = ""
 	}
 	workStoreRef := strings.TrimSpace(request.WorkStoreRef)
 	if workStoreRef != "" && strings.TrimSpace(sessionBead.Metadata[beadmeta.TriggerBeadStoreRefMetadataKey]) != workStoreRef {
@@ -2518,6 +2608,9 @@ func bindPoolSessionTriggerBead(bp *agentBuildParams, cfgAgent *config.Agent, qu
 	}
 	if pack := strings.TrimSpace(request.WorkPack); strings.TrimSpace(sessionBead.Metadata[beadmeta.PackMetadataKey]) != pack {
 		metadata[beadmeta.PackMetadataKey] = pack
+	}
+	if packRoot := poolTriggerPackRoot(bp, cfgAgent, qualifiedName, request); strings.TrimSpace(sessionBead.Metadata[beadmeta.PackRootMetadataKey]) != packRoot {
+		metadata[beadmeta.PackRootMetadataKey] = packRoot
 	}
 	if workspace := packWorkspaceSlug(request); strings.TrimSpace(sessionBead.Metadata[beadmeta.PackWorkspaceMetadataKey]) != workspace {
 		metadata[beadmeta.PackWorkspaceMetadataKey] = workspace
@@ -2552,24 +2645,52 @@ func poolTriggerWorkDir(bp *agentBuildParams, cfgAgent *config.Agent, qualifiedN
 	if bp == nil || cfgAgent == nil || strings.TrimSpace(request.WorkBeadID) == "" {
 		return ""
 	}
+	if explicit := strings.TrimSpace(request.WorkDir); explicit != "" {
+		return explicit
+	}
+	if strings.TrimSpace(request.WorkPack) == "" {
+		return ""
+	}
 	base, err := resolveConfiguredWorkDir(bp.cityPath, bp.cityName, qualifiedName, cfgAgent, bp.rigs)
 	if err != nil || strings.TrimSpace(base) == "" {
 		return ""
 	}
 	if pack := strings.TrimSpace(request.WorkPack); pack != "" {
-		packDir := filepath.Join(filepath.Dir(base), pack)
+		packDir := poolTriggerPackRoot(bp, cfgAgent, qualifiedName, request)
+		if packDir == "" {
+			packDir = filepath.Join(filepath.Dir(base), pack)
+		}
 		if workspace := packWorkspaceSlug(request); workspace != "" {
 			return filepath.Join(packDir, workspace)
 		}
 		return packDir
 	}
-	if workspace := packWorkspaceSlug(request); workspace != "" {
-		return filepath.Join(base, workspace)
-	}
-	if slug := triggerBeadPathSlug(request.WorkBeadID, request.WorkBeadTitle); slug != "" {
-		return filepath.Join(base, slug)
-	}
 	return ""
+}
+
+func poolTriggerPackRoot(bp *agentBuildParams, cfgAgent *config.Agent, qualifiedName string, request SessionRequest) string {
+	pack := strings.TrimSpace(request.WorkPack)
+	if bp == nil || cfgAgent == nil || pack == "" {
+		return ""
+	}
+	if explicit := poolTriggerConfiguredPackRoot(bp, cfgAgent, qualifiedName, pack); explicit != "" {
+		return explicit
+	}
+	base, err := resolveConfiguredWorkDir(bp.cityPath, bp.cityName, qualifiedName, cfgAgent, bp.rigs)
+	if err != nil || strings.TrimSpace(base) == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(base), pack)
+}
+
+func poolTriggerConfiguredPackRoot(bp *agentBuildParams, cfgAgent *config.Agent, qualifiedName, pack string) string {
+	if bp == nil || cfgAgent == nil || strings.TrimSpace(pack) == "" || strings.TrimSpace(cfgAgent.PackRoot) == "" {
+		return ""
+	}
+	routedAgent := *cfgAgent
+	routedAgent.Pack = strings.TrimSpace(pack)
+	ctx := workdirutil.PathContextForQualifiedName(bp.cityPath, bp.cityName, qualifiedName, routedAgent, bp.rigs)
+	return strings.TrimSpace(ctx.PackRoot)
 }
 
 func packWorkspaceSlug(request SessionRequest) string {
@@ -2577,19 +2698,6 @@ func packWorkspaceSlug(request SessionRequest) string {
 		return explicit
 	}
 	return ""
-}
-
-func triggerBeadPathSlug(beadID, title string) string {
-	id := safePathSlug(beadID, 32)
-	titleSlug := safePathSlug(title, 72)
-	switch {
-	case id != "" && titleSlug != "":
-		return id + "-" + titleSlug
-	case id != "":
-		return id
-	default:
-		return titleSlug
-	}
 }
 
 func safeWorkspaceName(value string, maxLen int) string {
@@ -2613,36 +2721,6 @@ func safeWorkspaceName(value string, maxLen int) string {
 		}
 	}
 	return strings.Trim(b.String(), ".-_")
-}
-
-func safePathSlug(value string, maxLen int) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	var b strings.Builder
-	lastDash := false
-	for _, r := range value {
-		var out rune
-		switch {
-		case r >= 'a' && r <= 'z':
-			out = r
-		case r >= '0' && r <= '9':
-			out = r
-		default:
-			out = '-'
-		}
-		if out == '-' {
-			if b.Len() == 0 || lastDash {
-				continue
-			}
-			lastDash = true
-		} else {
-			lastDash = false
-		}
-		b.WriteRune(out)
-		if maxLen > 0 && b.Len() >= maxLen {
-			break
-		}
-	}
-	return strings.Trim(b.String(), "-")
 }
 
 func poolDesiredRequestIdentity(cfgAgent *config.Agent, slot int) (*config.Agent, string, int) {
@@ -2868,6 +2946,7 @@ func resolveTemplateForSessionBead(
 	if err != nil {
 		return tp, err
 	}
+	setTemplatePackEnv(&tp, sessionBead)
 	if triggerID := strings.TrimSpace(sessionBead.Metadata[beadmeta.TriggerBeadIDMetadataKey]); triggerID != "" {
 		if tp.Env == nil {
 			tp.Env = make(map[string]string)
@@ -2878,11 +2957,26 @@ func resolveTemplateForSessionBead(
 			tp.Env["GC_TRIGGER_BEAD_STORE_REF"] = storeRef
 			tp.Env["GC_TRIGGER_WORK_STORE_REF"] = storeRef
 		}
+		if title := strings.TrimSpace(sessionBead.Metadata[beadmeta.TriggerBeadTitleMetadataKey]); title != "" {
+			tp.Env["GC_TRIGGER_BEAD_TITLE"] = title
+			tp.Env["GC_TRIGGER_WORK_BEAD_TITLE"] = title
+		}
 		if pack := strings.TrimSpace(sessionBead.Metadata[beadmeta.PackMetadataKey]); pack != "" {
 			tp.Env["GC_PACKER_PACK"] = pack
 		}
 	}
 	return tp, nil
+}
+
+func setTemplatePackEnv(tp *TemplateParams, sessionBead beads.Bead) {
+	if tp == nil {
+		return
+	}
+	if tp.Env == nil {
+		tp.Env = make(map[string]string)
+	}
+	tp.Env["GC_PACK"] = strings.TrimSpace(sessionBead.Metadata[beadmeta.PackMetadataKey])
+	tp.Env["GC_PACK_ROOT"] = strings.TrimSpace(sessionBead.Metadata[beadmeta.PackRootMetadataKey])
 }
 
 // canonicalSessionIdentity returns the agent and qualified name to use when
@@ -3338,8 +3432,14 @@ func poolTriggerMetadata(bp *agentBuildParams, cfgAgent *config.Agent, qualified
 	if parentSID := strings.TrimSpace(request.BrainParentSID); parentSID != "" {
 		metadata[beadmeta.BrainParentSIDMetadataKey] = parentSID
 	}
+	if title := strings.TrimSpace(request.WorkBeadTitle); title != "" {
+		metadata[beadmeta.TriggerBeadTitleMetadataKey] = title
+	}
 	if pack := strings.TrimSpace(request.WorkPack); pack != "" {
 		metadata[beadmeta.PackMetadataKey] = pack
+	}
+	if packRoot := poolTriggerPackRoot(bp, cfgAgent, qualifiedName, request); packRoot != "" {
+		metadata[beadmeta.PackRootMetadataKey] = packRoot
 	}
 	if workspace := packWorkspaceSlug(request); workspace != "" {
 		metadata[beadmeta.PackWorkspaceMetadataKey] = workspace
