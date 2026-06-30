@@ -156,11 +156,11 @@ func runDoltliteFullInstall(cityPath string, cfg *config.City, stdout, stderr io
 		return fmt.Errorf("beads-doltlite build command is not installed; run \"gc import install\"")
 	}
 	if stdout != nil {
-		fmt.Fprintln(stdout, "Configuring DoltLite-linked bd/gc binaries")                                  //nolint:errcheck // best-effort stdout
-		fmt.Fprintln(stdout, "Running: gc beads-doltlite build bd --install --no-restart")                  //nolint:errcheck // best-effort stdout
-		fmt.Fprintln(stdout, "Running: gc beads-doltlite build gc --install --no-restart")                  //nolint:errcheck // best-effort stdout
-		fmt.Fprintln(stdout, "Skipping automatic local source discovery during fresh init builds.")         //nolint:errcheck // best-effort stdout
-		fmt.Fprintln(stdout, "This updates the active controller and supervisor binaries without restart.") //nolint:errcheck // best-effort stdout
+		fmt.Fprintln(stdout, "Configuring DoltLite-linked bd/gc binaries")                                          //nolint:errcheck // best-effort stdout
+		fmt.Fprintln(stdout, "Running: gc beads-doltlite build bd --install --no-restart")                          //nolint:errcheck // best-effort stdout
+		fmt.Fprintln(stdout, "Running: gc beads-doltlite build gc --install --no-restart")                          //nolint:errcheck // best-effort stdout
+		fmt.Fprintln(stdout, "Skipping automatic local source and libdoltlite discovery during fresh init builds.") //nolint:errcheck // best-effort stdout
+		fmt.Fprintln(stdout, "This updates the active controller and supervisor binaries without restart.")         //nolint:errcheck // best-effort stdout
 	}
 	cityName := strings.TrimSpace(cfg.Workspace.Name)
 	if cityName == "" {
@@ -168,7 +168,10 @@ func runDoltliteFullInstall(cityPath string, cfg *config.City, stdout, stderr io
 	}
 	for _, target := range []string{"bd", "gc"} {
 		code := runDiscoveredCommandWithEnv(
-			map[string]string{"GC_DOLTLITE_SKIP_LOCAL_SOURCE": "1"},
+			map[string]string{
+				"GC_DOLTLITE_SKIP_LOCAL_LIB":    "1",
+				"GC_DOLTLITE_SKIP_LOCAL_SOURCE": "1",
+			},
 			*buildCommand,
 			cityPath,
 			cityName,
