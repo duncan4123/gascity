@@ -25,6 +25,7 @@ var (
 	errInitProviderPreflight    = errors.New("provider readiness preflight failed")
 	errDoltConfigKeyMissing     = errors.New("dolt config key missing")
 	runInitDoltliteFullInstall  = runDoltliteFullInstall
+	runInitDiscoveredCommand    = runDiscoveredCommand
 )
 
 type initFinalizeOptions struct {
@@ -158,6 +159,7 @@ func runDoltliteFullInstall(cityPath string, cfg *config.City, stdout, stderr io
 		fmt.Fprintln(stdout, "Configuring DoltLite-linked bd/gc binaries")                                  //nolint:errcheck // best-effort stdout
 		fmt.Fprintln(stdout, "Running: gc beads-doltlite build bd --install --no-restart")                  //nolint:errcheck // best-effort stdout
 		fmt.Fprintln(stdout, "Running: gc beads-doltlite build gc --install --no-restart")                  //nolint:errcheck // best-effort stdout
+		fmt.Fprintln(stdout, "Skipping automatic local source discovery during fresh init builds.")         //nolint:errcheck // best-effort stdout
 		fmt.Fprintln(stdout, "This updates the active controller and supervisor binaries without restart.") //nolint:errcheck // best-effort stdout
 	}
 	cityName := strings.TrimSpace(cfg.Workspace.Name)
@@ -165,12 +167,47 @@ func runDoltliteFullInstall(cityPath string, cfg *config.City, stdout, stderr io
 		cityName = filepath.Base(cityPath)
 	}
 	for _, target := range []string{"bd", "gc"} {
-		code := runDiscoveredCommand(*buildCommand, cityPath, cityName, []string{target, "--install", "--no-restart"}, strings.NewReader(""), stdout, stderr)
+		code := runDiscoveredCommandWithEnv(
+			map[string]string{"GC_DOLTLITE_SKIP_LOCAL_SOURCE": "1"},
+			*buildCommand,
+			cityPath,
+			cityName,
+			[]string{target, "--install", "--no-restart"},
+			strings.NewReader(""),
+			stdout,
+			stderr,
+		)
 		if code != 0 {
 			return fmt.Errorf("gc beads-doltlite build %s --install --no-restart exited with code %d", target, code)
 		}
 	}
 	return nil
+}
+
+func runDiscoveredCommandWithEnv(env map[string]string, entry config.DiscoveredCommand, cityPath, cityName string, args []string, stdinR io.Reader, stdout, stderr io.Writer) int {
+	if len(env) == 0 {
+		return runInitDiscoveredCommand(entry, cityPath, cityName, args, stdinR, stdout, stderr)
+	}
+	restore := make(map[string]*string, len(env))
+	for key, value := range env {
+		if prev, ok := os.LookupEnv(key); ok {
+			prevCopy := prev
+			restore[key] = &prevCopy
+		} else {
+			restore[key] = nil
+		}
+		_ = os.Setenv(key, value)
+	}
+	defer func() {
+		for key, prev := range restore {
+			if prev == nil {
+				_ = os.Unsetenv(key)
+				continue
+			}
+			_ = os.Setenv(key, *prev)
+		}
+	}()
+	return runInitDiscoveredCommand(entry, cityPath, cityName, args, stdinR, stdout, stderr)
 }
 
 func maybePrintWizardProviderGuidance(wiz wizardConfig, stdout io.Writer) {

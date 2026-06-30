@@ -824,7 +824,8 @@ func TestRunDoltliteFullInstallRunsExternalPackBuildAllInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	argsPath := filepath.Join(cityPath, "args.txt")
-	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" >> %q\nprintf -- '---\\n' >> %q\n", argsPath, argsPath)
+	envPath := filepath.Join(cityPath, "env.txt")
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" >> %q\nprintf -- '---\\n' >> %q\nprintf '%%s\\n' \"$GC_DOLTLITE_SKIP_LOCAL_SOURCE\" >> %q\n", argsPath, argsPath, envPath)
 	if err := os.WriteFile(filepath.Join(commandDir, "run.sh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -852,9 +853,17 @@ func TestRunDoltliteFullInstallRunsExternalPackBuildAllInstall(t *testing.T) {
 	if got, want := strings.TrimSpace(string(args)), "bd\n--install\n--no-restart\n---\ngc\n--install\n--no-restart\n---"; got != want {
 		t.Fatalf("args = %q, want %q", got, want)
 	}
+	env, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("reading env: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(env)), "1\n1"; got != want {
+		t.Fatalf("GC_DOLTLITE_SKIP_LOCAL_SOURCE values = %q, want %q", got, want)
+	}
 	for _, want := range []string{
 		"gc beads-doltlite build bd --install --no-restart",
 		"gc beads-doltlite build gc --install --no-restart",
+		"Skipping automatic local source discovery during fresh init builds.",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want command guidance %q", stdout.String(), want)
