@@ -167,11 +167,15 @@ func runDoltliteFullInstall(cityPath string, cfg *config.City, stdout, stderr io
 		cityName = filepath.Base(cityPath)
 	}
 	for _, target := range []string{"bd", "gc"} {
-		code := runDiscoveredCommandWithEnv(
+		env := mergeEnv(
+			doltliteLoaderEnvScrub(),
 			map[string]string{
 				"GC_DOLTLITE_SKIP_LOCAL_LIB":    "1",
 				"GC_DOLTLITE_SKIP_LOCAL_SOURCE": "1",
 			},
+		)
+		code := runDiscoveredCommandWithEnv(
+			env,
 			*buildCommand,
 			cityPath,
 			cityName,

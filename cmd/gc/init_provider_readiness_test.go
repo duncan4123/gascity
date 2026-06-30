@@ -825,10 +825,12 @@ func TestRunDoltliteFullInstallRunsExternalPackBuildAllInstall(t *testing.T) {
 	}
 	argsPath := filepath.Join(cityPath, "args.txt")
 	envPath := filepath.Join(cityPath, "env.txt")
-	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" >> %q\nprintf -- '---\\n' >> %q\nprintf 'source=%%s lib=%%s\\n' \"$GC_DOLTLITE_SKIP_LOCAL_SOURCE\" \"$GC_DOLTLITE_SKIP_LOCAL_LIB\" >> %q\n", argsPath, argsPath, envPath)
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" >> %q\nprintf -- '---\\n' >> %q\nprintf 'source=%%s lib=%%s ld=%%s dyld=%%s\\n' \"$GC_DOLTLITE_SKIP_LOCAL_SOURCE\" \"$GC_DOLTLITE_SKIP_LOCAL_LIB\" \"${LD_LIBRARY_PATH-unset}\" \"${DYLD_LIBRARY_PATH-unset}\" >> %q\n", argsPath, argsPath, envPath)
 	if err := os.WriteFile(filepath.Join(commandDir, "run.sh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("LD_LIBRARY_PATH", "/stale/doltlite")
+	t.Setenv("DYLD_LIBRARY_PATH", "/stale/doltlite")
 
 	cfg := &config.City{}
 	cfg.Workspace.Name = "bright-lights"
@@ -857,7 +859,7 @@ func TestRunDoltliteFullInstallRunsExternalPackBuildAllInstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading env: %v", err)
 	}
-	if got, want := strings.TrimSpace(string(env)), "source=1 lib=1\nsource=1 lib=1"; got != want {
+	if got, want := strings.TrimSpace(string(env)), "source=1 lib=1 ld= dyld=\nsource=1 lib=1 ld= dyld="; got != want {
 		t.Fatalf("DoltLite skip env values = %q, want %q", got, want)
 	}
 	for _, want := range []string{

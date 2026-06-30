@@ -403,6 +403,40 @@ func TestDoHookClaimClaimsRoutedUnassignedWork(t *testing.T) {
 	}
 }
 
+func TestDoHookClaimSkipsClosedRoutedUnassignedWork(t *testing.T) {
+	runner := func(string, string) (string, error) {
+		return `[{"id":"hw-closed","status":"closed","metadata":{"gc.routed_to":"worker"}}]`, nil
+	}
+	ops := hookClaimOps{
+		Runner: runner,
+		Claim: func(context.Context, string, []string, string, string) (beads.Bead, bool, error) {
+			t.Fatal("claim must not run for closed routed work")
+			return beads.Bead{}, false, nil
+		},
+		DrainAck: func(io.Writer) error { return nil },
+	}
+	opts := hookClaimOptions{
+		Assignee:           "worker-1",
+		IdentityCandidates: []string{"worker-1"},
+		RouteTargets:       []string{"worker"},
+		DrainAck:           true,
+		JSON:               true,
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := doHookClaim("bd ready --json", "/tmp/work", opts, ops, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doHookClaim(closed routed work) = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	var result hookClaimJSONResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("stdout is not JSON: %v\nraw: %s", err, stdout.String())
+	}
+	if result.Action != "drain" || result.Reason != "no_work" {
+		t.Fatalf("unexpected claim result: %+v", result)
+	}
+}
+
 func TestDoHookClaimCoercesNonStringMetadata(t *testing.T) {
 	runner := func(string, string) (string, error) {
 		return `[{"id":"hw-bool","status":"open","metadata":{"gc.routed_to":"worker","mail.read":true,"attempts":2,"empty":null}}]`, nil

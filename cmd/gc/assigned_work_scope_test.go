@@ -151,9 +151,17 @@ func TestFilterAssignedWorkBeadsForPoolDemandDropsOnlyKnownBlockedWork(t *testin
 			},
 			DependencyCount: 1,
 		},
+		{
+			ID:       "blocked-by-status",
+			Status:   "blocked",
+			Assignee: "worker-session",
+			Metadata: map[string]string{
+				"gc.routed_to": "worker",
+			},
+		},
 	}
 
-	got := filterAssignedWorkBeadsForPoolDemand(cfg, "", nil, work, []string{"", "", ""})
+	got := filterAssignedWorkBeadsForPoolDemand(cfg, "", nil, work, []string{"", "", "", ""})
 
 	if len(got) != 2 || got[0].ID != "stale-count-ready" || got[1].ID != "missing-projection-count" {
 		t.Fatalf("filtered work = %#v, want ready work preserved and only projected-blocked work dropped", got)
@@ -177,9 +185,10 @@ func TestFilterAssignedWorkBeadsForSessionWakeDropsOnlyKnownBlockedWork(t *testi
 		{ID: "stale-count-ready", Status: "open", Assignee: identity, DependencyCount: 1, IsBlocked: &readyProjection},
 		{ID: "blocked-by-projection", Status: "open", Assignee: identity, IsBlocked: &blockedProjection},
 		{ID: "missing-projection-count", Status: "open", Assignee: identity, DependencyCount: 1},
+		{ID: "blocked-by-status", Status: "blocked", Assignee: identity},
 	}
 
-	got := filterAssignedWorkBeadsForSessionWake(cfg, "", nil, work, []string{"", "", ""})
+	got := filterAssignedWorkBeadsForSessionWake(cfg, "", nil, work, []string{"", "", "", ""})
 
 	if len(got) != 2 || got[0].ID != "stale-count-ready" || got[1].ID != "missing-projection-count" {
 		t.Fatalf("filtered work = %#v, want ready work preserved and only projected-blocked work dropped", got)

@@ -83,7 +83,8 @@ func assignedWorkIndexReachableFromAgent(cityPath string, cfg *config.City, agen
 }
 
 func assignedWorkKnownBlocked(wb beads.Bead) bool {
-	return wb.IsBlocked != nil && *wb.IsBlocked
+	return strings.EqualFold(strings.TrimSpace(wb.Status), "blocked") ||
+		(wb.IsBlocked != nil && *wb.IsBlocked)
 }
 
 // filterAssignedWorkBeadsForPoolDemand resolves work through the routed
