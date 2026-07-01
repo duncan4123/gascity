@@ -165,6 +165,11 @@ type sessionCircuitBreakerIdentitySnapshot struct {
 	hadGeneration bool
 }
 
+type sessionCircuitMetadataStore interface {
+	Get(id string) (beads.Bead, error)
+	SetMetadataBatch(id string, metadata map[string]string) error
+}
+
 // newSessionCircuitBreaker constructs a breaker with the given config.
 // Zero-valued config fields fall back to defaults.
 func newSessionCircuitBreaker(cfg sessionCircuitBreakerConfig) *sessionCircuitBreaker {
@@ -595,7 +600,7 @@ func formatCircuitTime(tm time.Time) string {
 }
 
 func persistSessionCircuitBreakerMetadata(
-	store beads.Store,
+	store sessionCircuitMetadataStore,
 	session *beads.Bead,
 	cb *sessionCircuitBreaker,
 	identity string,
@@ -626,7 +631,7 @@ func persistSessionCircuitBreakerMetadata(
 }
 
 func recordSessionCircuitBreakerRestart(
-	store beads.Store,
+	store sessionCircuitMetadataStore,
 	session *beads.Bead,
 	cb *sessionCircuitBreaker,
 	identity string,
@@ -720,7 +725,7 @@ func sessionCircuitMetadataEqual(existing map[string]string, next map[string]str
 	return true
 }
 
-func loadPersistedSessionCircuitResetGeneration(store beads.Store, sessionID, identity string, cb *sessionCircuitBreaker) error {
+func loadPersistedSessionCircuitResetGeneration(store sessionCircuitMetadataStore, sessionID, identity string, cb *sessionCircuitBreaker) error {
 	if store == nil || cb == nil || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(identity) == "" {
 		return nil
 	}
@@ -734,7 +739,7 @@ func loadPersistedSessionCircuitResetGeneration(store beads.Store, sessionID, id
 	return nil
 }
 
-func clearPersistedSessionCircuitBreakerMetadata(store beads.Store, sessionID string, resetGeneration uint64) error {
+func clearPersistedSessionCircuitBreakerMetadata(store sessionCircuitMetadataStore, sessionID string, resetGeneration uint64) error {
 	if store == nil || strings.TrimSpace(sessionID) == "" {
 		return nil
 	}

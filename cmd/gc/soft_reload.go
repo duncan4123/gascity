@@ -8,6 +8,7 @@ import (
 
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/runtime"
+	sessionpkg "github.com/gastownhall/gascity/internal/session"
 )
 
 type softReloadAcceptanceResult struct {
@@ -17,6 +18,11 @@ type softReloadAcceptanceResult struct {
 	CanceledDrains int
 	OpenSessions   int
 	DesiredEmpty   bool
+}
+
+type softReloadSessionStore interface {
+	List(query beads.ListQuery) ([]beads.Bead, error)
+	SetMetadataBatch(id string, metadata map[string]string) error
 }
 
 func (r softReloadAcceptanceResult) warnings() []string {
@@ -80,7 +86,7 @@ func formatSoftReloadFailedSessions(names []string) string {
 // Returns accepted-session, failed-session, stale-drain-cancelation, and
 // empty-desired-state diagnostics for the controller reply.
 func acceptConfigDriftAcrossSessions(
-	store beads.SessionStore,
+	store softReloadSessionStore,
 	desired map[string]TemplateParams,
 	sessionBeads *sessionBeadSnapshot,
 	sp runtime.Provider,
@@ -88,12 +94,12 @@ func acceptConfigDriftAcrossSessions(
 	stderr io.Writer,
 ) softReloadAcceptanceResult {
 	result := softReloadAcceptanceResult{DesiredEmpty: len(desired) == 0}
-	if store.Store == nil {
+	if store == nil {
 		return result
 	}
 	if sessionBeads == nil {
 		var err error
-		sessionBeads, err = loadSessionBeadSnapshot(store.Store)
+		sessionBeads, err = loadSoftReloadSessionBeadSnapshot(store)
 		if err != nil {
 			fmt.Fprintf(stderr, "soft reload: listing session beads: %v\n", err) //nolint:errcheck // best-effort stderr
 			return result
@@ -155,6 +161,44 @@ func acceptConfigDriftAcrossSessions(
 		result.Updated++
 	}
 	return result
+}
+
+func loadSoftReloadSessionBeadSnapshot(store softReloadSessionStore) (*sessionBeadSnapshot, error) {
+	if store == nil {
+		return newSessionBeadSnapshot(nil), nil
+	}
+	byType, typeErr := store.List(beads.ListQuery{Type: sessionpkg.BeadType})
+	if typeErr != nil && !beads.IsPartialResult(typeErr) {
+		return nil, fmt.Errorf("listing session beads by type: %w", typeErr)
+	}
+	byLabel, labelErr := store.List(beads.ListQuery{Label: sessionpkg.LabelSession})
+	if labelErr != nil && !beads.IsPartialResult(labelErr) {
+		return nil, fmt.Errorf("listing session beads by label: %w", labelErr)
+	}
+	seen := make(map[string]struct{}, len(byType)+len(byLabel))
+	merged := make([]beads.Bead, 0, len(byType)+len(byLabel))
+	for _, b := range byType {
+		if _, ok := seen[b.ID]; ok || !sessionpkg.IsSessionBeadOrRepairable(b) {
+			continue
+		}
+		seen[b.ID] = struct{}{}
+		merged = append(merged, b)
+	}
+	for _, b := range byLabel {
+		if _, ok := seen[b.ID]; ok || !sessionpkg.IsSessionBeadOrRepairable(b) {
+			continue
+		}
+		seen[b.ID] = struct{}{}
+		merged = append(merged, b)
+	}
+	snapshot := newSessionBeadSnapshot(merged)
+	if typeErr != nil {
+		return snapshot, typeErr
+	}
+	if labelErr != nil {
+		return snapshot, labelErr
+	}
+	return snapshot, nil
 }
 
 func softReloadAcceptedHashMetadata(agentCfg runtime.Config, currentHash string) (map[string]string, error) {

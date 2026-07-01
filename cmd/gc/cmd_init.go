@@ -85,6 +85,7 @@ type wizardConfig struct {
 	provider         string // compatibility mirror for older internal callers
 	startCommand     string // custom start command (workspace-level)
 	bootstrapProfile string // hosted bootstrap profile, or "" for local defaults
+	beadsBackend     string // bead store backend: "dolt" or "doltlite", "" = default
 	err              error
 }
 
@@ -101,6 +102,7 @@ func canBootstrapExistingCity(wiz wizardConfig) bool {
 		len(wiz.providers) == 0 &&
 		wiz.startCommand == "" &&
 		wiz.bootstrapProfile == "" &&
+		wiz.beadsBackend == "" &&
 		wiz.err == nil
 }
 
@@ -130,9 +132,40 @@ func readLine(br *bufio.Reader) string {
 	return strings.TrimSpace(line)
 }
 
-// runWizard runs the interactive init wizard, asking the user to choose a
-// config template and a coding agent provider. If stdin is nil, returns
-// defaultWizardConfig() (non-interactive).
+func askBeadsBackend(stdin *bufio.Reader, stdout io.Writer) string {
+	fmt.Fprintln(stdout, "")                                                      //nolint:errcheck // best-effort stdout
+	fmt.Fprintln(stdout, "Choose bead store backend:")                            //nolint:errcheck // best-effort stdout
+	fmt.Fprintln(stdout, "  1. dolt      - managed Dolt SQL server (default)")    //nolint:errcheck // best-effort stdout
+	fmt.Fprintln(stdout, "  2. doltlite  - embedded DoltLite, no server process") //nolint:errcheck // best-effort stdout
+	fmt.Fprintf(stdout, "Beads backend [1]: ")                                    //nolint:errcheck // best-effort stdout
+	switch strings.ToLower(readLine(stdin)) {
+	case "", "1", "dolt":
+		return ""
+	case "2", "doltlite":
+		return "doltlite"
+	default:
+		fmt.Fprintln(stdout, "Unknown backend, using dolt.") //nolint:errcheck // best-effort stdout
+		return ""
+	}
+}
+
+func applyInitBeadsBackend(cfg *config.City, backend string) {
+	if cfg == nil {
+		return
+	}
+	backend = strings.TrimSpace(backend)
+	if backend == "" {
+		return
+	}
+	cfg.Beads.Backend = backend
+	if resolveBeadsBackendName(backend).Name() == "doltlite" {
+		cfg.Beads.BDCompatibility = config.BeadsBDCompatibility105
+	}
+}
+
+// runWizard runs the interactive init wizard. It asks for the bead backend
+// before template or provider choices so backend-specific init can shape all
+// later setup. If stdin is nil, returns defaultWizardConfig() (non-interactive).
 func runWizard(stdin io.Reader, stdout io.Writer) wizardConfig {
 	if stdin == nil {
 		return defaultWizardConfig()
@@ -140,7 +173,9 @@ func runWizard(stdin io.Reader, stdout io.Writer) wizardConfig {
 
 	br := bufio.NewReader(stdin)
 
-	fmt.Fprintln(stdout, "Welcome to Gas City SDK!")                                         //nolint:errcheck // best-effort stdout
+	fmt.Fprintln(stdout, "Welcome to Gas City SDK!") //nolint:errcheck // best-effort stdout
+	beadsBackend := askBeadsBackend(br, stdout)
+
 	fmt.Fprintln(stdout, "")                                                                 //nolint:errcheck // best-effort stdout
 	fmt.Fprintln(stdout, "Choose a config template:")                                        //nolint:errcheck // best-effort stdout
 	fmt.Fprintln(stdout, "  1. gascity   — planning & implementation skills pack (default)") //nolint:errcheck // best-effort stdout
@@ -165,11 +200,12 @@ func runWizard(stdin io.Reader, stdout io.Writer) wizardConfig {
 		fmt.Fprintf(stdout, "Unknown template %q, using gascity.\n", configChoice) //nolint:errcheck // best-effort stdout
 	}
 
-	// Custom config → skip agent question, return minimal config.
+	// Custom config → skip agent question, return after backend choice.
 	if configName == "custom" {
 		return wizardConfig{
-			interactive: true,
-			configName:  "custom",
+			interactive:  true,
+			configName:   "custom",
+			beadsBackend: beadsBackend,
 		}
 	}
 
@@ -214,6 +250,7 @@ func runWizard(stdin io.Reader, stdout io.Writer) wizardConfig {
 		defaultProvider: defaultProvider,
 		providers:       providers,
 		provider:        defaultProvider,
+		beadsBackend:    beadsBackend,
 	}
 }
 
@@ -320,6 +357,7 @@ func newInitCmd(stdout, stderr io.Writer) *cobra.Command {
 	var providersFlag []string
 	var defaultProviderFlag string
 	var bootstrapProfileFlag string
+	var beadsBackendFlag string
 	var skipProviderReadiness bool
 	var preserveExisting bool
 	var jsonOut bool
@@ -338,13 +376,19 @@ or --file to initialize from an existing TOML config file.
 
 Pass --preserve-existing to keep any pre-authored pack.toml, city.toml, or
 agent prompt files in the target directory (useful when bootstrapping a
-committed workspace — e.g. from a bootstrap.sh shipped in the repo).`,
+committed workspace — e.g. from a bootstrap.sh shipped in the repo).
+
+Use --beads-backend to configure the bead store backend. "dolt" uses the
+managed Dolt SQL server (default). "doltlite" uses embedded DoltLite
+databases with no server process.`,
 		Example: `  gc init
   gc init ~/my-city
   gc init --default-provider codex ~/my-city
   gc init --template gastown --default-provider codex ~/my-city
   gc init --providers claude,codex --default-provider codex ~/my-city
   gc init --default-provider codex --bootstrap-profile k8s-cell /city
+  gc init --beads-backend doltlite ~/my-city
+  gc init --template gastown --beads-backend doltlite ~/my-city
   gc init --name my-city
   gc init --from ~/elan --name elan /city
   gc init --file ./my-city.toml ~/bright-lights
@@ -374,6 +418,9 @@ committed workspace — e.g. from a bootstrap.sh shipped in the repo).`,
 			if flagMode != "" {
 				mode = flagMode
 			}
+			if beadsBackendFlag != "" {
+				wiz.beadsBackend = strings.TrimSpace(beadsBackendFlag)
+			}
 			code := cmdInitWithPreparedWizardInternal(args, wiz, flagMode != "", nameFlag, out, stderr, skipProviderReadiness, preserveExisting, jsonOut, noStart)
 			return writeInitJSONOrExit(code, jsonOut, args, nameFlag, wiz.configName, wizardDefaultProvider(wiz), wizardProviders(wiz), bootstrapProfileFlag, mode, stdout)
 		},
@@ -386,6 +433,7 @@ committed workspace — e.g. from a bootstrap.sh shipped in the repo).`,
 	cmd.Flags().StringArrayVar(&providersFlag, "providers", nil, "readiness-aware providers to write to city.toml (repeatable or comma-separated)")
 	cmd.Flags().StringVar(&templateFlag, "template", "", "non-interactive template to write: minimal, gastown, gascity, or custom")
 	cmd.Flags().StringVar(&bootstrapProfileFlag, "bootstrap-profile", "", "bootstrap profile to apply for hosted/container defaults")
+	cmd.Flags().StringVar(&beadsBackendFlag, "beads-backend", "", "bead store backend: \"dolt\" (managed Dolt server) or \"doltlite\" (embedded DoltLite); default: dolt")
 	cmd.Flags().BoolVar(&skipProviderReadiness, "skip-provider-readiness", false, "skip provider login/readiness checks during init and continue startup")
 	cmd.Flags().BoolVar(&noStart, "no-start", false, "initialize files and imports without registering or starting the city")
 	cmd.Flags().BoolVar(&preserveExisting, "preserve-existing", false, "keep any pre-authored pack.toml, city.toml, or agent prompt files instead of overwriting them")
@@ -402,6 +450,8 @@ committed workspace — e.g. from a bootstrap.sh shipped in the repo).`,
 	cmd.MarkFlagsMutuallyExclusive("template", "from")
 	cmd.MarkFlagsMutuallyExclusive("bootstrap-profile", "file")
 	cmd.MarkFlagsMutuallyExclusive("bootstrap-profile", "from")
+	cmd.MarkFlagsMutuallyExclusive("beads-backend", "file")
+	cmd.MarkFlagsMutuallyExclusive("beads-backend", "from")
 	_ = cmd.Flags().MarkHidden("provider")
 	return cmd
 }
@@ -1012,11 +1062,13 @@ func applyInitPackTemplateExtras(dst *initPackConfig, src initPackConfig) {
 // addBuiltinImportsToInitPack merges the required bundled-pack imports
 // into the init pack manifest, preserving any imports the template (or a
 // preserved pack.toml) already declares.
-func addBuiltinImportsToInitPack(packCfg *initPackConfig, cityProvider string) {
-	imports, names := builtinImportsForInit(cityProvider)
+func addBuiltinImportsToInitPack(packCfg *initPackConfig, cityProvider, cityBackend string) {
+	imports, names := builtinImportsForInit(cityProvider, cityBackend)
 	if len(names) == 0 {
-		return
+		names = nil
 	}
+	externalImports, externalNames := externalImportsForInit(cityProvider, cityBackend)
+	names = append(names, externalNames...)
 	if packCfg.Imports == nil {
 		packCfg.Imports = make(map[string]config.Import, len(names))
 	}
@@ -1024,8 +1076,83 @@ func addBuiltinImportsToInitPack(packCfg *initPackConfig, cityProvider string) {
 		if _, exists := packCfg.Imports[name]; exists {
 			continue
 		}
-		packCfg.Imports[name] = imports[name]
+		if imp, ok := imports[name]; ok {
+			packCfg.Imports[name] = imp
+			continue
+		}
+		if imp, ok := externalImports[name]; ok {
+			packCfg.Imports[name] = imp
+		}
 	}
+}
+
+func ensureInitDoltlitePackImportsCurrent(cityPath string) error {
+	cityCfg, err := config.Load(fsys.OSFS{}, filepath.Join(cityPath, citylayout.CityConfigFile))
+	if err != nil {
+		return err
+	}
+	if resolveBeadsBackendName(cityCfg.Beads.Backend).Name() != "doltlite" {
+		return nil
+	}
+
+	packPath := filepath.Join(cityPath, "pack.toml")
+	data, err := os.ReadFile(packPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			cityName := strings.TrimSpace(cityCfg.Workspace.Name)
+			if cityName == "" {
+				cityName = filepath.Base(cityPath)
+			}
+			packCfg := newInitPackConfig(cityName)
+			addBuiltinImportsToInitPack(&packCfg, cityCfg.Beads.Provider, cityCfg.Beads.Backend)
+			content, marshalErr := marshalInitPackConfig(packCfg)
+			if marshalErr != nil {
+				return marshalErr
+			}
+			return os.WriteFile(packPath, content, 0o644)
+		}
+		return err
+	}
+
+	var packCfg initPackConfig
+	if _, err := toml.Decode(string(data), &packCfg); err != nil {
+		return fmt.Errorf("parse pack.toml: %w", err)
+	}
+	if packCfg.Imports == nil {
+		packCfg.Imports = make(map[string]config.Import)
+	}
+
+	changed := false
+	requiredBuiltin, builtinOrder := builtinImportsForInit(cityCfg.Beads.Provider, cityCfg.Beads.Backend)
+	for _, name := range builtinOrder {
+		want, ok := requiredBuiltin[name]
+		if !ok {
+			continue
+		}
+		if got := packCfg.Imports[name]; got.Source != want.Source || got.Version != want.Version {
+			packCfg.Imports[name] = want
+			changed = true
+		}
+	}
+	requiredExternal, externalOrder := externalImportsForInit(cityCfg.Beads.Provider, cityCfg.Beads.Backend)
+	for _, name := range externalOrder {
+		want, ok := requiredExternal[name]
+		if !ok {
+			continue
+		}
+		if got := packCfg.Imports[name]; got.Source != want.Source || got.Version != want.Version {
+			packCfg.Imports[name] = want
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	content, err := marshalInitPackConfig(packCfg)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(packPath, content, 0o644)
 }
 
 func appendUniqueStrings(dst []string, items ...string) []string {
@@ -1145,7 +1272,7 @@ func cmdInitFromTOMLFileWithOptionsInternal(fs fsys.FS, tomlSrc, cityPath, nameO
 	// canonical bundled-source entries for this city's providers into
 	// pack.toml (mirrors doInit; the builtin-pack-imports doctor check
 	// repairs them later).
-	addBuiltinImportsToInitPack(&packCfg, cityCfg.Beads.Provider)
+	addBuiltinImportsToInitPack(&packCfg, cityCfg.Beads.Provider, cityCfg.Beads.Backend)
 	var rigSiteBindings []config.Rig
 	if hasInitRigSiteBindings(cityCfg.Rigs) {
 		rigSiteBindings = append([]config.Rig(nil), cityCfg.Rigs...)
@@ -1285,8 +1412,8 @@ func doInit(fs fsys.FS, cityPath string, wiz wizardConfig, nameOverride string, 
 		fmt.Fprintf(stderr, "gc init: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
-	// Install Claude Code hooks (settings.json).
-	logInitProgress(stdout, 2, "Installing hooks (Claude Code)")
+	// Install agent hooks.
+	logInitProgress(stdout, 2, "Installing agent hooks")
 	if code := installClaudeHooks(fs, cityPath, stderr); code != 0 {
 		return code
 	}
@@ -1313,6 +1440,7 @@ func doInit(fs fsys.FS, cityPath string, wiz wizardConfig, nameOverride string, 
 		cfg = config.DefaultCity(cityName)
 	}
 	applyBootstrapProfile(&cfg, wiz.bootstrapProfile)
+	applyInitBeadsBackend(&cfg, wiz.beadsBackend)
 	cityPrefix := strings.TrimSpace(cfg.Workspace.Prefix)
 
 	// Write prompt files only for the agents declared by the init template.
@@ -1343,7 +1471,7 @@ func doInit(fs fsys.FS, cityPath string, wiz wizardConfig, nameOverride string, 
 	// canonical bundled-source entries for this city's providers into
 	// pack.toml. The builtin-pack-imports doctor check repairs them if
 	// they go missing.
-	addBuiltinImportsToInitPack(&packCfg, cityCfg.Beads.Provider)
+	addBuiltinImportsToInitPack(&packCfg, cityCfg.Beads.Provider, cityCfg.Beads.Backend)
 	content, err := cityCfg.Marshal()
 	if err != nil {
 		fmt.Fprintf(stderr, "gc init: %v\n", err) //nolint:errcheck // best-effort stderr

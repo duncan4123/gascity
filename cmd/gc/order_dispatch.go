@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -285,6 +286,7 @@ type memoryOrderDispatcher struct {
 	cfg                  *config.City
 	cityName             string
 	cityPath             string
+	checkRoleConfigured  func() error
 	cacheMu              sync.Mutex
 	lastRunCache         map[string]time.Time
 	gateBackoffUntil     map[string]time.Time
@@ -433,6 +435,12 @@ func (m *memoryOrderDispatcher) dispatch(ctx context.Context, cityPath string, n
 			return
 		}
 	}
+	if m.checkRoleConfigured != nil {
+		if err := m.checkRoleConfigured(); err != nil {
+			logDispatchError(m.stderr, "gc: order dispatch: %v", err)
+			return
+		}
+	}
 
 	stores := make(map[string]beads.Store)
 	// inFlight counts the dispatchOne goroutines launched by THIS tick that
@@ -563,10 +571,12 @@ func (m *memoryOrderDispatcher) dispatch(ctx context.Context, cityPath string, n
 			logDispatchError(m.stderr, "gc: order dispatch: building trigger env for %s: %s", a.ScopedName(), redacted)
 			// Leave this open so the existing open-work gate suppresses repeat
 			// ticks until the normal stale tracking sweep gives the order another try.
-			trackingBead, createErr := store.Create(beads.Bead{
-				Title:     "order:" + scoped,
-				Labels:    []string{"order-run:" + scoped, labelOrderTracking, labelTriggerEnvFailed},
-				NoHistory: true,
+			trackingBead, createErr := retryOrderStoreCreate(func() (beads.Bead, error) {
+				return store.Create(beads.Bead{
+					Title:     "order:" + scoped,
+					Labels:    []string{"order-run:" + scoped, labelOrderTracking, labelTriggerEnvFailed},
+					NoHistory: true,
+				})
 			})
 			if createErr != nil {
 				logDispatchError(m.stderr, "gc: order dispatch: creating trigger env failure tracking bead for %s: %v", scoped, createErr)
@@ -632,10 +642,12 @@ func (m *memoryOrderDispatcher) dispatch(ctx context.Context, cityPath string, n
 
 		// Create tracking bead synchronously BEFORE dispatch goroutine.
 		// This prevents the cooldown trigger from re-firing on the next tick.
-		trackingBead, err := store.Create(beads.Bead{
-			Title:     "order:" + scoped,
-			Labels:    []string{"order-run:" + scoped, labelOrderTracking},
-			NoHistory: true,
+		trackingBead, err := retryOrderStoreCreate(func() (beads.Bead, error) {
+			return store.Create(beads.Bead{
+				Title:     "order:" + scoped,
+				Labels:    []string{"order-run:" + scoped, labelOrderTracking},
+				NoHistory: true,
+			})
 		})
 		if err != nil {
 			logDispatchError(m.stderr, "gc: order dispatch: creating tracking bead for %s: %v", scoped, err)
@@ -653,6 +665,43 @@ func (m *memoryOrderDispatcher) dispatch(ctx context.Context, cityPath string, n
 			return
 		}
 	}
+}
+
+func retryOrderStoreCreate(fn func() (beads.Bead, error)) (beads.Bead, error) {
+	var bead beads.Bead
+	err := retryOrderStoreWrite(func() error {
+		var createErr error
+		bead, createErr = fn()
+		return createErr
+	})
+	return bead, err
+}
+
+func retryOrderStoreUpdate(fn func() error) error {
+	return retryOrderStoreWrite(fn)
+}
+
+func retryOrderStoreWrite(fn func() error) error {
+	const attempts = 3
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		err = fn()
+		if err == nil || !isTransientOrderStoreWriteError(err) {
+			return err
+		}
+		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+	}
+	return err
+}
+
+func isTransientOrderStoreWriteError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "database table is locked") ||
+		strings.Contains(msg, "busy")
 }
 
 // launchDispatchOne spawns dispatchOne with a context that cancels when
@@ -1240,7 +1289,9 @@ func (m *memoryOrderDispatcher) dispatchExec(ctx context.Context, store beads.St
 			errMsg := fmt.Sprintf("reading event cursor: %v", err)
 			labels = []string{"exec-failed"}
 			logDispatchError(m.stderr, "gc: order dispatch: reading event cursor for %s: %v", scoped, err)
-			if updateErr := store.Update(trackingID, beads.UpdateOpts{Labels: labels}); updateErr != nil {
+			if updateErr := retryOrderStoreUpdate(func() error {
+				return store.Update(trackingID, beads.UpdateOpts{Labels: labels})
+			}); updateErr != nil {
 				logDispatchError(m.stderr, "gc: order %s: failed to label exec tracking bead %s: %v", scoped, trackingID, updateErr)
 			}
 			m.rec.Record(events.Event{
@@ -1254,10 +1305,14 @@ func (m *memoryOrderDispatcher) dispatchExec(ctx context.Context, store beads.St
 		hasEventCursor = true
 		// Event-triggered exec orders persist the cursor before the command
 		// runs; otherwise a crash after the side effect can replay the event.
-		if err := store.Update(trackingID, beads.UpdateOpts{Labels: eventCursorLabels(scoped, headSeq)}); err != nil {
+		if err := retryOrderStoreUpdate(func() error {
+			return store.Update(trackingID, beads.UpdateOpts{Labels: eventCursorLabels(scoped, headSeq)})
+		}); err != nil {
 			logDispatchError(m.stderr, "gc: order %s: failed to label exec event cursor on tracking bead %s: %v", scoped, trackingID, err)
 			labels = []string{"exec-failed"}
-			if updateErr := store.Update(trackingID, beads.UpdateOpts{Labels: labels}); updateErr != nil {
+			if updateErr := retryOrderStoreUpdate(func() error {
+				return store.Update(trackingID, beads.UpdateOpts{Labels: labels})
+			}); updateErr != nil {
 				logDispatchError(m.stderr, "gc: order %s: failed to label exec tracking bead %s: %v", scoped, trackingID, updateErr)
 			}
 			m.rec.Record(events.Event{
@@ -1283,18 +1338,26 @@ func (m *memoryOrderDispatcher) dispatchExec(ctx context.Context, store beads.St
 		output, err = m.execRun(ctx, a.Exec, target.ScopeRoot, env)
 		if err != nil {
 			redactionEnv := append(os.Environ(), env...)
-			execErrMsg = execenv.RedactText(err.Error(), redactionEnv)
-			labels = []string{"exec-failed"}
-			logDispatchError(m.stderr, "gc: order exec %s failed: %s", scoped, execErrMsg)
-			if len(output) > 0 {
-				logDispatchError(m.stderr, "gc: order exec %s output: %s", scoped, execenv.RedactText(string(output), redactionEnv))
+			if shouldSkipWorkspaceReportExec(a, output, err) {
+				execErrMsg = workspaceReportSkipOutcome(a.Name, output)
+				labels = []string{"exec-skipped"}
+				logDispatchError(m.stderr, "gc: order exec %s skipped: {\"outcome\":\"skipped\",\"reason\":%q}", scoped, execErrMsg)
+			} else {
+				execErrMsg = execenv.RedactText(err.Error(), redactionEnv)
+				labels = []string{"exec-failed"}
+				logDispatchError(m.stderr, "gc: order exec %s failed: %s", scoped, execErrMsg)
+				if len(output) > 0 {
+					logDispatchError(m.stderr, "gc: order exec %s output: %s", scoped, execenv.RedactText(string(output), redactionEnv))
+				}
 			}
 		}
 	}
 
 	// Label tracking bead with outcome via store (not CLI). For event execs,
 	// cursor labels were already persisted before the command ran.
-	if err := store.Update(trackingID, beads.UpdateOpts{Labels: labels}); err != nil {
+	if err := retryOrderStoreUpdate(func() error {
+		return store.Update(trackingID, beads.UpdateOpts{Labels: labels})
+	}); err != nil {
 		logDispatchError(m.stderr, "gc: order %s: failed to label exec tracking bead %s: %v", scoped, trackingID, err)
 		msg := fmt.Sprintf("exec tracking bead %s label failed: %v", trackingID, err)
 		if hasEventCursor {
@@ -1308,7 +1371,7 @@ func (m *memoryOrderDispatcher) dispatchExec(ctx context.Context, store beads.St
 		})
 		return
 	}
-	if execErrMsg != "" {
+	if execErrMsg != "" && !slices.Contains(labels, "exec-skipped") {
 		if hasEventCursor {
 			execErrMsg = fmt.Sprintf("seq=%d: %s", headSeq, execErrMsg)
 		}
@@ -1325,6 +1388,21 @@ func (m *memoryOrderDispatcher) dispatchExec(ctx context.Context, store beads.St
 		Actor:   "controller",
 		Subject: scoped,
 	})
+}
+
+func shouldSkipWorkspaceReportExec(a orders.Order, output []byte, err error) bool {
+	if err == nil || a.Name != "workspace-report" {
+		return false
+	}
+	return strings.Contains(string(output), "not in a jjw-enabled repository")
+}
+
+func workspaceReportSkipOutcome(orderName string, output []byte) string {
+	msg := strings.TrimSpace(string(output))
+	if msg == "" {
+		msg = "not in a jjw-enabled repository"
+	}
+	return fmt.Sprintf("%s skipped: %s", orderName, msg)
 }
 
 func prepareOrderWispRecipe(ctx context.Context, store beads.Store, a orders.Order, searchPaths []string) (*formula.Recipe, error) {

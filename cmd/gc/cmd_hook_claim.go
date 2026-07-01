@@ -61,6 +61,13 @@ type (
 	hookRecordSessionPointersFunc func(ctx context.Context, dir string, env []string, assignee, sessionBeadID, runID, stepID string) error
 )
 
+type hookClaimDecodedBead struct {
+	ID       string                     `json:"id"`
+	Status   string                     `json:"status"`
+	Assignee string                     `json:"assignee"`
+	Metadata map[string]json.RawMessage `json:"metadata"`
+}
+
 type hookClaimJSONResult struct {
 	SchemaVersion        string   `json:"schema_version"`
 	OK                   bool     `json:"ok"`
@@ -229,6 +236,7 @@ func claimFirstEligibleHookCandidate(candidates []beads.Bead, opts hookClaimOpti
 // session's route targets.
 func hookCandidateClaimable(candidate beads.Bead, routeTargets []string) bool {
 	return strings.TrimSpace(candidate.ID) != "" &&
+		strings.EqualFold(strings.TrimSpace(candidate.Status), "open") &&
 		strings.TrimSpace(candidate.Assignee) == "" &&
 		hookClaimMatchesRoute(candidate, routeTargets)
 }
@@ -572,11 +580,15 @@ func decodeHookClaimBeads(output string) ([]beads.Bead, error) {
 		output = extracted
 	}
 	output = normalizeWorkQueryOutput(output)
-	var candidates []beads.Bead
+	var candidates []hookClaimDecodedBead
 	if err := json.Unmarshal([]byte(output), &candidates); err != nil {
 		return nil, err
 	}
-	return candidates, nil
+	out := make([]beads.Bead, 0, len(candidates))
+	for _, candidate := range candidates {
+		out = append(out, candidate.toBead())
+	}
+	return out, nil
 }
 
 func firstHookJSONValue(output string) (string, bool) {
@@ -667,4 +679,29 @@ func hookLegacyWorkflowControlName(value string) string {
 		return ""
 	}
 	return strings.TrimSuffix(value, suffix) + "workflow-control"
+}
+
+func (b hookClaimDecodedBead) toBead() beads.Bead {
+	metadata := make(map[string]string, len(b.Metadata))
+	for key, raw := range b.Metadata {
+		metadata[key] = hookClaimMetadataValue(raw)
+	}
+	return beads.Bead{
+		ID:       b.ID,
+		Status:   b.Status,
+		Assignee: b.Assignee,
+		Metadata: metadata,
+	}
+}
+
+func hookClaimMetadataValue(raw json.RawMessage) string {
+	value := strings.TrimSpace(string(raw))
+	if value == "" || value == "null" {
+		return ""
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return asString
+	}
+	return value
 }

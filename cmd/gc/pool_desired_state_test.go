@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 )
@@ -867,6 +868,131 @@ func TestComputePoolDesiredStates_CapsNewDemandBeforeMaterializingRequests(t *te
 		trace.decisionCounts[string(TraceSitePoolWorkspaceCap)]
 	if capRejections != 0 {
 		t.Fatalf("cap rejections = %d, want 0; new demand should be capped before request materialization", capRejections)
+	}
+}
+
+func TestComputePoolDesiredStates_InFlightNewPreservesPackWorkspace(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{poolAgent("claude", "", intPtr(3), 0)},
+	}
+	session := poolSessionBeadWithState("sess-1", "creating", boolMetadata(true))
+	session.Metadata[beadmeta.TriggerBeadIDMetadataKey] = "gp-qmh.5"
+	session.Metadata[beadmeta.TriggerBeadStoreRefMetadataKey] = "rig:gascity-packs"
+	session.Metadata[beadmeta.PackMetadataKey] = "jjw"
+	session.Metadata[beadmeta.PackWorkspaceMetadataKey] = "gp-qmh-5-jjw-align-workspace-pack-structure-with-upstream-packs"
+	session.Metadata[beadmeta.WorkDirMetadataKey] = "/tmp/gascity-review-split"
+
+	result := computePoolDesiredStates(cfg, nil, []beads.Bead{session}, map[string]int{"claude": 1}, nil, nil)
+
+	if len(result) != 1 || len(result[0].Requests) != 1 {
+		t.Fatalf("requests = %#v, want one in-flight new request", result)
+	}
+	req := result[0].Requests[0]
+	if req.SessionBeadID != "sess-1" {
+		t.Fatalf("SessionBeadID = %q, want sess-1", req.SessionBeadID)
+	}
+	if req.WorkBeadID != "gp-qmh.5" {
+		t.Fatalf("WorkBeadID = %q, want gp-qmh.5", req.WorkBeadID)
+	}
+	if req.WorkStoreRef != "rig:gascity-packs" {
+		t.Fatalf("WorkStoreRef = %q, want rig:gascity-packs", req.WorkStoreRef)
+	}
+	if req.WorkPack != "jjw" {
+		t.Fatalf("WorkPack = %q, want jjw", req.WorkPack)
+	}
+	if req.WorkWorkspace != "gp-qmh-5-jjw-align-workspace-pack-structure-with-upstream-packs" {
+		t.Fatalf("WorkWorkspace = %q, want task workspace", req.WorkWorkspace)
+	}
+	if req.WorkDir != "/tmp/gascity-review-split" {
+		t.Fatalf("WorkDir = %q, want /tmp/gascity-review-split", req.WorkDir)
+	}
+}
+
+func TestComputePoolDesiredStates_InFlightNewBackfillsMissingPackMetadataFromDemand(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{poolAgent("claude", "", intPtr(3), 0)},
+	}
+	session := poolSessionBeadWithState("sess-1", "creating", boolMetadata(true))
+	demand := map[string]scaleCheckDemand{
+		"claude": {
+			Count:       1,
+			WorkBeadIDs: []string{"gp-9gc7"},
+			Titles:      map[string]string{"gp-9gc7": "Review gascity-jj-base"},
+			Packs:       map[string]string{"gp-9gc7": "gascity-jj-base"},
+			Workspaces:  map[string]string{"gp-9gc7": "review-lane"},
+			WorkDirs:    map[string]string{"gp-9gc7": "/tmp/review-lane"},
+			StoreRefs:   map[string]string{"gp-9gc7": "rig:gascity-packs"},
+		},
+	}
+
+	result := ComputePoolDesiredStatesWithDemandTraced(cfg, nil, []beads.Bead{session}, map[string]int{"claude": 1}, demand, nil)
+
+	if len(result) != 1 || len(result[0].Requests) != 1 {
+		t.Fatalf("requests = %#v, want one in-flight new request", result)
+	}
+	req := result[0].Requests[0]
+	if req.SessionBeadID != "sess-1" {
+		t.Fatalf("SessionBeadID = %q, want sess-1", req.SessionBeadID)
+	}
+	if req.WorkBeadID != "gp-9gc7" {
+		t.Fatalf("WorkBeadID = %q, want gp-9gc7", req.WorkBeadID)
+	}
+	if req.WorkBeadTitle != "Review gascity-jj-base" {
+		t.Fatalf("WorkBeadTitle = %q, want Review gascity-jj-base", req.WorkBeadTitle)
+	}
+	if req.WorkStoreRef != "rig:gascity-packs" {
+		t.Fatalf("WorkStoreRef = %q, want rig:gascity-packs", req.WorkStoreRef)
+	}
+	if req.WorkPack != "gascity-jj-base" {
+		t.Fatalf("WorkPack = %q, want gascity-jj-base", req.WorkPack)
+	}
+	if req.WorkWorkspace != "review-lane" {
+		t.Fatalf("WorkWorkspace = %q, want review-lane", req.WorkWorkspace)
+	}
+	if req.WorkDir != "/tmp/review-lane" {
+		t.Fatalf("WorkDir = %q, want /tmp/review-lane", req.WorkDir)
+	}
+}
+
+func TestComputePoolDesiredStates_NewDemandCarriesWorkMetadata(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{poolAgent("claude", "", intPtr(3), 0)},
+	}
+	demand := map[string]scaleCheckDemand{
+		"claude": {
+			Count:       1,
+			WorkBeadIDs: []string{"gp-qmh.5"},
+			Titles:      map[string]string{"gp-qmh.5": "Align jjw pack"},
+			Packs:       map[string]string{"gp-qmh.5": "jjw"},
+			Workspaces:  map[string]string{"gp-qmh.5": "gp-qmh-5-jjw"},
+			WorkDirs:    map[string]string{"gp-qmh.5": "/tmp/gp-qmh-5-jjw"},
+			StoreRefs:   map[string]string{"gp-qmh.5": "rig:gascity-packs"},
+		},
+	}
+
+	result := ComputePoolDesiredStatesWithDemandTraced(cfg, nil, nil, map[string]int{"claude": 1}, demand, nil)
+
+	if len(result) != 1 || len(result[0].Requests) != 1 {
+		t.Fatalf("requests = %#v, want one new request", result)
+	}
+	req := result[0].Requests[0]
+	if req.WorkBeadID != "gp-qmh.5" {
+		t.Fatalf("WorkBeadID = %q, want gp-qmh.5", req.WorkBeadID)
+	}
+	if req.WorkBeadTitle != "Align jjw pack" {
+		t.Fatalf("WorkBeadTitle = %q, want Align jjw pack", req.WorkBeadTitle)
+	}
+	if req.WorkStoreRef != "rig:gascity-packs" {
+		t.Fatalf("WorkStoreRef = %q, want rig:gascity-packs", req.WorkStoreRef)
+	}
+	if req.WorkPack != "jjw" {
+		t.Fatalf("WorkPack = %q, want jjw", req.WorkPack)
+	}
+	if req.WorkWorkspace != "gp-qmh-5-jjw" {
+		t.Fatalf("WorkWorkspace = %q, want gp-qmh-5-jjw", req.WorkWorkspace)
+	}
+	if req.WorkDir != "/tmp/gp-qmh-5-jjw" {
+		t.Fatalf("WorkDir = %q, want /tmp/gp-qmh-5-jjw", req.WorkDir)
 	}
 }
 
