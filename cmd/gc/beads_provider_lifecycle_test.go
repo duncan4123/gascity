@@ -26,6 +26,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func skipLegacyDoltScriptWhenDoltliteBackend(t *testing.T) {
+	t.Helper()
+	if inheritedTestBeadsBackendIsDoltlite() {
+		t.Skip("legacy bd/dolt materialized script coverage is not part of the DoltLite test profile")
+	}
+}
+
 func freeLoopbackPort(t *testing.T) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -599,6 +606,8 @@ func TestGcBeadsBdShellFallbackSanitizesArchiveLevel(t *testing.T) {
 }
 
 func TestGcBeadsBdInitRejectsManagedProbeDatabaseName(t *testing.T) {
+	skipLegacyDoltScriptWhenDoltliteBackend(t)
+
 	for _, dbName := range []string{
 		managedDoltProbeDatabase,
 		strings.ToUpper(managedDoltProbeDatabase),
@@ -3989,6 +3998,8 @@ func TestInitBeadsForDir_bd_skip(t *testing.T) {
 }
 
 func TestInitBeadsForDirBdMaterializedScriptPreservesCityPath(t *testing.T) {
+	skipLegacyDoltScriptWhenDoltliteBackend(t)
+
 	cityDir := t.TempDir()
 	writeMinimalCityToml(t, cityDir)
 	if err := os.MkdirAll(filepath.Join(cityDir, ".gc"), 0o755); err != nil {
@@ -4035,6 +4046,8 @@ esac
 }
 
 func TestInitBeadsForDirBdMaterializedScriptIgnoresAmbientCityRuntimeEnv(t *testing.T) {
+	skipLegacyDoltScriptWhenDoltliteBackend(t)
+
 	cityDir := t.TempDir()
 	writeMinimalCityToml(t, cityDir)
 	if err := os.MkdirAll(filepath.Join(cityDir, ".gc"), 0o755); err != nil {

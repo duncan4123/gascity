@@ -3703,9 +3703,7 @@ func ephemeralAssignedInProgressProbeScript(shellVar string, includeEphemeralRea
 }
 
 func ephemeralAssignedReadyProbeScript(shellVar string, includeEphemeralReady bool) string {
-	if includeEphemeralReady {
-		return ""
-	}
+	_ = includeEphemeralReady
 	filter := legacyEphemeralReadyFilterJQ(`select((.assignee // "") == $id)`, 1)
 	return `r=$(` + bdQueryEphemeralStatusQuietShell("open") + ` | ` +
 		`jq --arg id "$` + shellVar + `" ` + shellquote.Quote(filter) + ` 2>/dev/null); ` +

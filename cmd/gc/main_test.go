@@ -180,7 +180,21 @@ func configureFSPressureForTests() {
 // the runtime finalizes unreachable os.Files, which would close the
 // descriptor and release the lock, letting cross-namespace sweepers reclaim
 // an active root (ga-djbcqt).
-var testTempRootAliveSentinel *os.File
+var (
+	testTempRootAliveSentinel *os.File
+	inheritedTestBeadsBackend string
+)
+
+func captureInheritedTestBeadsBackend() {
+	inheritedTestBeadsBackend = strings.TrimSpace(os.Getenv("GC_BEADS_BACKEND"))
+	if inheritedTestBeadsBackend == "" {
+		inheritedTestBeadsBackend = strings.TrimSpace(os.Getenv("BEADS_BACKEND"))
+	}
+}
+
+func inheritedTestBeadsBackendIsDoltlite() bool {
+	return strings.EqualFold(inheritedTestBeadsBackend, "doltlite")
+}
 
 type cleanupTestingM struct {
 	m     testscript.TestingM
@@ -214,6 +228,7 @@ func TestMain(m *testing.M) {
 		return
 	}
 
+	captureInheritedTestBeadsBackend()
 	clearProcessLiveEnvForTests()
 	if err := os.Setenv(managedDoltTestModeEnv, "1"); err != nil {
 		panic(err)

@@ -236,7 +236,7 @@ func renderGastownPromptForPack(t *testing.T, rel, agentName, templateName, rigN
 
 	ctx := map[string]string{
 		"AgentName":               agentName,
-		"AssignedInProgressQuery": `bd list --include-ephemeral --status in_progress --assignee="$GC_SESSION_ID"; bd list --include-ephemeral --status in_progress --assignee="$GC_SESSION_NAME"; bd list --include-ephemeral --status in_progress --assignee="$GC_ALIAS"`,
+		"AssignedInProgressQuery": `bd ready --include-ephemeral --assignee="$GC_SESSION_ID" --json --limit=1; bd ready --include-ephemeral --assignee="$GC_SESSION_NAME" --json --limit=1; bd ready --include-ephemeral --assignee="$GC_ALIAS" --json --limit=1`,
 		"AssignedReadyQuery":      "bd ready --include-ephemeral --assignee=<session>",
 		"BindingName":             bindingName,
 		"BindingPrefix":           bindingPrefix,
@@ -2048,9 +2048,9 @@ func TestDogStartupPromptUsesSplitClaimFirstQueries(t *testing.T) {
 	// fragment: split queries expand, claim precedes inspection, and the
 	// source-aware verification guidance survives rendering.
 	assertContainsInOrder(t, renderedDogPrompt,
-		`bd list --include-ephemeral --status in_progress --assignee="$GC_SESSION_ID"`,
-		`bd list --include-ephemeral --status in_progress --assignee="$GC_SESSION_NAME"`,
-		`bd list --include-ephemeral --status in_progress --assignee="$GC_ALIAS"`,
+		`bd ready --include-ephemeral --assignee="$GC_SESSION_ID" --json --limit=1`,
+		`bd ready --include-ephemeral --assignee="$GC_SESSION_NAME" --json --limit=1`,
+		`bd ready --include-ephemeral --assignee="$GC_ALIAS" --json --limit=1`,
 		"bd ready --include-ephemeral --assignee=<session>",
 		"bd ready --metadata-field gc.routed_to=<canonical> --unassigned",
 		"gc bd update <id> --claim",
@@ -2073,7 +2073,7 @@ func TestDogStartupPromptUsesSplitClaimFirstQueries(t *testing.T) {
 func TestNonDogStartupPromptsUseCompatibilityAwareWorkLookup(t *testing.T) {
 	const (
 		assignedInProgressTemplate = "{{ .AssignedInProgressQuery }}"
-		assignedInProgressRendered = `bd list --include-ephemeral --status in_progress --assignee="$GC_SESSION_ID"`
+		assignedInProgressRendered = `bd ready --include-ephemeral --assignee="$GC_SESSION_ID" --json --limit=1`
 		hookClaimJSON              = "gc hook --claim --json"
 	)
 	checks := []struct {

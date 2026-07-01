@@ -1899,6 +1899,39 @@ esac
 	}
 }
 
+func TestEffectiveWorkQueryBD105SurfacesEphemeralOpenAssignedWork(t *testing.T) {
+	a := Agent{Name: "run-operator", Dir: "gascity"}
+	out := runEffectiveWorkQueryForBeads(t, a, BeadsConfig{BDCompatibility: BeadsBDCompatibility105}, map[string]string{
+		"GC_SESSION_NAME": "gascity/gc.run-operator-1",
+	}, `#!/bin/sh
+set -eu
+case "$1" in
+  list)
+    printf '[]'
+    ;;
+  query)
+    case "$*" in
+      *"ephemeral=true AND status=open"*)
+        printf '[{"id":"ga-ephemeral-open","assignee":"gascity/gc.run-operator-1","status":"open","ephemeral":true}]'
+        ;;
+      *)
+        printf '[]'
+        ;;
+    esac
+    ;;
+  ready)
+    printf '[]'
+    ;;
+  *)
+    printf '[]'
+    ;;
+esac
+`)
+	if !strings.Contains(out, "ga-ephemeral-open") {
+		t.Fatalf("EffectiveWorkQueryForBeads(bd-1.0.5) did not surface assigned ephemeral open work: %q", out)
+	}
+}
+
 func TestEffectiveWorkQueryCustom(t *testing.T) {
 	a := Agent{Name: "mayor", WorkQuery: "bd ready --label=pool:polecats"}
 	got := a.EffectiveWorkQuery()
