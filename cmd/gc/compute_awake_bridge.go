@@ -81,6 +81,20 @@ func buildAwakeInputFromReconciler(
 	// slept, so the resume-on-ShouldWake path never fired). readyAssignedFlags is
 	// index-aligned with assignedWorkBeads and resolved from the store-scoped
 	// readiness verdict, so a blocked open rig bead is not marked ready by a
+<<<<<<<
+=======
+		})
+	}
+
+	// Work beads. Readiness is the store's verdict (readyAssignedFlags), not a
+	// status-only guess: assignedWorkBeads mixes the open-routed orphan-release
+	// pass (which admits any open assigned+routed bead with no deps check) into
+	// the same slice as the genuinely-ready passes. Fabricating Ready from
+	// status alone held a blocked open bead's session awake forever (it never
+	// slept, so the resume-on-ShouldWake path never fired). readyAssignedFlags is
+	// index-aligned with assignedWorkBeads and resolved from the store-scoped
+	// readiness verdict, so a blocked open rig bead is not marked ready by a
+>>>>>>>
 	// same-ID ready bead in another store. A missing flag defaults to not-ready.
 	for i := range assignedWorkBeads {
 		wb := assignedWorkBeads[i]

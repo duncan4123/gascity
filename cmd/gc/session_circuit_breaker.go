@@ -521,6 +521,18 @@ func (b *sessionCircuitBreaker) observeResetGenerationValue(identity, value stri
 	if b == nil || identity == "" {
 		return nil
 	}
+	return b.observeResetGenerationValue(identity, meta[sessionCircuitResetGenerationMetadata])
+}
+
+// observeResetGenerationValue parses a single persisted reset-generation metadata
+// value and observes it into the breaker. It is the value-keyed half of
+// observeResetGenerationFromMetadata, used by callers (the circuit reset-generation
+// front-door read) that already hold the value rather than the whole bead metadata
+// map.
+func (b *sessionCircuitBreaker) observeResetGenerationValue(identity, value string) error {
+	if b == nil || identity == "" {
+		return nil
+	}
 	generation, err := parseCircuitResetGeneration(value)
 	if err != nil {
 		return err

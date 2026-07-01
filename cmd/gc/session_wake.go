@@ -448,6 +448,12 @@ func advanceSessionDrainsWithSessionsTraced(
 	if store == nil {
 		sessFront = nil
 	}
+	// Session front door constructed once from the same store; nil when store is
+	// nil so completeDrain keeps its store==nil short-circuit.
+	sessFront := sessionFrontDoor(store)
+	if store == nil {
+		sessFront = nil
+	}
 	for id, ds := range dt.all() {
 		session := sessionLookup(id)
 		if session == nil {
@@ -517,7 +523,7 @@ func advanceSessionDrainsWithSessionsTraced(
 			}
 		}
 
-		// Cancellation check: if wake reasons reappeared, cancel the in-memory
+		// Cancelation check: if wake reasons reappeared, cancel the in-memory
 		// drain. Orphaned, suspended, and ordinary config-drift drains are not
 		// canceled here.
 		if drainReasonCancelable(ds.reason) {
@@ -569,7 +575,7 @@ func advanceSessionDrainsWithSessionsTraced(
 			}
 		}
 
-		// Pending-interaction guards and wake-based cancellation run before this
+		// Pending-interaction guards and wake-based cancelation run before this
 		// timeout path. Preserve that ordering if this block is refactored.
 		if clk.Now().After(ds.deadline) {
 			// Drain timed out — force stop.

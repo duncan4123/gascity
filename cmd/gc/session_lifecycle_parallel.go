@@ -265,6 +265,22 @@ type startExecutionOptions struct {
 	asyncStopTracker *asyncStartTracker
 	maxSessionAgeTr  maxSessionAgeTracker
 	workDirResolver  taskWorkDirResolver
+<<<<<<<
+=======
+	// deferSessionClosesOnBoot suppresses the per-session orphan/failed-create
+	// session-bead closes during the synchronous boot reconcile. Those closes
+	// gate on a per-session open-work probe that reads the wisp tier
+	// (sessionHasOpenAssignedWispWork); serialized over every candidate on the
+	// readiness path that fan-out can exceed the startup watchdog on a
+	// heavy-session city (gastownhall/gascity#3288). The first steady-state tick
+	// performs the closes. Safe to defer: the closes already fail closed and are
+	// deferred under storeQueryPartial today.
+	deferSessionClosesOnBoot bool
+	readyAssignedFlags       []bool
+}
+
+type startExecutionOption func(*startExecutionOptions)
+>>>>>>>
 	// deferSessionClosesOnBoot suppresses the per-session orphan/failed-create
 	// session-bead closes during the synchronous boot reconcile. Those closes
 	// gate on a per-session open-work probe that reads the wisp tier
@@ -322,6 +338,28 @@ func withMaxSessionAgeTracker(tr maxSessionAgeTracker) startExecutionOption {
 func withTaskWorkDirResolver(resolver taskWorkDirResolver) startExecutionOption {
 	return func(opts *startExecutionOptions) {
 		opts.workDirResolver = resolver
+	}
+}
+
+// withDeferSessionClosesOnBoot defers the per-session orphan/failed-create
+// session-bead closes for this reconcile pass (gastownhall/gascity#3288). Used
+// only on the synchronous boot reconcile so readiness does not wait on the
+// per-session wisp-tier work probe; the first steady-state tick performs them.
+func withDeferSessionClosesOnBoot() startExecutionOption {
+	return func(opts *startExecutionOptions) {
+		opts.deferSessionClosesOnBoot = true
+	}
+}
+
+// withReadyAssignedFlags installs the per-bead wake-demand readiness slice,
+// index-aligned with the assignedWorkBeads passed to the same reconcile pass
+// and resolved from DesiredStateResult.ReadyAssigned. The awake bridge uses it
+// to set AwakeWorkBead.Ready from the store's deps gate rather than guessing
+// from status, so a blocked open bead does not hold its session awake. Nil
+// leaves every open assigned bead non-ready.
+func withReadyAssignedFlags(readyAssignedFlags []bool) startExecutionOption {
+	return func(opts *startExecutionOptions) {
+		opts.readyAssignedFlags = readyAssignedFlags
 	}
 }
 
@@ -901,6 +939,17 @@ func buildPreparedStartWithWorkDirResolver(
 	if sk := strings.TrimSpace(session.Metadata["session_key"]); sk != "" && agentCfg.WorkDir != "" {
 		provider := sessionTranscriptProvider(tp.ResolvedProvider, session.Metadata)
 		if present, probeable := staleResumeKeyProbe(provider, agentCfg.WorkDir, sk); probeable && !present {
+<<<<<<<
+=======
+			var sessFront *sessionpkg.InfoStore
+			if store != nil {
+				sessFront = sessionFrontDoor(store)
+			}
+			clearStaleResumeKeyMetadata(session, sessFront)
+		}
+	}
+	if session.Metadata["session_key"] == "" && tp.ResolvedProvider != nil && tp.ResolvedProvider.SessionIDFlag != "" {
+>>>>>>>
 			var sessFront *sessionpkg.InfoStore
 			if store != nil {
 				sessFront = sessionFrontDoor(store)
@@ -1459,6 +1508,18 @@ func commitAsyncStartResultWithContext(
 ) (committed bool) {
 	name := result.prepared.candidate.name()
 	template := result.prepared.candidate.tp.TemplateName
+<<<<<<<
+=======
+	// Session front door constructed once from the same store; nil when store
+	// is nil so the session-only leaves keep their store==nil short-circuit.
+	var sessFront *sessionpkg.InfoStore
+	if store != nil {
+		sessFront = sessionFrontDoor(store)
+	}
+	defer func() {
+		if trace != nil {
+			_ = trace.flushCurrentBatch(TraceDurabilityDurable)
+>>>>>>>
 	// Session front door constructed once from the same store; nil when store
 	// is nil so the session-only leaves keep their store==nil short-circuit.
 	var sessFront *sessionpkg.InfoStore
@@ -2299,6 +2360,14 @@ func executePlannedStartsTraced(
 	}
 	if ctx != nil && ctx.Err() != nil {
 		return 0
+	}
+	// Session front door constructed once from the same store and threaded to
+	// the session-only leaves (circuit metadata, lease clears, commit writes);
+	// nil when store is nil so those leaves keep their store==nil short-circuit.
+	// The raw store stays for the dependency/worker reads this driver also does.
+	var sessFront *sessionpkg.InfoStore
+	if store != nil {
+		sessFront = sessionFrontDoor(store)
 	}
 	// Session front door constructed once from the same store and threaded to
 	// the session-only leaves (circuit metadata, lease clears, commit writes);

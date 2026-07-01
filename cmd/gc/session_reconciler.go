@@ -984,6 +984,16 @@ func reconcileSessionBeadsTracedWithNamedDemand(
 	// Every tick counts as a cycle, including ticks aborted by context
 	// cancellation after real work (e.g. starts) already executed — the
 	// counter means "cycles", not "cycles that ran to completion". started
+	// The typed session front door is constructed once at this reconciler root
+	// and threaded to the session-only leaves it calls (heal, drift deferral,
+	// circuit metadata, rate-limit/wake-failure/churn accounting, lease clears,
+	// drain-ack stop-pending). The raw store stays for the work/by-id/worker
+	// residual. Same underlying store, so every session bead write is
+	// byte-identical.
+	sessFront := sessionpkg.NewInfoStore(sessStore)
+	// Every tick counts as a cycle, including ticks aborted by context
+	// cancellation after real work (e.g. starts) already executed — the
+	// counter means "cycles", not "cycles that ran to completion". started
 	// counts the planned wakes the tick actually executed. Stops are applied
 	// asynchronously (drain advance, drain-ack goroutines) and skips are
 	// per-session trace decisions, so honest tick-boundary counts cannot
