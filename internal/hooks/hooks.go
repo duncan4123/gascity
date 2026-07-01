@@ -647,8 +647,13 @@ func upgradeCodexHooks(existing, desired []byte) ([]byte, bool, error) {
 	hasManagedCommand := codexHookValueHasManagedCommand(root)
 	needsPreCompact := codexHookDocCanAddPreCompact(root)
 	changed := upgradeCodexHookValue(root)
-	if desiredCodexPreCompactHook(desired) != nil && normalizeCodexManagedHookEntries(root) {
-		changed = true
+	if desiredCodexPreCompactHook(desired) != nil {
+		if normalizeCodexManagedHookEntries(root) {
+			changed = true
+		}
+		if canonicalizeCodexSessionStartHooks(root) {
+			changed = true
+		}
 	}
 	if addCodexPreCompactHook(root, desired) {
 		changed = true
@@ -670,6 +675,9 @@ func normalizeCodexHookCommands(existing []byte) ([]byte, bool, error) {
 	}
 	hasManagedCommand := codexHookValueHasManagedCommand(root)
 	changed := upgradeCodexHookValue(root)
+	if canonicalizeCodexSessionStartHooks(root) {
+		changed = true
+	}
 	if normalizeCodexManagedHookEntries(root) {
 		changed = true
 	}
@@ -712,6 +720,68 @@ func codexHookValueHasManagedCommand(v any) bool {
 			if codexHookValueHasManagedCommand(elem) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func canonicalizeCodexSessionStartHooks(root any) bool {
+	doc, ok := root.(map[string]any)
+	if !ok {
+		return false
+	}
+	hooksMap, ok := doc["hooks"].(map[string]any)
+	if !ok {
+		return false
+	}
+	entries, ok := hooksMap["SessionStart"].([]any)
+	if !ok {
+		return false
+	}
+
+	changed := false
+	keptManaged := false
+	out := make([]any, 0, len(entries))
+	for _, entry := range entries {
+		entryMap, ok := entry.(map[string]any)
+		if !ok || !codexSessionStartEntryIsManaged(entryMap) {
+			out = append(out, entry)
+			continue
+		}
+		if keptManaged {
+			changed = true
+			continue
+		}
+		if matcher, ok := entryMap["matcher"].(string); !ok || matcher != "startup" {
+			entryMap["matcher"] = "startup"
+			changed = true
+		}
+		keptManaged = true
+		out = append(out, entry)
+	}
+	if len(out) != len(entries) {
+		hooksMap["SessionStart"] = out
+		changed = true
+	}
+	return changed
+}
+
+func codexSessionStartEntryIsManaged(entry map[string]any) bool {
+	hookCmds, ok := entry["hooks"].([]any)
+	if !ok {
+		return false
+	}
+	for _, h := range hookCmds {
+		hMap, ok := h.(map[string]any)
+		if !ok {
+			continue
+		}
+		command, ok := hMap["command"].(string)
+		if !ok {
+			continue
+		}
+		if commandBodyAfterCanonicalPrefix(command) == sessionStartCurrentFormBody {
+			return true
 		}
 	}
 	return false

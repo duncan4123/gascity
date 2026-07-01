@@ -646,6 +646,10 @@ type AgentOverride struct {
 	// WorkDir overrides the agent's working directory without changing
 	// its qualified identity or rig association.
 	WorkDir *string `toml:"work_dir,omitempty"`
+	// Pack overrides the pack/workspace route key exposed as {{.Pack}}.
+	Pack *string `toml:"pack,omitempty"`
+	// PackRoot overrides the target pack directory exposed as {{.PackRoot}}.
+	PackRoot *string `toml:"pack_root,omitempty"`
 	// TmuxAlias overrides the tmux session name template
 	// (see Agent.TmuxAlias for semantics).
 	TmuxAlias *string `toml:"tmux_alias,omitempty"`
@@ -798,7 +802,9 @@ type Import struct {
 	// entries store the resolved source plus optional version.
 	Source string `toml:"source" jsonschema:"required"`
 	// Version is an optional semver constraint for git-backed imports (e.g.,
-	// "^1.2"). Empty for local paths. "sha:<hex>" pins a specific commit.
+	// "^1.2"). Empty for local paths. "sha:<hex>" pins a specific commit;
+	// "ref:<name>" follows a branch, tag, or ref and records the resolved
+	// commit in packs.lock.
 	Version string `toml:"version,omitempty"`
 	// Export is a compatibility-only loader knob retained for older
 	// configs. It is intentionally omitted from generated public schemas.
@@ -1484,8 +1490,8 @@ type SessionConfig struct {
 	// ACP holds settings for the ACP (Agent Client Protocol) session provider.
 	ACP ACPSessionConfig `toml:"acp,omitempty"`
 	// SetupTimeout is the per-command/script timeout for session setup and
-	// pre_start commands. Duration string (e.g., "10s", "30s"). Defaults to "10s".
-	SetupTimeout string `toml:"setup_timeout,omitempty" jsonschema:"default=10s"`
+	// pre_start commands. Duration string (e.g., "60s", "2m"). Defaults to "60s".
+	SetupTimeout string `toml:"setup_timeout,omitempty" jsonschema:"default=60s"`
 	// NudgeReadyTimeout is how long to wait for the agent to be ready before
 	// sending nudge text. Duration string. Defaults to "10s".
 	NudgeReadyTimeout string `toml:"nudge_ready_timeout,omitempty" jsonschema:"default=10s"`
@@ -1526,14 +1532,14 @@ type SessionConfig struct {
 }
 
 // SetupTimeoutDuration returns the setup timeout as a time.Duration.
-// Defaults to 10s if empty or unparseable.
+// Defaults to 60s if empty or unparseable.
 func (s *SessionConfig) SetupTimeoutDuration() time.Duration {
 	if s.SetupTimeout == "" {
-		return 10 * time.Second
+		return 60 * time.Second
 	}
 	d, err := time.ParseDuration(s.SetupTimeout)
 	if err != nil {
-		return 10 * time.Second
+		return 60 * time.Second
 	}
 	return d
 }
@@ -3031,12 +3037,25 @@ type Agent struct {
 	// agent's qualified identity. Relative paths resolve against city root
 	// and may use the same template placeholders as session_setup.
 	WorkDir string `toml:"work_dir,omitempty"`
+	// Pack is the pack/workspace route key exposed to work_dir, pre_start,
+	// session_setup, and tmux_alias templates as {{.Pack}}. This lets a
+	// monorepo pack maintainer route agents by pack instead of by agent type.
+	// For example, gascity-packs can put pack-maintenance agents in jj
+	// workspaces whose sparse checkout includes only the target pack folder
+	// plus shared registry/test files, not every pack in the repository. When
+	// unset, the template context falls back to AgentBase for
+	// backward-compatible routing.
+	Pack string `toml:"pack,omitempty"`
+	// PackRoot overrides the resolved target pack directory exposed as
+	// {{.PackRoot}}. When unset, the template context uses RigRoot/Pack.
+	// Relative paths resolve against RigRoot when available, otherwise CityRoot.
+	PackRoot string `toml:"pack_root,omitempty"`
 	// TmuxAlias overrides the tmux session_name for pool and factory-created
 	// manual sessions of this agent. When unset, sessions fall back to the
 	// universal derivation ("s-<beadID>" for ad-hoc sessions,
 	// "<basename>-<beadID>" for pool sessions). When set, it is expanded as a
 	// Go text/template using the same PathContext fields as work_dir /
-	// session_setup (Agent, AgentBase, Rig, RigRoot, CityRoot, CityName),
+	// session_setup (Agent, AgentBase, Pack, Rig, RigRoot, CityRoot, CityName),
 	// sanitized for tmux, and validated as an explicit session name. For pool
 	// sessions, a live-name collision appends the bead ID as a deterministic
 	// suffix. For manual `gc session new` sessions, tmux_alias becomes the
@@ -3125,7 +3144,7 @@ type Agent struct {
 	// levels. Legacy no-store evaluation continues to treat the output as
 	// the desired session count. If it contains Go template placeholders, gc
 	// expands them using the same PathContext fields as work_dir and
-	// session_setup (Agent, AgentBase, Rig, RigRoot, CityRoot, CityName)
+	// session_setup (Agent, AgentBase, Pack, PackRoot, Rig, RigRoot, CityRoot, CityName)
 	// before running the command.
 	ScaleCheck string `toml:"scale_check,omitempty"`
 	// DrainTimeout is the maximum time to wait for a session to finish its
@@ -3135,13 +3154,13 @@ type Agent struct {
 	// OnBoot is a shell command template run once at controller startup for
 	// this agent. If it contains Go template placeholders, gc expands them
 	// using the same PathContext fields as work_dir and session_setup
-	// (Agent, AgentBase, Rig, RigRoot, CityRoot, CityName) before running
+	// (Agent, AgentBase, Pack, PackRoot, Rig, RigRoot, CityRoot, CityName) before running
 	// the command.
 	OnBoot string `toml:"on_boot,omitempty"`
 	// OnDeath is a shell command template run when a session dies unexpectedly.
 	// If it contains Go template placeholders, gc expands them using the same
 	// PathContext fields as work_dir and session_setup (Agent, AgentBase,
-	// Rig, RigRoot, CityRoot, CityName) before running the command.
+	// Pack, PackRoot, Rig, RigRoot, CityRoot, CityName) before running the command.
 	OnDeath string `toml:"on_death,omitempty"`
 	// Namepool is the path to a plain text file with one name per line.
 	// When set, sessions use names from the file as display aliases.
@@ -3152,7 +3171,7 @@ type Agent struct {
 	// WorkQuery is the shell command template to find available work for this
 	// agent. If it contains Go template placeholders, gc expands them using
 	// the same PathContext fields as work_dir and session_setup (Agent,
-	// AgentBase, Rig, RigRoot, CityRoot, CityName) before probe, hook, and
+	// AgentBase, Pack, PackRoot, Rig, RigRoot, CityRoot, CityName) before probe, hook, and
 	// prompt-context execution. Used by gc hook and available in prompt
 	// templates as {{.WorkQuery}}.
 	// If unset, Gas City uses a three-tier default query:
@@ -3165,7 +3184,7 @@ type Agent struct {
 	// SlingQuery is the command template to route a bead to this session config.
 	// If it contains Go template placeholders, gc expands them using the same
 	// PathContext fields as work_dir and session_setup (Agent, AgentBase,
-	// Rig, RigRoot, CityRoot, CityName) before replacing {} with the bead
+	// Pack, PackRoot, Rig, RigRoot, CityRoot, CityName) before replacing {} with the bead
 	// ID. Used by gc sling to make a bead visible to the target's work_query.
 	// The placeholder {} is replaced with the bead ID at runtime.
 	// Default for all agents:
@@ -4992,13 +5011,9 @@ func GastownCity(name, provider, startCommand string) City {
 
 // GascityCityWithProviders returns a minimal managed city that imports the
 // public gascity planning/implementation skills pack: a single mayor agent
-// plus [imports.gascity] (skills and formulas) pinned to the registry release.
-// The gascity formulas route their steps to role agents (gc.run-operator,
-// gc.requirements-planner, ...) that ship in the separate gc-roles subpack, so
-// the template also seeds that pack as a default rig import bound "gc" — every
-// rig added to the city then inherits the providerless, rig-scoped roles the
-// formulas coordinate. Without it a fresh city can discover a formula but fails
-// to launch with `agent "gc.run-operator" not found in city.toml` (gascity#3832).
+// plus [imports.gascity] pinned to the registry release. The pack ships
+// skills and formulas only (no agents), so the city shape matches the
+// minimal template with the pack layered on top.
 func GascityCityWithProviders(name, defaultProvider string, providers []string) City {
 	city := WizardCityWithProviders(name, defaultProvider, providers)
 	city.Imports = map[string]Import{
@@ -5007,13 +5022,6 @@ func GascityCityWithProviders(name, defaultProvider string, providers []string) 
 			Version: PublicGascityPackVersion,
 		},
 	}
-	city.DefaultRigImports = map[string]Import{
-		"gc": {
-			Source:  PublicGascityRolesPackSource,
-			Version: PublicGascityPackVersion,
-		},
-	}
-	city.DefaultRigImportOrder = []string{"gc"}
 	return city
 }
 

@@ -19,14 +19,26 @@ const (
 	// (gascity 0.1.6).
 	PublicGascityPackVersion = "sha:3b3b89f2011e06d84459aa7bea1552382f13930a"
 
-	// PublicGascityRolesPackSource is the concrete durable source for the
-	// gascity role-agents subpack (gc-roles): the providerless, rig-scoped
-	// agents (run-operator, requirements-planner, design-author, ...) that the
-	// gascity formulas route to. It lives in the same repo as
-	// PublicGascityPackSource and is pinned to the same release commit
-	// (PublicGascityPackVersion), so a fresh gascity city's formulas and the
-	// rig roles they coordinate always come from one matching release.
-	PublicGascityRolesPackSource = "https://github.com/gastownhall/gascity-packs/tree/main/gascity/roles"
+	// PublicBeadsDoltlitePackSource is the durable source for the external
+	// DoltLite operations pack. The gc binary only embeds the minimal
+	// beads-doltlite-init support pack; init imports this public pack when a
+	// city chooses [beads].backend = "doltlite".
+	PublicBeadsDoltlitePackSource = "https://github.com/duncan4123/gascity-packs/tree/main/beads-doltlite"
+
+	// PublicBeadsDoltlitePackVersion follows the fork's main branch instead of
+	// baking a pack-content SHA into the gc binary. The external pack carries
+	// the slow-moving install/build workflow and needs to be updateable without
+	// reinstalling gc.
+	PublicBeadsDoltlitePackVersion = "ref:main"
+
+	// PublicBeadsDoltliteInitPackSource is the durable source for the minimal
+	// DoltLite init support pack when a fresh city chooses the DoltLite beads
+	// backend.
+	PublicBeadsDoltliteInitPackSource = "https://github.com/duncan4123/gascity-packs/tree/main/beads-doltlite-init"
+
+	// PublicBeadsDoltliteInitPackVersion pins fresh DoltLite init output to
+	// the forked pack main commit containing the copied builtin init pack.
+	PublicBeadsDoltliteInitPackVersion = "sha:732f78c96890d95e1a11277ebc38e4766213b181"
 
 	// BundledPackImportVersion pins the [imports.core]/[imports.bd] entries
 	// gc init writes for the gascity.git packs bundled with the binary.
