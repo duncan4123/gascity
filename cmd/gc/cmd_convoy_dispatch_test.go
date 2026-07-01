@@ -3006,6 +3006,110 @@ func TestWorkflowServeControlReadyQueryBD105IncludesEphemeral(t *testing.T) {
 	}
 }
 
+func TestWorkflowServeControlBeadsFromStoreMatchesControlQueryTiers(t *testing.T) {
+	store := beads.NewMemStore()
+	create := func(title string, bead beads.Bead) beads.Bead {
+		bead.Title = title
+		created, err := store.Create(bead)
+		if err != nil {
+			t.Fatalf("create %s: %v", title, err)
+		}
+		return created
+	}
+
+	assigned := create("assigned", beads.Bead{
+		Assignee: "test-city--control-dispatcher",
+		Metadata: map[string]string{beadmeta.KindMetadataKey: "scope-check"},
+	})
+	legacyAssigned := create("legacy assigned", beads.Bead{
+		Assignee: "test-city--workflow-control",
+		Metadata: map[string]string{beadmeta.KindMetadataKey: "legacy-check"},
+	})
+	routedRun := create("routed run target", beads.Bead{
+		Metadata: map[string]string{
+			beadmeta.KindMetadataKey:      "workflow-finalize",
+			beadmeta.RunTargetMetadataKey: "gascity/control-dispatcher",
+		},
+	})
+	routedTo := create("routed to", beads.Bead{
+		Metadata: map[string]string{
+			beadmeta.KindMetadataKey:     "scope-check",
+			beadmeta.RoutedToMetadataKey: "workflow-control",
+		},
+	})
+	dualRouted := create("dual routed", beads.Bead{
+		Metadata: map[string]string{
+			beadmeta.KindMetadataKey:      "scope-check",
+			beadmeta.RunTargetMetadataKey: "gascity/control-dispatcher",
+			beadmeta.RoutedToMetadataKey:  "gascity/control-dispatcher",
+		},
+	})
+	create("instantiating filtered", beads.Bead{
+		Assignee: "test-city--control-dispatcher",
+		Metadata: map[string]string{beadmeta.InstantiatingMetadataKey: "1"},
+	})
+	create("epic filtered", beads.Bead{
+		Type:     "epic",
+		Assignee: "test-city--control-dispatcher",
+	})
+	create("assigned route filtered", beads.Bead{
+		Assignee: "worker",
+		Metadata: map[string]string{beadmeta.RunTargetMetadataKey: "gascity/control-dispatcher"},
+	})
+
+	got, err := workflowServeControlBeadsFromStore(store, map[string]string{
+		"GC_CONTROL_SESSION_NAME":  "test-city--control-dispatcher",
+		"GC_CONTROL_TARGET":        "gascity/control-dispatcher",
+		"GC_CONTROL_LEGACY_TARGET": "workflow-control",
+	})
+	if err != nil {
+		t.Fatalf("workflowServeControlBeadsFromStore: %v", err)
+	}
+	var gotIDs []string
+	for _, bead := range got {
+		gotIDs = append(gotIDs, bead.ID)
+	}
+	wantIDs := []string{assigned.ID, legacyAssigned.ID, routedRun.ID, dualRouted.ID, routedTo.ID}
+	if !slices.Equal(gotIDs, wantIDs) {
+		t.Fatalf("ready IDs = %#v, want %#v", gotIDs, wantIDs)
+	}
+}
+
+func TestNextWorkflowServeBeadsUsesStoreForMarkedControlQuery(t *testing.T) {
+	store := beads.NewMemStore()
+	ready, err := store.Create(beads.Bead{
+		Title:    "assigned control",
+		Assignee: "test-city--control-dispatcher",
+	})
+	if err != nil {
+		t.Fatalf("create ready bead: %v", err)
+	}
+	prevOpen := workflowServeOpenControlStore
+	t.Cleanup(func() { workflowServeOpenControlStore = prevOpen })
+
+	var gotStorePath, gotCityPath string
+	workflowServeOpenControlStore = func(storePath, cityPath string) (beads.Store, error) {
+		gotStorePath = storePath
+		gotCityPath = cityPath
+		return store, nil
+	}
+
+	got, err := nextWorkflowServeBeads("sh -c 'printf shell-used >&2; exit 7'", "/tmp/rig-store", map[string]string{
+		workflowServeControlStoreQueryEnv: "true",
+		"GC_CITY":                         "/tmp/city",
+		"GC_CONTROL_SESSION_NAME":         "test-city--control-dispatcher",
+	})
+	if err != nil {
+		t.Fatalf("nextWorkflowServeBeads: %v", err)
+	}
+	if gotStorePath != "/tmp/rig-store" || gotCityPath != "/tmp/city" {
+		t.Fatalf("open store = (%q, %q), want (%q, %q)", gotStorePath, gotCityPath, "/tmp/rig-store", "/tmp/city")
+	}
+	if len(got) != 1 || got[0].ID != ready.ID {
+		t.Fatalf("ready beads = %#v, want %s", got, ready.ID)
+	}
+}
+
 // TestWorkflowServeControlReadyQueryHonorsBareLegacyRoute guards the upgrade
 // gap: a qualified "core.control-dispatcher" serve loop must still claim
 // control beads that pre-1.3 builds routed to the binding-stripped bare name

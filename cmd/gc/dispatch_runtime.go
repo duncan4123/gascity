@@ -83,6 +83,7 @@ func applyGraphRouting(recipe *formula.Recipe, a *config.Agent, routedTo string,
 
 var (
 	workflowServeList               = nextWorkflowServeBeads
+	workflowServeOpenControlStore   = openBdStoreAt
 	controlDispatcherServe          = runControlDispatcherInStore
 	workflowServeOpenEventsProvider = func(stderr io.Writer) (events.Provider, error) {
 		ep, code := openCityEventsProvider(stderr, "gc convoy control --serve")
@@ -138,6 +139,8 @@ var (
 		warned: map[string]struct{}{},
 	}
 )
+
+const workflowServeControlStoreQueryEnv = "GC_CONTROL_STORE_QUERY"
 
 // followSleepDuration returns the sleep interval the --follow loop should use
 // before its next drain, given how many consecutive idle sweeps have passed.
@@ -362,7 +365,18 @@ func runWorkflowServe(agentName string, follow bool, _ io.Writer, stderr io.Writ
 	// on every iteration. #793.
 	workQuery := expandAgentCommandTemplate(cityPath, cityName, &agentCfg, cfg.Rigs, "work_query", agentCfg.EffectiveWorkQueryForBeads(cfg.Beads), stderr)
 	if agentCfg.WorkQuery == "" && isWorkflowServeControlDispatcherAgent(agentCfg) {
-		workQuery = workflowServeControlReadyQueryForBeads(agentCfg, cfg.Beads, config.NamedSessionRuntimeName(cityName, cfg.Workspace, agentCfg.QualifiedName()))
+		controlSessionName := config.NamedSessionRuntimeName(cityName, cfg.Workspace, agentCfg.QualifiedName())
+		workQuery = workflowServeControlReadyQueryForBeads(agentCfg, cfg.Beads, controlSessionName)
+		workEnv = cloneWorkflowServeEnv(workEnv)
+		workEnv[workflowServeControlStoreQueryEnv] = "true"
+		workEnv["GC_CONTROL_TARGET"] = strings.TrimSpace(agentCfg.QualifiedName())
+		workEnv["GC_CONTROL_SESSION_NAME"] = controlSessionName
+		if legacy := workflowServeLegacyControlRoute(workEnv["GC_CONTROL_TARGET"]); legacy != "" {
+			workEnv["GC_CONTROL_LEGACY_TARGET"] = legacy
+		}
+		if bare := controlDispatcherBareRoute(workEnv["GC_CONTROL_TARGET"]); bare != "" {
+			workEnv["GC_CONTROL_BARE_TARGET"] = bare
+		}
 	}
 	workflowTracef("serve start agent=%s city=%s dir=%s", agentCfg.QualifiedName(), cityPath, workDir)
 	if !follow {
@@ -764,6 +778,14 @@ func isWorkflowServeControlDispatcherAgent(agentCfg config.Agent) bool {
 		strings.HasSuffix(qualified, "."+config.ControlDispatcherAgentName)
 }
 
+func cloneWorkflowServeEnv(env map[string]string) map[string]string {
+	cloned := make(map[string]string, len(env)+4)
+	for key, value := range env {
+		cloned[key] = value
+	}
+	return cloned
+}
+
 func workflowServeControlReadyQuery(agentCfg config.Agent, controlSessionNames ...string) string {
 	return workflowServeControlReadyQueryForBeads(agentCfg, config.BeadsConfig{}, controlSessionNames...)
 }
@@ -867,6 +889,9 @@ func nextWorkflowServeBeads(workQuery, dir string, env map[string]string) ([]hoo
 	if workQuery == "" {
 		return nil, nil
 	}
+	if workflowServeBoolEnv(env[workflowServeControlStoreQueryEnv]) {
+		return nextWorkflowServeControlBeads(dir, env)
+	}
 	output, err := shellWorkQueryWithEnv(workQuery, dir, mergeRuntimeEnv(os.Environ(), env))
 	if err != nil {
 		return nil, err
@@ -884,6 +909,157 @@ func nextWorkflowServeBeads(workQuery, dir string, env map[string]string) ([]hoo
 		return []hookBead{bead}, nil
 	}
 	return nil, fmt.Errorf("unexpected work query output: %s", trimmed)
+}
+
+func workflowServeBoolEnv(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "t", "true", "y", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func nextWorkflowServeControlBeads(storePath string, env map[string]string) ([]hookBead, error) {
+	cityPath := strings.TrimSpace(env["GC_CITY"])
+	if cityPath == "" {
+		cityPath = strings.TrimSpace(env["GC_STORE_ROOT"])
+	}
+	if cityPath == "" {
+		cityPath = storePath
+	}
+	store, err := workflowServeOpenControlStore(storePath, cityPath)
+	if err != nil {
+		return nil, err
+	}
+	if closer, ok := store.(interface{ CloseStore() error }); ok {
+		defer closer.CloseStore() //nolint:errcheck // best-effort cleanup
+	}
+	return workflowServeControlBeadsFromStore(store, env)
+}
+
+func workflowServeControlBeadsFromStore(store beads.Store, env map[string]string) ([]hookBead, error) {
+	if store == nil {
+		return nil, errors.New("control dispatcher store query: nil store")
+	}
+	result := make([]hookBead, 0, workflowServeScanLimit)
+	seen := map[string]struct{}{}
+	appendReady := func(items []beads.Bead) {
+		for _, bead := range items {
+			if !workflowServeControlBeadEligible(bead) {
+				continue
+			}
+			if _, ok := seen[bead.ID]; ok {
+				continue
+			}
+			seen[bead.ID] = struct{}{}
+			result = append(result, workflowServeHookBeadFromStore(bead))
+		}
+	}
+
+	for _, candidate := range workflowServeControlAssigneeCandidates(env) {
+		items, err := store.Ready(beads.ReadyQuery{
+			Assignee: candidate,
+			Limit:    workflowServeScanLimit,
+			TierMode: beads.TierBoth,
+		})
+		if err != nil {
+			return nil, err
+		}
+		appendReady(items)
+	}
+
+	allReady, err := store.Ready(beads.ReadyQuery{TierMode: beads.TierBoth})
+	if err != nil {
+		return nil, err
+	}
+	for _, target := range workflowServeControlRouteTargets(env) {
+		appendReady(workflowServeControlRoutedReady(allReady, beadmeta.RunTargetMetadataKey, target))
+		appendReady(workflowServeControlRoutedReady(allReady, beadmeta.RoutedToMetadataKey, target))
+	}
+	return result, nil
+}
+
+func workflowServeControlBeadEligible(bead beads.Bead) bool {
+	if strings.TrimSpace(bead.ID) == "" {
+		return false
+	}
+	if strings.TrimSpace(bead.Type) == "epic" {
+		return false
+	}
+	if strings.TrimSpace(bead.Metadata[beadmeta.InstantiatingMetadataKey]) != "" {
+		return false
+	}
+	return true
+}
+
+func workflowServeControlAssigneeCandidates(env map[string]string) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	add := func(candidate string) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return
+		}
+		if _, ok := seen[candidate]; ok {
+			return
+		}
+		seen[candidate] = struct{}{}
+		out = append(out, candidate)
+	}
+	for _, key := range []string{"GC_CONTROL_SESSION_NAME", "GC_SESSION_NAME", "GC_ALIAS", "GC_CONTROL_TARGET", "GC_SESSION_ID"} {
+		candidate := strings.TrimSpace(env[key])
+		add(candidate)
+		if strings.HasSuffix(candidate, config.ControlDispatcherAgentName) {
+			add(strings.TrimSuffix(candidate, config.ControlDispatcherAgentName) + "workflow-control")
+		}
+	}
+	return out
+}
+
+func workflowServeControlRouteTargets(env map[string]string) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	add := func(target string) {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			return
+		}
+		if _, ok := seen[target]; ok {
+			return
+		}
+		seen[target] = struct{}{}
+		out = append(out, target)
+	}
+	for _, key := range []string{"GC_CONTROL_TARGET", "GC_CONTROL_LEGACY_TARGET", "GC_CONTROL_BARE_TARGET"} {
+		add(env[key])
+	}
+	return out
+}
+
+func workflowServeControlRoutedReady(items []beads.Bead, key, target string) []beads.Bead {
+	out := make([]beads.Bead, 0, workflowServeScanLimit)
+	for _, bead := range items {
+		if len(out) >= workflowServeScanLimit {
+			break
+		}
+		if strings.TrimSpace(bead.Assignee) != "" {
+			continue
+		}
+		if strings.TrimSpace(bead.Metadata[key]) != target {
+			continue
+		}
+		out = append(out, bead)
+	}
+	return out
+}
+
+func workflowServeHookBeadFromStore(bead beads.Bead) hookBead {
+	metadata := make(hookBeadMetadata, len(bead.Metadata))
+	for key, value := range bead.Metadata {
+		metadata[key] = value
+	}
+	return hookBead{ID: bead.ID, Metadata: metadata}
 }
 
 // dispatchWakeFile returns the path of the dispatch-wake sentinel file.
