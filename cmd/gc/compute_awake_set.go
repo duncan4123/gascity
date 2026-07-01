@@ -285,10 +285,10 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 	// matching work bead as the anchor so crash recovery brings a session
 	// back to the bead it last owned even when other beads share the
 	// assignee. If no candidate matches the recorded current bead, fall back
-	// to the first matching work bead and flag the divergence - the
+	// to the first matching work bead and flag the divergence — the
 	// reconciler reads this to decide whether to cycle the conversation for
 	// wake_mode=fresh.
-	assignedAnchor := make(map[string]string) // sessionName -> matched work bead ID
+	assignedAnchor := make(map[string]string) // sessionName → matched work bead ID
 	for _, bead := range input.SessionBeads {
 		if bead.State == "closed" {
 			continue
@@ -486,10 +486,8 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 			}
 		}
 
-		// Hold suppression overrides generic wake reasons, but not concrete
-		// assigned work. A drained pool session can later receive work assigned
-		// to its durable identity; keeping the hold would wedge that work.
-		if !bead.HeldUntil.IsZero() && input.Now.Before(bead.HeldUntil) && desired[name] != "assigned-work" {
+		// Hold suppression — overrides everything
+		if !bead.HeldUntil.IsZero() && input.Now.Before(bead.HeldUntil) {
 			decision.ShouldWake = false
 			decision.Reason = "held"
 		}

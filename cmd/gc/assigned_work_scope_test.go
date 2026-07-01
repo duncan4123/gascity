@@ -42,7 +42,7 @@ func TestFilterAssignedWorkBeadsForSessionWakeKeepsOnlyReachableAssigneeSources(
 	}
 	storeRefs := []string{"", "riga", "", "riga"}
 
-	got := filterAssignedWorkBeadsForSessionWake(cfg, cityPath, sessions, work, storeRefs)
+	got, _ := filterAssignedWorkBeadsForSessionWake(cfg, cityPath, sessions, work, storeRefs)
 
 	if len(got) != 2 {
 		t.Fatalf("filtered work length = %d, want 2: %#v", len(got), got)
@@ -78,7 +78,7 @@ func TestFilterAssignedWorkBeadsForSessionWakeCityScopedAgentIsCrossStoreEligibl
 	}
 	storeRefs := []string{"", "riga"} // city store + rig store
 
-	got := filterAssignedWorkBeadsForSessionWake(cfg, cityPath, nil, work, storeRefs)
+	got, _ := filterAssignedWorkBeadsForSessionWake(cfg, cityPath, nil, work, storeRefs)
 
 	if len(got) != 2 {
 		t.Fatalf("city-scoped %q must be reachable from BOTH stores; got %d: %#v", identity, len(got), got)
@@ -188,7 +188,7 @@ func TestFilterAssignedWorkBeadsForSessionWakeDropsOnlyKnownBlockedWork(t *testi
 		{ID: "blocked-by-status", Status: "blocked", Assignee: identity},
 	}
 
-	got := filterAssignedWorkBeadsForSessionWake(cfg, "", nil, work, []string{"", "", "", ""})
+	got, _ := filterAssignedWorkBeadsForSessionWake(cfg, "", nil, work, []string{"", "", "", ""})
 
 	if len(got) != 2 || got[0].ID != "stale-count-ready" || got[1].ID != "missing-projection-count" {
 		t.Fatalf("filtered work = %#v, want ready work preserved and only projected-blocked work dropped", got)

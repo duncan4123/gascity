@@ -3824,7 +3824,7 @@ func TestReconcileSessionBeads_OnDemandNamedSessionDoesNotWakeFromDesiredStatePr
 	}
 }
 
-func TestReconcileSessionBeads_OnDemandNamedSessionWakesFromIdentityRoutedNamedDemand(t *testing.T) {
+func TestReconcileSessionBeads_OnDemandNamedSessionWakesFromPoolDemandWithoutNamedDemand(t *testing.T) {
 	cfg := &config.City{
 		Workspace: config.Workspace{Name: "test-city"},
 		Agents: []config.Agent{{
@@ -3838,17 +3838,17 @@ func TestReconcileSessionBeads_OnDemandNamedSessionWakesFromIdentityRoutedNamedD
 	sessionName := config.NamedSessionRuntimeName(cfg.EffectiveCityName(), cfg.Workspace, "mayor")
 
 	woken, running, namedDemand, starts := reconcileExistingAsleepNamedSessionWithRoutedWork(t, cfg, sessionName, "mayor", "mayor")
-	if !namedDemand["mayor"] {
-		t.Fatalf("NamedSessionDemand[mayor] = false for routed_to=mayor, want true")
+	if namedDemand["mayor"] {
+		t.Fatalf("NamedSessionDemand[mayor] = true for routed_to=mayor, want false because routed_to targets pools")
 	}
 	if woken != 1 {
 		t.Fatalf("woken = %d, want 1; starts=%v", woken, starts)
 	}
-	if !running {
-		t.Fatalf("on-demand named session %q did not start from routed named demand; starts=%v", sessionName, starts)
+	if running {
+		t.Fatalf("on-demand named session %q started from routed pool demand; starts=%v", sessionName, starts)
 	}
-	if len(starts) != 1 || starts[0] != sessionName {
-		t.Fatalf("starts = %v, want only named session %q", starts, sessionName)
+	if len(starts) == 0 {
+		t.Fatal("pool demand did not start any session")
 	}
 }
 
@@ -5883,7 +5883,7 @@ func TestReconcileAndWake_RestartRequestBumpsContinuationEpoch(t *testing.T) {
 	}
 
 	// Phase 2: preWakeCommit consumes continuation_reset_pending → bumps epoch.
-	if _, _, err := preWakeCommit(&got, env.store, env.clk); err != nil {
+	if _, _, err := preWakeCommit(&got, sessionFrontDoor(env.store), env.clk); err != nil {
 		t.Fatalf("preWakeCommit: %v", err)
 	}
 	woke, _ := env.store.Get(session.ID)

@@ -316,71 +316,12 @@ func (m *Manager) sessionBead(id string) (beads.Bead, string, error) {
 	return m.loadSessionBead(id, false)
 }
 
-func (m *Manager) runtimeConfigForLiveSession(id string, b *beads.Bead, sessName string, hints runtime.Config) (runtime.Config, error) {
-	cfg := hints
-	if cfg.WorkDir == "" {
-		cfg.WorkDir = b.Metadata["work_dir"]
-	}
-	generation, err := strconv.Atoi(b.Metadata["generation"])
-	if err != nil || generation <= 0 {
-		generation = DefaultGeneration
-	}
-	continuationEpoch, err := strconv.Atoi(b.Metadata["continuation_epoch"])
-	if err != nil || continuationEpoch <= 0 {
-		continuationEpoch = DefaultContinuationEpoch
-	}
-	instanceToken := b.Metadata["instance_token"]
-	if instanceToken == "" {
-		instanceToken = NewInstanceToken()
-		if err := m.store.SetMetadata(id, "instance_token", instanceToken); err != nil {
-			return runtime.Config{}, fmt.Errorf("storing instance token: %w", err)
-		}
-		if b.Metadata == nil {
-			b.Metadata = make(map[string]string)
-		}
-		b.Metadata["instance_token"] = instanceToken
-	}
-	cfg.Env = mergeEnv(cfg.Env, RuntimeEnvWithSessionContext(
-		id,
-		sessName,
-		strings.TrimSpace(b.Metadata["alias"]),
-		strings.TrimSpace(b.Metadata["template"]),
-		strings.TrimSpace(b.Metadata["session_origin"]),
-		generation,
-		continuationEpoch,
-		instanceToken,
-	))
-	if gcProvider := strings.TrimSpace(b.Metadata["provider_kind"]); gcProvider != "" {
-		cfg.Env = mergeEnv(cfg.Env, map[string]string{"GC_PROVIDER": gcProvider})
-	} else if provider := strings.TrimSpace(b.Metadata["provider"]); provider != "" {
-		cfg.Env = mergeEnv(cfg.Env, map[string]string{"GC_PROVIDER": provider})
-	}
-	return runtime.SyncWorkDirEnv(cfg), nil
-}
-
-func (m *Manager) runLiveForExistingSession(id string, b *beads.Bead, sessName string, hints runtime.Config) error {
-	if len(hints.SessionLive) == 0 {
-		return nil
-	}
-	cfg, err := m.runtimeConfigForLiveSession(id, b, sessName, hints)
-	if err != nil {
-		return err
-	}
-	if err := m.sp.RunLive(sessName, cfg); err != nil {
-		return fmt.Errorf("reapplying session_live: %w", err)
-	}
-	return nil
-}
-
 func (m *Manager) ensureRunning(ctx context.Context, id string, b beads.Bead, sessName, resumeCommand string, hints runtime.Config) error {
 	transport, transportVerified := m.transportForBead(b, sessName)
 	unroute := m.routeACPIfNeeded(b.Metadata["provider"], transport, sessName)
 	if State(b.Metadata["state"]) != StateSuspended && m.sp.IsRunning(sessName) {
 		if b.Metadata["transport"] == "" && transportVerified {
 			m.persistTransport(id, b.Metadata["provider"], transport)
-		}
-		if err := m.runLiveForExistingSession(id, &b, sessName, hints); err != nil {
-			return err
 		}
 		if err := m.confirmLiveSessionState(id, &b); err != nil {
 			return err
@@ -494,9 +435,6 @@ func (m *Manager) ensureRunningRuntimeOnly(ctx context.Context, id string, b bea
 	transport, _ := m.transportForBead(b, sessName)
 	unroute := m.routeACPIfNeeded(b.Metadata["provider"], transport, sessName)
 	if m.sp.IsRunning(sessName) {
-		if err := m.runLiveForExistingSession(id, &b, sessName, hints); err != nil {
-			return err
-		}
 		return nil
 	}
 	if resumeCommand == "" {

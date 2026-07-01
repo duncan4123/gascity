@@ -92,7 +92,6 @@ func TestSessionTriggerBeadEnv(t *testing.T) {
 		Metadata: map[string]string{
 			beadmeta.TriggerBeadIDMetadataKey:       "gp-59q",
 			beadmeta.TriggerBeadStoreRefMetadataKey: "rig:gascity-packs",
-			beadmeta.TriggerBeadTitleMetadataKey:    "Review gascity-jj-base",
 		},
 	}
 
@@ -108,12 +107,6 @@ func TestSessionTriggerBeadEnv(t *testing.T) {
 	}
 	if got := env["GC_TRIGGER_WORK_STORE_REF"]; got != "rig:gascity-packs" {
 		t.Fatalf("GC_TRIGGER_WORK_STORE_REF = %q, want rig:gascity-packs", got)
-	}
-	if got := env["GC_TRIGGER_BEAD_TITLE"]; got != "Review gascity-jj-base" {
-		t.Fatalf("GC_TRIGGER_BEAD_TITLE = %q, want Review gascity-jj-base", got)
-	}
-	if got := env["GC_TRIGGER_WORK_BEAD_TITLE"]; got != "Review gascity-jj-base" {
-		t.Fatalf("GC_TRIGGER_WORK_BEAD_TITLE = %q, want Review gascity-jj-base", got)
 	}
 }
 
@@ -836,117 +829,6 @@ func TestPrepareStartCandidate_UsesAssignedWorkSnapshotForTaskWorkDir(t *testing
 	}
 	if store.liveInProgressAssigneeLists != 0 {
 		t.Fatalf("live in-progress assignee List calls = %d, want 0 with snapshot resolver", store.liveInProgressAssigneeLists)
-	}
-}
-
-func TestBuildPreparedStartPrefersConfiguredWorkDirOverSessionMetadata(t *testing.T) {
-	store := beads.NewMemStore()
-	configuredWorkDir := t.TempDir()
-	staleWorkDir := t.TempDir()
-	session, err := store.Create(beads.Bead{
-		Title:  "worker",
-		Type:   sessionBeadType,
-		Labels: []string{sessionBeadLabel, "agent:worker"},
-		Metadata: map[string]string{
-			"template":                        "worker",
-			"session_name":                    "mayor",
-			namedSessionMetadataKey:           boolMetadata(true),
-			namedSessionIdentityMetadata:      "mayor",
-			poolManagedMetadataKey:            boolMetadata(true),
-			beadmeta.WorkDirMetadataKey:       staleWorkDir,
-			beadmeta.LegacyWorkDirMetadataKey: staleWorkDir,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	prepared, err := buildPreparedStart(startCandidate{
-		session: &session,
-		tp: TemplateParams{
-			TemplateName: "worker",
-			SessionName:  "mayor",
-			WorkDir:      configuredWorkDir,
-		},
-		order: 0,
-	}, &config.City{}, store)
-	if err != nil {
-		t.Fatalf("buildPreparedStart: %v", err)
-	}
-	if prepared.cfg.WorkDir != configuredWorkDir {
-		t.Fatalf("prepared.cfg.WorkDir = %q, want configured %q", prepared.cfg.WorkDir, configuredWorkDir)
-	}
-}
-
-func TestBuildPreparedStartTriggerPoolMetadataWorkDirOverridesConfiguredWorkDir(t *testing.T) {
-	store := beads.NewMemStore()
-	configuredWorkDir := t.TempDir()
-	triggerWorkDir := t.TempDir()
-	legacyWorkDir := t.TempDir()
-	session, err := store.Create(beads.Bead{
-		Title:  "worker",
-		Type:   sessionBeadType,
-		Labels: []string{sessionBeadLabel, "agent:worker-1"},
-		Metadata: map[string]string{
-			"template":                        "worker",
-			"session_name":                    "worker-1",
-			poolManagedMetadataKey:            boolMetadata(true),
-			beadmeta.TriggerBeadIDMetadataKey: "gp-9gc7",
-			beadmeta.WorkDirMetadataKey:       triggerWorkDir,
-			beadmeta.LegacyWorkDirMetadataKey: legacyWorkDir,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	prepared, err := buildPreparedStart(startCandidate{
-		session: &session,
-		tp: TemplateParams{
-			TemplateName: "worker",
-			SessionName:  "worker-1",
-			WorkDir:      configuredWorkDir,
-		},
-		order: 0,
-	}, &config.City{}, store)
-	if err != nil {
-		t.Fatalf("buildPreparedStart: %v", err)
-	}
-	if prepared.cfg.WorkDir != triggerWorkDir {
-		t.Fatalf("prepared.cfg.WorkDir = %q, want trigger metadata %q", prepared.cfg.WorkDir, triggerWorkDir)
-	}
-}
-
-func TestBuildPreparedStartUsesLegacySessionMetadataWorkDirWhenUnconfigured(t *testing.T) {
-	store := beads.NewMemStore()
-	metadataWorkDir := t.TempDir()
-	session, err := store.Create(beads.Bead{
-		Title:  "worker",
-		Type:   sessionBeadType,
-		Labels: []string{sessionBeadLabel, "agent:worker"},
-		Metadata: map[string]string{
-			"template":                        "worker",
-			"session_name":                    "worker",
-			beadmeta.LegacyWorkDirMetadataKey: metadataWorkDir,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	prepared, err := buildPreparedStart(startCandidate{
-		session: &session,
-		tp: TemplateParams{
-			TemplateName: "worker",
-			SessionName:  "worker",
-		},
-		order: 0,
-	}, &config.City{}, store)
-	if err != nil {
-		t.Fatalf("buildPreparedStart: %v", err)
-	}
-	if prepared.cfg.WorkDir != metadataWorkDir {
-		t.Fatalf("prepared.cfg.WorkDir = %q, want metadata %q", prepared.cfg.WorkDir, metadataWorkDir)
 	}
 }
 
@@ -3801,7 +3683,7 @@ func TestCommitStartResult_SessionInitializingClearsInFlightLease(t *testing.T) 
 		rollbackPending: true,
 	}
 
-	if commitStartResult(result, store, clk, events.Discard, 0, ioDiscard{}, ioDiscard{}) {
+	if commitStartResult(result, sessionFrontDoor(store), clk, events.Discard, 0, ioDiscard{}, ioDiscard{}) {
 		t.Fatal("session_initializing result should not count as committed")
 	}
 	updated, err := store.Get(session.ID)
@@ -3857,7 +3739,7 @@ func TestCommitStartResult_RollbackPendingErrorClearsInFlightLeaseWhenCloseFails
 		rollbackPending: true,
 	}
 
-	if commitStartResult(result, store, clk, events.Discard, 0, ioDiscard{}, ioDiscard{}) {
+	if commitStartResult(result, sessionFrontDoor(store), clk, events.Discard, 0, ioDiscard{}, ioDiscard{}) {
 		t.Fatal("rollback-pending error should not count as committed")
 	}
 	updated, err := store.Get(session.ID)
@@ -3919,7 +3801,7 @@ func TestCommitStartResult_AtomicBatchFailureLeavesClaimIntact(t *testing.T) {
 		finished: time.Date(2026, 3, 18, 12, 0, 1, 0, time.UTC),
 	}
 
-	ok := commitStartResult(result, store, &clock.Fake{Time: time.Date(2026, 3, 18, 12, 0, 1, 0, time.UTC)}, events.Discard, 0, ioDiscard{}, ioDiscard{})
+	ok := commitStartResult(result, sessionFrontDoor(store), &clock.Fake{Time: time.Date(2026, 3, 18, 12, 0, 1, 0, time.UTC)}, events.Discard, 0, ioDiscard{}, ioDiscard{})
 	if ok {
 		t.Fatal("commitStartResult returned true, want false when metadata batch fails (state transition lost)")
 	}
@@ -3986,7 +3868,7 @@ func TestCommitStartResult_SessionWokeEmittedOnlyAfterDurableCommit(t *testing.T
 			t.Fatal(err)
 		}
 		rec := events.NewFake()
-		if commitStartResult(successResult(&session), store, clk, rec, 0, ioDiscard{}, ioDiscard{}) {
+		if commitStartResult(successResult(&session), sessionFrontDoor(store), clk, rec, 0, ioDiscard{}, ioDiscard{}) {
 			t.Fatal("commitStartResult returned true, want false when metadata batch fails")
 		}
 		woke, err := rec.List(events.Filter{Type: events.SessionWoke})
@@ -4010,7 +3892,7 @@ func TestCommitStartResult_SessionWokeEmittedOnlyAfterDurableCommit(t *testing.T
 			t.Fatal(err)
 		}
 		rec := events.NewFake()
-		if !commitStartResult(successResult(&session), store, clk, rec, 0, ioDiscard{}, ioDiscard{}) {
+		if !commitStartResult(successResult(&session), sessionFrontDoor(store), clk, rec, 0, ioDiscard{}, ioDiscard{}) {
 			t.Fatal("commitStartResult returned false for successful start")
 		}
 		woke, err := rec.List(events.Filter{Type: events.SessionWoke})
@@ -4258,7 +4140,7 @@ func TestCommitStartResult_AtomicBatchLandsStateAndClaimClearTogether(t *testing
 	}
 
 	clkTime := time.Date(2026, 3, 18, 12, 0, 1, 0, time.UTC)
-	ok := commitStartResult(result, store, &clock.Fake{Time: clkTime}, events.Discard, 0, ioDiscard{}, ioDiscard{})
+	ok := commitStartResult(result, sessionFrontDoor(store), &clock.Fake{Time: clkTime}, events.Discard, 0, ioDiscard{}, ioDiscard{})
 	if !ok {
 		t.Fatal("commitStartResult returned false for successful start")
 	}
@@ -4975,7 +4857,7 @@ func TestCommitStartResult_LogsSuccessOutcome(t *testing.T) {
 	}
 	rec := events.NewFake()
 	var stdout, stderr bytes.Buffer
-	ok := commitStartResult(result, store, &clock.Fake{Time: time.Unix(3, 0)}, rec, 0, &stdout, &stderr)
+	ok := commitStartResult(result, sessionFrontDoor(store), &clock.Fake{Time: time.Unix(3, 0)}, rec, 0, &stdout, &stderr)
 	if !ok {
 		t.Fatal("commitStartResult returned false for success")
 	}
@@ -5000,7 +4882,7 @@ func TestCommitStartResult_SanitizesMultilineError(t *testing.T) {
 		outcome:  "panic_recovered",
 	}
 	var stderr bytes.Buffer
-	ok := commitStartResult(result, store, &clock.Fake{Time: time.Unix(3, 0)}, events.NewFake(), 0, ioDiscard{}, &stderr)
+	ok := commitStartResult(result, sessionFrontDoor(store), &clock.Fake{Time: time.Unix(3, 0)}, events.NewFake(), 0, ioDiscard{}, &stderr)
 	if ok {
 		t.Fatal("commitStartResult returned true for error result")
 	}
@@ -5034,7 +4916,7 @@ func TestCommitStartResult_TerminalProviderErrorMarksUnhealthy(t *testing.T) {
 		outcome:  "provider_error",
 	}
 
-	if commitStartResult(result, store, &clock.Fake{Time: time.Unix(3, 0)}, events.NewFake(), 0, ioDiscard{}, ioDiscard{}) {
+	if commitStartResult(result, sessionFrontDoor(store), &clock.Fake{Time: time.Unix(3, 0)}, events.NewFake(), 0, ioDiscard{}, ioDiscard{}) {
 		t.Fatal("commitStartResult returned true for terminal provider error")
 	}
 	got := store.metadata[session.ID]
@@ -6147,7 +6029,7 @@ func TestExecutePreparedStartWave_RateLimitStartupDeathQuarantinesWithoutWakeFai
 		t.Fatal("expected startup-death error")
 	}
 
-	if commitStartResult(results[0], store, clk, events.Discard, 0, ioDiscard{}, ioDiscard{}) {
+	if commitStartResult(results[0], sessionFrontDoor(store), clk, events.Discard, 0, ioDiscard{}, ioDiscard{}) {
 		t.Fatal("startup rate-limit hold should not count as a committed wake")
 	}
 	got, err := store.Get(session.ID)
@@ -6242,7 +6124,7 @@ func TestExecutePreparedStartWave_RateLimitPendingCreateDeathClearsClaim(t *test
 		t.Fatal("pending-create startup death should still classify provider rate-limit screen")
 	}
 
-	if commitStartResult(results[0], store, clk, events.Discard, 0, ioDiscard{}, ioDiscard{}) {
+	if commitStartResult(results[0], sessionFrontDoor(store), clk, events.Discard, 0, ioDiscard{}, ioDiscard{}) {
 		t.Fatal("startup rate-limit hold should not count as a committed wake")
 	}
 	got, err := store.Get(session.ID)
@@ -6328,13 +6210,12 @@ func TestPrepareStartCandidate_PreservesRuntimeConfigAndProviderEnv(t *testing.T
 		InstanceName:     "mayor",
 	}
 
-	cityCfg := &config.City{Beads: config.BeadsConfig{Backend: "doltlite"}}
 	prepared, err := prepareStartCandidate(
 		startCandidate{
 			session: &bead,
 			tp:      tp,
 		},
-		cityCfg,
+		&config.City{},
 		store,
 		clock.Real{},
 	)
@@ -6367,7 +6248,6 @@ func TestPrepareStartCandidate_PreservesRuntimeConfigAndProviderEnv(t *testing.T
 		stored.Metadata["instance_token"],
 	))
 	expected.Env = mergeEnv(expected.Env, map[string]string{"GC_PROVIDER": "gemini"})
-	expected.Env = mergeEnv(expected.Env, doltliteLoaderEnvScrub())
 	expected = runtime.SyncWorkDirEnv(expected)
 
 	if !reflect.DeepEqual(prepared.cfg, expected) {
@@ -6375,13 +6255,6 @@ func TestPrepareStartCandidate_PreservesRuntimeConfigAndProviderEnv(t *testing.T
 	}
 	if got := prepared.cfg.Env["GC_HOME"]; got != "/tmp/gc-home" {
 		t.Fatalf("GC_HOME = %q, want %q", got, "/tmp/gc-home")
-	}
-	for _, key := range []string{"LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"} {
-		if got, ok := prepared.cfg.Env[key]; !ok {
-			t.Fatalf("%s should be present with empty value so tmux emits env -u; got absent", key)
-		} else if got != "" {
-			t.Fatalf("%s = %q, want empty tmux scrub", key, got)
-		}
 	}
 }
 
@@ -6656,7 +6529,7 @@ func TestCommitStartResult_TransitionsCreatingToActive(t *testing.T) {
 		finished: time.Unix(101, 0),
 	}
 	rec := events.NewFake()
-	ok := commitStartResult(result, store, &clock.Fake{Time: time.Unix(102, 0)}, rec, 0, ioDiscard{}, ioDiscard{})
+	ok := commitStartResult(result, sessionFrontDoor(store), &clock.Fake{Time: time.Unix(102, 0)}, rec, 0, ioDiscard{}, ioDiscard{})
 	if !ok {
 		t.Fatal("commitStartResult returned false for successful start")
 	}
@@ -6730,7 +6603,7 @@ func TestCommitStartResult_PersistsMCPIdentityForACPStart(t *testing.T) {
 		finished: time.Unix(101, 0),
 	}
 	rec := events.NewFake()
-	ok := commitStartResult(result, store, &clock.Fake{Time: time.Unix(102, 0)}, rec, 0, ioDiscard{}, ioDiscard{})
+	ok := commitStartResult(result, sessionFrontDoor(store), &clock.Fake{Time: time.Unix(102, 0)}, rec, 0, ioDiscard{}, ioDiscard{})
 	if !ok {
 		t.Fatal("commitStartResult returned false for successful start")
 	}
@@ -6817,7 +6690,7 @@ func TestClearStaleResumeKeyMetadata(t *testing.T) {
 		t.Fatalf("seed metadata: %v", err)
 	}
 
-	clearStaleResumeKeyMetadata(bead, store)
+	clearStaleResumeKeyMetadata(bead, sessionFrontDoor(store))
 
 	if got := bead.Metadata["session_key"]; got != "" {
 		t.Fatalf("in-memory session_key = %q, want empty", got)

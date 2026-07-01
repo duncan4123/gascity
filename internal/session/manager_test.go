@@ -781,44 +781,6 @@ func TestCreateConfirmsStartedStateWithoutControllerDriftHash(t *testing.T) {
 	}
 }
 
-func TestStartReappliesSessionLiveForAlreadyRunningSession(t *testing.T) {
-	store := beads.NewMemStore()
-	sp := runtime.NewFake()
-	mgr := NewManager(store, sp)
-
-	info, err := mgr.Create(context.Background(), "helper", "my chat", "claude", "/tmp", "claude", nil, ProviderResume{}, runtime.Config{})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	err = mgr.Start(context.Background(), info.ID, "claude", runtime.Config{SessionLive: []string{"echo live"}})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	if got := sp.CountCalls("RunLive", info.SessionName); got != 1 {
-		t.Fatalf("RunLive calls = %d, want 1", got)
-	}
-}
-
-func TestStartRuntimeOnlyReappliesSessionLiveForAlreadyRunningSession(t *testing.T) {
-	store := beads.NewMemStore()
-	sp := runtime.NewFake()
-	mgr := NewManager(store, sp)
-
-	info, err := mgr.Create(context.Background(), "helper", "my chat", "claude", "/tmp", "claude", nil, ProviderResume{}, runtime.Config{})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	err = mgr.StartRuntimeOnly(context.Background(), info.ID, "claude", runtime.Config{SessionLive: []string{"echo live"}})
-	if err != nil {
-		t.Fatalf("StartRuntimeOnly: %v", err)
-	}
-	if got := sp.CountCalls("RunLive", info.SessionName); got != 1 {
-		t.Fatalf("RunLive calls = %d, want 1", got)
-	}
-}
-
 func TestCreateDefaultsTitleToTemplate(t *testing.T) {
 	store := beads.NewMemStore()
 	sp := runtime.NewFake()

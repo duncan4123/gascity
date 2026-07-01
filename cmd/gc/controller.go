@@ -287,7 +287,8 @@ func resetSessionCircuitBreakerState(store beads.Store, sessionID string, identi
 	if cb == nil {
 		cb = defaultSessionCircuitBreaker()
 	}
-	if err := loadPersistedSessionCircuitResetGeneration(store, sessionID, identity, cb); err != nil {
+	sessFront := sessionFrontDoor(store)
+	if err := loadPersistedSessionCircuitResetGeneration(sessFront, sessionID, identity, cb); err != nil {
 		return err
 	}
 	initialSnapshot := cb.snapshotIdentity(identity)
@@ -308,7 +309,7 @@ func resetSessionCircuitBreakerState(store beads.Store, sessionID string, identi
 
 func resetAndClearSessionCircuitBreakerState(store beads.Store, sessionID string, identity string, cb *sessionCircuitBreaker, restoreSnapshot sessionCircuitBreakerIdentitySnapshot) error {
 	resetGeneration := cb.Reset(identity)
-	if err := clearPersistedSessionCircuitBreakerMetadata(store, sessionID, resetGeneration); err != nil {
+	if err := clearPersistedSessionCircuitBreakerMetadata(sessionFrontDoor(store), sessionID, resetGeneration); err != nil {
 		cb.restoreIdentity(identity, restoreSnapshot)
 		// Restore the pre-reset snapshot rather than the just-reset one so a
 		// durable clear failure cannot strand the breaker CLOSED in memory.
@@ -1078,7 +1079,7 @@ func gracefulStopAllWithForceSignal(
 				template = target.template
 				agentIdentity = target.agentName
 				if cityStopSessionMarked(store.Store, target.sessionID) {
-					markCityStopSessionAsAsleep(store.Store, target.sessionID, stderr)
+					markCityStopSessionAsAsleep(sessionFrontDoor(store.Store), target.sessionID, stderr)
 				}
 			}
 			rec.Record(events.Event{
