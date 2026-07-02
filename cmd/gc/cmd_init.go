@@ -367,9 +367,6 @@ func newInitCmd(stdout, stderr io.Writer) *cobra.Command {
 	var doltUserFlag string
 	var doltDatabaseFlag string
 	var doltProjectIDFlag string
-	var skipProviderReadiness bool
-	var preserveExisting bool
-	var jsonOut bool
 	var noStart bool
 	cmd := &cobra.Command{
 		Use:   "init [path]",

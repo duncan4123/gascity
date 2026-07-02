@@ -705,24 +705,6 @@ func unclaimWorkAssignedToRetiredSessionBead(
 					// The session owning this work is retired, so the work is fully
 					// detached (not preserved to a new assignee). The release
 					// primitive clears the assignee (empty-string) and stale
-<<<<<<<
-=======
-					}
-					seen[key] = struct{}{}
-					// The session owning this work is retired, so the work is fully
-					// detached (not preserved to a new assignee). The release
-					// primitive clears the assignee (empty-string) and stale
-					// session-affinity metadata, resets in_progress to open
-					// (otherwise the bead stays invisible to the work_query — Tier 1
-					// needs an assignee match, Tiers 2/3 only match "ready"), and
-					// stamps fallbackRoute run_target only when the bead is otherwise
-					// unrouted — the same stale-affinity bug fixed on the retry,
-					// reopen, orphan-pool, and closed-session release paths.
-					if err := wa.ReleaseWorkBead(item, fallbackRoute); err != nil {
-						fmt.Fprintf(stderr, "session beads: unclaiming work %s assigned to retired session %s: %v\n", item.ID, sessionBead.ID, err) //nolint:errcheck
-					}
-				}
->>>>>>>
 					// session-affinity metadata, resets in_progress to open
 					// (otherwise the bead stays invisible to the work_query — Tier 1
 					// needs an assignee match, Tiers 2/3 only match "ready"), and
@@ -802,12 +784,6 @@ func cancelStateAssignedToRetiredSessionBead(store beads.Store, sessionID string
 	if store == nil || strings.TrimSpace(sessionID) == "" {
 		return
 	}
-	// The typed session front door is constructed once at this composition root
-	// and threaded to the session-only leaves (setMeta/setMetaBatch/
-	// closeFailedCreateBead/syncDesiredPoolSlots); the raw store stays for the
-	// snapshot/Get and work-release/close residual. Same underlying store, so
-	// every session bead write is byte-identical.
-	sessFront := session.NewInfoStore(sessStore)
 	if stderr == nil {
 		stderr = io.Discard
 	}
@@ -1201,19 +1177,6 @@ func syncSessionBeadsWithSnapshotAndRigStores(
 				if err != nil {
 					return beads.Bead{}, err
 				}
-<<<<<<<
-=======
-			}
-			createBead := func() (beads.Bead, error) {
-				beadID, err := sessionFrontDoor(store).CreateSession(session.CreateSpec{
-					Title:     agentName,
-					AgentName: agentName,
-					Metadata:  meta,
-				})
-				if err != nil {
-					return beads.Bead{}, err
-				}
->>>>>>>
 				return store.Get(beadID)
 			}
 			var (
@@ -2453,22 +2416,6 @@ func releaseWorkFromClosedSessionBead(store beads.Store, sessionBead beads.Bead,
 					continue
 				}
 				if _, dup := seenWork[item.ID]; dup {
-<<<<<<<
-=======
-				}
-				seenWork[item.ID] = struct{}{}
-				// The session owning this work is closing, so the work is
-				// fully detached (not preserved to a new assignee). The
-				// release primitive clears the assignee (empty-string) and
-				// stale session-affinity metadata and resets in_progress to
-				// open — the same stale-affinity bug fixed on the retry,
-				// reopen, and orphan-pool release paths. No run_target
-				// fallback on the close-release path (passed "").
-				if err := wa.ReleaseWorkBead(item, ""); err != nil {
-					fmt.Fprintf(stderr, "session beads: releasing work %s from closing session %s: %v\n", item.ID, sessionBead.ID, err) //nolint:errcheck
-				}
-			}
->>>>>>>
 					continue
 				}
 				seenWork[item.ID] = struct{}{}

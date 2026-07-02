@@ -448,12 +448,6 @@ func advanceSessionDrainsWithSessionsTraced(
 	if store == nil {
 		sessFront = nil
 	}
-	// Session front door constructed once from the same store; nil when store is
-	// nil so completeDrain keeps its store==nil short-circuit.
-	sessFront := sessionFrontDoor(store)
-	if store == nil {
-		sessFront = nil
-	}
 	for id, ds := range dt.all() {
 		session := sessionLookup(id)
 		if session == nil {

@@ -167,25 +167,25 @@ func loadSoftReloadSessionBeadSnapshot(store softReloadSessionStore) (*sessionBe
 	if store == nil {
 		return newSessionBeadSnapshot(nil), nil
 	}
-	byType, typeErr := store.List(beads.ListQuery{Type: sessionpkg.BeadType})
+	byType, typeErr := store.List(beads.ListQuery{Type: session.BeadType})
 	if typeErr != nil && !beads.IsPartialResult(typeErr) {
 		return nil, fmt.Errorf("listing session beads by type: %w", typeErr)
 	}
-	byLabel, labelErr := store.List(beads.ListQuery{Label: sessionpkg.LabelSession})
+	byLabel, labelErr := store.List(beads.ListQuery{Label: session.LabelSession})
 	if labelErr != nil && !beads.IsPartialResult(labelErr) {
 		return nil, fmt.Errorf("listing session beads by label: %w", labelErr)
 	}
 	seen := make(map[string]struct{}, len(byType)+len(byLabel))
 	merged := make([]beads.Bead, 0, len(byType)+len(byLabel))
 	for _, b := range byType {
-		if _, ok := seen[b.ID]; ok || !sessionpkg.IsSessionBeadOrRepairable(b) {
+		if _, ok := seen[b.ID]; ok || !session.IsSessionBeadOrRepairable(b) {
 			continue
 		}
 		seen[b.ID] = struct{}{}
 		merged = append(merged, b)
 	}
 	for _, b := range byLabel {
-		if _, ok := seen[b.ID]; ok || !sessionpkg.IsSessionBeadOrRepairable(b) {
+		if _, ok := seen[b.ID]; ok || !session.IsSessionBeadOrRepairable(b) {
 			continue
 		}
 		seen[b.ID] = struct{}{}

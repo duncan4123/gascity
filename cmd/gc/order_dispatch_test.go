@@ -1837,7 +1837,7 @@ func TestOrderDispatchWorkspaceReportExecSkipForNonJJWRepo(t *testing.T) {
 	mad.stderr = &stderr
 
 	logs := captureCmdOrderLogs(t, func() {
-		mad.dispatchExec(context.Background(), store, execStoreTarget{ScopeRoot: t.TempDir()}, aa[0], t.TempDir(), tracking.ID)
+		mad.dispatchExec(context.Background(), orders.NewStore(beads.OrdersStore{Store: store}), execStoreTarget{ScopeRoot: t.TempDir()}, aa[0], t.TempDir(), tracking.ID)
 	})
 
 	all := trackingBeads(t, store, "order-run:workspace-report")

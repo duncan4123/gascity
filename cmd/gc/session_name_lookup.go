@@ -153,17 +153,6 @@ func createPoolSessionBead(
 	now time.Time,
 	identity poolSessionCreateIdentity,
 ) (beads.Bead, error) {
-<<<<<<<
-=======
-	var raw beads.Store
-	if sessFront != nil {
-		raw = sessFront.Store().Store
-	}
-	return createPoolSessionBeadWithAlias(raw, template, nil, nil, now, identity, "")
-}
-
-// createPoolSessionBeadWithAlias creates a pool session bead and persists its
->>>>>>>
 	var raw beads.Store
 	if sessFront != nil {
 		raw = sessFront.Store().Store
@@ -237,10 +226,6 @@ func createPoolSessionBeadWithAlias(
 		AgentName: agentName,
 		Metadata:  meta,
 	})
-	if err != nil {
-		return beads.Bead{}, err
-	}
-	bead, err := store.Get(beadID)
 	if err != nil {
 		return beads.Bead{}, err
 	}
