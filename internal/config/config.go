@@ -93,38 +93,81 @@ func IsDeterministicControlDispatcher(agent *Agent) bool {
 }
 
 // PreferredDeterministicControlDispatcher returns the deterministic control-
-// dispatcher to route a scope's control beads to, binding-agnostic. The
-// city-level singleton (Dir == "") is preferred for every scope — given
-// max_active_sessions=1, it is the one whose session actually runs and claims
-// the control queue — and a rig-scoped instance (Dir == rigContext) is used only
-// when no city-level deterministic dispatcher is configured. Routing to a
-// rig-scoped copy when a city singleton exists strands the control bead, since
-// the singleton session never claims a <rig>/... route. This is the canonical
-// selection shared by the graph.v2 decoration path (internal/graphroute) and the
-// attempt-time control re-route path (internal/dispatch); keep them in lockstep.
+// dispatcher to route a scope's control beads to, binding-agnostic. A RESIDENT
+// rig-scoped instance (Dir == rigContext, kept live by a [[named_session]]
+// mode="always" or a min_active_sessions>=1 floor) is preferred when one exists:
+// it is the session that actually runs and serves that rig's OWN prefix bead
+// store, so a control bead living in that store can only be claimed there — never
+// by the city singleton, which serves the city (HQ) store. Otherwise the
+// city-level singleton (Dir == "") is preferred — given the shipped pack's
+// max_active_sessions=1 it is the one session that runs and claims the control
+// queue, and routing a rig-store bead to a NON-resident rig copy (configured but
+// never launched) would strand it (the #3764/#3765 shape). A rig-scoped copy is
+// used as a last resort only when no city-level dispatcher is configured. This is
+// the canonical selection shared by the graph.v2 decoration path
+// (internal/graphroute) and the attempt-time control re-route path
+// (internal/dispatch); keep them in lockstep.
 func PreferredDeterministicControlDispatcher(cfg *City, rigContext string) (Agent, bool) {
 	if cfg == nil {
 		return Agent{}, false
 	}
 	rigContext = strings.TrimSpace(rigContext)
-	var rigScoped Agent
-	haveRigScoped := false
+	var citySingleton, rigScoped Agent
+	haveCity, haveRig := false, false
 	for _, a := range cfg.Agents {
 		if !IsDeterministicControlDispatcher(&a) {
 			continue
 		}
 		if strings.TrimSpace(a.Dir) == "" {
-			return a, true
+			if !haveCity {
+				citySingleton, haveCity = a, true
+			}
+			continue
 		}
-		if !haveRigScoped && strings.TrimSpace(a.Dir) == rigContext {
-			rigScoped = a
-			haveRigScoped = true
+		if !haveRig && rigContext != "" && strings.TrimSpace(a.Dir) == rigContext {
+			rigScoped, haveRig = a, true
 		}
 	}
-	if haveRigScoped {
+	// (1) A resident rig-scoped dispatcher runs and serves that rig's own prefix
+	// store; its rig-store control beads must route to it (the singleton can
+	// never claim a <rig>/... route in that store). This is the multi-store case.
+	if haveRig && controlDispatcherIsResident(cfg, &rigScoped) {
+		return rigScoped, true
+	}
+	// (2) Otherwise the city-level singleton — the session that runs given the
+	// shipped pack's max_active_sessions=1. Preserves the #3764 unpinned shape.
+	if haveCity {
+		return citySingleton, true
+	}
+	// (3) Rig-scoped fallback only when no city-level dispatcher exists at all.
+	if haveRig {
 		return rigScoped, true
 	}
 	return Agent{}, false
+}
+
+// controlDispatcherIsResident reports whether a control-dispatcher agent is kept
+// live by the controller — pinned by a [[named_session]] mode="always" bound to
+// it (the same TemplateQualifiedName↔QualifiedName correlation validateNamedSessions
+// uses) or carrying a min_active_sessions>=1 floor. Only a resident rig-scoped
+// dispatcher is a session that actually runs and serves its rig's own prefix bead
+// store, so only then may a rig-store control bead route to it instead of the
+// city singleton.
+func controlDispatcherIsResident(cfg *City, agent *Agent) bool {
+	if cfg == nil || agent == nil {
+		return false
+	}
+	if agent.MinActiveSessions != nil && *agent.MinActiveSessions >= 1 {
+		return true
+	}
+	qn := agent.QualifiedName()
+	for i := range cfg.NamedSessions {
+		ns := &cfg.NamedSessions[i]
+		if ns.ModeOrDefault() == "always" && ns.TemplateQualifiedName() == qn {
+			return true
+		}
+	}
+	return false
 }
 
 // BindingQualifiedName returns the binding-qualified agent identity without a
