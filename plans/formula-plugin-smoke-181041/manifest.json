@@ -6,8 +6,17 @@
   "docs_base_revset": "default@",
   "docs_artifact_root": "/data/projects/doltlite-gascity/gascity/plans/formula-plugin-smoke-181041",
   "manifest_path": "/data/projects/doltlite-gascity/gascity/plans/formula-plugin-smoke-181041/manifest.json",
-  "docs_change_id": "mnootytpnuopsxuxwlxmnsypmqznrxoq",
+  "docs_change_id": "nlouvllvmroxwywyyuzzpnzzptxwuxuy",
   "source": {},
-  "documents": [],
-  "updated_at": "2026-07-03T08:50:32Z"
+  "documents": [
+    {
+      "name": "requirements",
+      "schema": "gc.build.requirements.v1",
+      "path": "plans/formula-plugin-smoke-181041/requirements.md",
+      "absolute_path": "/data/projects/doltlite-gascity/gascity/plans/formula-plugin-smoke-181041/requirements.md",
+      "hash": "sha256:a74b87556a6e7ffa02323289297f9a1389edcf5307da39f5be43b9bd41901ec8",
+      "change_id": "nlouvllvmroxwywyyuzzpnzzptxwuxuy"
+    }
+  ],
+  "updated_at": "2026-07-03T08:59:06Z"
 }
