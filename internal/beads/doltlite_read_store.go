@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gastownhall/gascity/internal/beadmeta"
 )
 
 // DoltliteReadStore serves hot read paths in-process for bd/doltlite stores.
@@ -103,13 +105,13 @@ func doltliteReadyIssueWhere(tables doltliteTableSet, includeWispTargets bool, i
 	depType := "COALESCE(NULLIF(d.type, ''), 'blocks')"
 	blockerJoins := "LEFT JOIN " + tables.issues + " blocker_issue ON blocker_issue.id = " + issueTargetExpr
 	blockerStatus := "COALESCE(blocker_issue.status, '')"
-	issueFailedPredicate, issueFailedArgs := doltliteMetadataEqualsPredicate("blocker_issue", "gc.outcome", "fail")
+	issueFailedPredicate, issueFailedArgs := doltliteMetadataEqualsPredicate("blocker_issue", beadmeta.OutcomeMetadataKey, "fail")
 	blockerFailed := issueFailedPredicate
 	failedArgs := issueFailedArgs
 	if includeWispTargets {
 		blockerJoins += "\n\t\t\tLEFT JOIN " + doltliteWispTables.issues + " blocker_wisp ON blocker_wisp.id = " + wispTargetExpr
 		blockerStatus = "CASE WHEN " + wispTargetExpr + " IS NOT NULL THEN COALESCE(blocker_wisp.status, '') ELSE COALESCE(blocker_issue.status, '') END"
-		wispFailedPredicate, wispFailedArgs := doltliteMetadataEqualsPredicate("blocker_wisp", "gc.outcome", "fail")
+		wispFailedPredicate, wispFailedArgs := doltliteMetadataEqualsPredicate("blocker_wisp", beadmeta.OutcomeMetadataKey, "fail")
 		blockerFailed = "CASE WHEN " + wispTargetExpr + " IS NOT NULL THEN (" + wispFailedPredicate + ") ELSE (" + issueFailedPredicate + ") END"
 		failedArgs = append(wispFailedArgs, issueFailedArgs...)
 	}

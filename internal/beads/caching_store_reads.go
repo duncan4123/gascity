@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"slices"
 	"time"
+
+	"github.com/gastownhall/gascity/internal/beadmeta"
 )
 
 // List returns beads matching the query. Active-bead queries are served from
@@ -467,7 +469,7 @@ func (c *CachingStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 		now := time.Now().UTC()
 		for _, b := range c.beads {
 			statusByID[b.ID] = b.Status
-			metadataByID[b.ID] = map[string]string{"gc.outcome": b.Metadata["gc.outcome"]}
+			metadataByID[b.ID] = map[string]string{beadmeta.OutcomeMetadataKey: b.Metadata[beadmeta.OutcomeMetadataKey]}
 			if IsReadyCandidate(b, now) {
 				openBeads = append(openBeads, cloneBead(b))
 			}

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/gastownhall/gascity/internal/beadmeta"
 )
 
 // ErrNotFound is returned when a bead ID does not exist in the store.
@@ -249,7 +251,7 @@ func IsReadyDependencySatisfied(status string, metadata map[string]string) bool 
 	if strings.TrimSpace(status) != "closed" {
 		return false
 	}
-	return strings.TrimSpace(metadata["gc.outcome"]) != "fail"
+	return strings.TrimSpace(metadata[beadmeta.OutcomeMetadataKey]) != "fail"
 }
 
 // IsReadyExcludedType reports whether the bead type is excluded from

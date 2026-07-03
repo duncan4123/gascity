@@ -1498,7 +1498,7 @@ func beadFromNativeIssue(issue *beadslib.Issue) (Bead, error) {
 	b := Bead{
 		ID:          issue.ID,
 		Title:       issue.Title,
-		Status:      mapBdStatus(string(issue.Status)),
+		Status:      mapNativeBdStatus(string(issue.Status)),
 		Type:        string(issue.IssueType),
 		Priority:    nativePriorityFromIssue(issue),
 		CreatedAt:   issue.CreatedAt,
@@ -1526,6 +1526,17 @@ func beadFromNativeIssue(issue *beadslib.Issue) (Bead, error) {
 		}
 	}
 	return b, nil
+}
+
+func mapNativeBdStatus(s string) string {
+	switch s {
+	case "closed":
+		return "closed"
+	case "in_progress":
+		return "in_progress"
+	default:
+		return "open"
+	}
 }
 
 func nativePriorityFromIssue(issue *beadslib.Issue) *int {
