@@ -1743,6 +1743,45 @@ func TestEnsureCanonicalMetadataIsByteIdempotentOnValidFixtures(t *testing.T) {
 	}
 }
 
+func TestEnsureMetadataAttachedDatabasesWritesDoltliteAttachments(t *testing.T) {
+	fs := fsys.OSFS{}
+	path := filepath.Join(t.TempDir(), "metadata.json")
+	if err := fs.WriteFile(path, []byte(`{"backend":"doltlite","database":"doltlite","dolt_database":"hq"}`), 0o644); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+
+	changed, err := EnsureMetadataAttachedDatabases(fs, path, []AttachedDatabaseState{{
+		Alias: "ops",
+		Path:  "/city/.gc/ops.sqlite",
+	}})
+	if err != nil {
+		t.Fatalf("EnsureMetadataAttachedDatabases() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("EnsureMetadataAttachedDatabases() changed = false, want true")
+	}
+	data, err := fs.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	for _, want := range []string{`"attached_databases"`, `"alias": "ops"`, `"path": "/city/.gc/ops.sqlite"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("metadata missing %q:\n%s", want, data)
+		}
+	}
+
+	changed, err = EnsureMetadataAttachedDatabases(fs, path, []AttachedDatabaseState{{
+		Alias: "ops",
+		Path:  "/city/.gc/ops.sqlite",
+	}})
+	if err != nil {
+		t.Fatalf("EnsureMetadataAttachedDatabases() second call error = %v", err)
+	}
+	if changed {
+		t.Fatal("EnsureMetadataAttachedDatabases() second call changed = true, want false")
+	}
+}
+
 func TestEnsureCanonicalMetadataPreservesExistingPostgresHostWhenStateOmitsIt(t *testing.T) {
 	fs := fsys.OSFS{}
 	dir := t.TempDir()

@@ -27,6 +27,8 @@ type DoltliteReadStore struct {
 	*BdStore
 	db              *sql.DB
 	dbPath          string
+	scopeRoot       string
+	attachments     []doltliteAttachment
 	orderRunMu      sync.Mutex
 	orderRunLastRun map[string]time.Time
 	orderRunOpen    map[string]bool
@@ -44,9 +46,15 @@ type DoltliteReadStore struct {
 func (s *DoltliteReadStore) NeedsSessionTypeFallback() bool { return true }
 
 type doltliteMetadata struct {
-	Backend      string `json:"backend"`
-	Database     string `json:"database"`
-	DoltDatabase string `json:"dolt_database"`
+	Backend           string               `json:"backend"`
+	Database          string               `json:"database"`
+	DoltDatabase      string               `json:"dolt_database"`
+	AttachedDatabases []doltliteAttachment `json:"attached_databases,omitempty"`
+}
+
+type doltliteAttachment struct {
+	Alias string `json:"alias"`
+	Path  string `json:"path"`
 }
 
 type doltliteTableSet struct {
@@ -170,7 +178,12 @@ func NewDoltliteReadStore(dir string, backing *BdStore) (*DoltliteReadStore, err
 		_ = db.Close()
 		return nil, err
 	}
-	store := &DoltliteReadStore{BdStore: backing, db: db, dbPath: dbPath}
+	attachments, err := prepareDoltliteAttachments(db, dir, meta.AttachedDatabases, false)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	store := &DoltliteReadStore{BdStore: backing, db: db, dbPath: dbPath, scopeRoot: dir, attachments: attachments}
 	store.warmSchemaCache()
 	return store, nil
 }
@@ -185,6 +198,52 @@ func readDoltliteMetadata(dir string) (doltliteMetadata, error) {
 		return meta, err
 	}
 	return meta, nil
+}
+
+func prepareDoltliteAttachments(db *sql.DB, scopeRoot string, attachments []doltliteAttachment, createMissing bool) ([]doltliteAttachment, error) {
+	out := make([]doltliteAttachment, 0, len(attachments))
+	for _, attachment := range attachments {
+		alias := strings.TrimSpace(attachment.Alias)
+		path := strings.TrimSpace(attachment.Path)
+		if alias == "" || path == "" {
+			continue
+		}
+		if !validDoltliteAttachmentAlias(alias) {
+			return nil, fmt.Errorf("doltlite attachment alias %q is invalid", alias)
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(scopeRoot, path)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return nil, fmt.Errorf("creating doltlite attachment dir %s: %w", filepath.Dir(path), err)
+		}
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) && !createMissing {
+				continue
+			}
+			if !os.IsNotExist(err) {
+				return nil, fmt.Errorf("stat doltlite attachment %s: %w", path, err)
+			}
+		}
+		if _, err := db.Exec(`ATTACH DATABASE ? AS `+quoteSQLiteIdentifier(alias), path); err != nil {
+			return nil, fmt.Errorf("attaching doltlite sqlite database %s as %s: %w", path, alias, err)
+		}
+		out = append(out, doltliteAttachment{Alias: alias, Path: path})
+	}
+	return out, nil
+}
+
+func validDoltliteAttachmentAlias(alias string) bool {
+	if alias == "" {
+		return false
+	}
+	for i, r := range alias {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r == '_' || i > 0 && r >= '0' && r <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (s *DoltliteReadStore) CloseStore() error {
@@ -1443,6 +1502,10 @@ func (s *DoltliteReadStore) openWritableDB() (*sql.DB, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(0)
 	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if _, err := prepareDoltliteAttachments(db, s.scopeRoot, s.attachments, true); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

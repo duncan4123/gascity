@@ -1611,11 +1611,17 @@ func ensureCanonicalDoltliteScopeMetadata(fs fsys.FS, scopeRoot, doltDatabase st
 	if err := ensureBeadsDir(fs, filepath.Dir(path)); err != nil {
 		return err
 	}
-	_, err := contract.EnsureCanonicalMetadata(fs, path, contract.MetadataState{
+	if _, err := contract.EnsureCanonicalMetadata(fs, path, contract.MetadataState{
 		Database:     "doltlite",
 		Backend:      "doltlite",
 		DoltDatabase: doltDatabase,
-	})
+	}); err != nil {
+		return err
+	}
+	_, err := contract.EnsureMetadataAttachedDatabases(fs, path, []contract.AttachedDatabaseState{{
+		Alias: "ops",
+		Path:  filepath.Join(scopeRoot, ".gc", "ops.sqlite"),
+	}})
 	return err
 }
 

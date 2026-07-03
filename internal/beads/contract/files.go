@@ -82,6 +82,13 @@ type MetadataState struct {
 	PostgresDatabase string `json:"postgres_database,omitempty"`
 }
 
+// AttachedDatabaseState declares a SQLite database that DoltLite should ATTACH
+// alongside the versioned main store for unversioned operational tables.
+type AttachedDatabaseState struct {
+	Alias string `json:"alias"`
+	Path  string `json:"path"`
+}
+
 // MetadataParseError reports a failure to parse or validate metadata.json.
 //
 // Returned by LoadMetadataState for JSON parse failures and for every E1–E5
@@ -601,6 +608,47 @@ func EnsureCanonicalMetadata(fs fsys.FS, path string, state MetadataState) (bool
 	}
 	encoded = append(encoded, '\n')
 	return true, fs.WriteFile(path, encoded, 0o644)
+}
+
+// EnsureMetadataAttachedDatabases writes DoltLite ATTACH declarations while
+// leaving the canonical backend metadata contract unchanged.
+func EnsureMetadataAttachedDatabases(fs fsys.FS, path string, attachments []AttachedDatabaseState) (bool, error) {
+	meta := map[string]any{}
+	data, err := fs.ReadFile(path)
+	switch {
+	case err == nil:
+		if err := json.Unmarshal(data, &meta); err != nil {
+			return false, err
+		}
+	case os.IsNotExist(err):
+	case err != nil:
+		return false, err
+	}
+	normalized := make([]map[string]string, 0, len(attachments))
+	for _, attached := range attachments {
+		alias := strings.TrimSpace(attached.Alias)
+		path := strings.TrimSpace(attached.Path)
+		if alias == "" || path == "" {
+			continue
+		}
+		normalized = append(normalized, map[string]string{"alias": alias, "path": path})
+	}
+	if len(normalized) == 0 || metadataValueEqual(meta["attached_databases"], normalized) {
+		return false, nil
+	}
+	meta["attached_databases"] = normalized
+	encoded, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	encoded = append(encoded, '\n')
+	return true, fs.WriteFile(path, encoded, 0o644)
+}
+
+func metadataValueEqual(got, want any) bool {
+	gotJSON, gotErr := json.Marshal(got)
+	wantJSON, wantErr := json.Marshal(want)
+	return gotErr == nil && wantErr == nil && string(gotJSON) == string(wantJSON)
 }
 
 func ensureCanonicalConfigFallback(fs fsys.FS, path string, state ConfigState) (bool, error) {

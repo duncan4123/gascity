@@ -1265,7 +1265,7 @@ backend = "doltlite"
 		t.Fatal(err)
 	}
 	metaText := string(meta)
-	for _, want := range []string{`"backend": "doltlite"`, `"database": "doltlite"`, `"dolt_database": "hq"`} {
+	for _, want := range []string{`"backend": "doltlite"`, `"database": "doltlite"`, `"dolt_database": "hq"`, `"attached_databases"`, `"alias": "ops"`, filepath.Join(cityPath, ".gc", "ops.sqlite")} {
 		if !strings.Contains(metaText, want) {
 			t.Fatalf("metadata missing %q:\n%s", want, metaText)
 		}

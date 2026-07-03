@@ -72,6 +72,65 @@ func TestDoltliteReadStoreOpensExistingDoltliteDBWithStaleDoltMetadata(t *testin
 	defer store.CloseStore() //nolint:errcheck // test cleanup
 }
 
+func TestDoltliteReadStoreAttachesOperationalSQLiteDatabase(t *testing.T) {
+	dir := t.TempDir()
+	beadsDir := filepath.Join(dir, ".beads")
+	if err := os.MkdirAll(filepath.Join(beadsDir, "doltlite"), 0o755); err != nil {
+		t.Fatalf("mkdir doltlite dir: %v", err)
+	}
+	meta := []byte(`{
+		"backend":"doltlite",
+		"database":"doltlite",
+		"dolt_database":"hq",
+		"attached_databases":[{"alias":"ops","path":".gc/ops.sqlite"}]
+	}`)
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), meta, 0o600); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	db, err := sql.Open(doltliteSQLDriverName, filepath.Join(beadsDir, "doltlite", "hq.db")+"?_busy_timeout=10000")
+	if err != nil {
+		t.Fatalf("open doltlite fixture db: %v", err)
+	}
+	createTestDoltliteSchema(t, db)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close fixture db: %v", err)
+	}
+
+	opsPath := filepath.Join(dir, ".gc", "ops.sqlite")
+	if err := os.MkdirAll(filepath.Dir(opsPath), 0o755); err != nil {
+		t.Fatalf("mkdir ops dir: %v", err)
+	}
+	ops, err := sql.Open(doltliteSQLDriverName, opsPath+"?_busy_timeout=10000")
+	if err != nil {
+		t.Fatalf("open ops sqlite fixture: %v", err)
+	}
+	if _, err := ops.Exec(`CREATE TABLE runtime_state (key TEXT PRIMARY KEY, value TEXT);
+		INSERT INTO runtime_state (key, value) VALUES ('lease', 'unversioned')`); err != nil {
+		t.Fatalf("seed ops sqlite fixture: %v", err)
+	}
+	if err := ops.Close(); err != nil {
+		t.Fatalf("close ops fixture: %v", err)
+	}
+
+	backing := NewBdStore(dir, func(string, string, ...string) ([]byte, error) {
+		t.Fatal("backing bd runner should not be called while opening doltlite read store")
+		return nil, nil
+	})
+	store, err := NewDoltliteReadStore(dir, backing)
+	if err != nil {
+		t.Fatalf("NewDoltliteReadStore: %v", err)
+	}
+	defer store.CloseStore() //nolint:errcheck // test cleanup
+
+	var value string
+	if err := store.db.QueryRow(`SELECT value FROM ops.runtime_state WHERE key = 'lease'`).Scan(&value); err != nil {
+		t.Fatalf("query attached ops database: %v", err)
+	}
+	if value != "unversioned" {
+		t.Fatalf("attached ops value = %q, want unversioned", value)
+	}
+}
+
 func TestDoltliteReadStoreSkipLabels(t *testing.T) {
 	store, closeStore := newTestDoltliteReadStore(t)
 	defer closeStore()
