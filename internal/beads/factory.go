@@ -24,6 +24,8 @@ const (
 	BeadsStoreNameNativeDoltStore = "NativeDoltStore"
 	// BeadsStoreNameDoltliteReadStore is the diagnostic store name for optimized DoltLite stores.
 	BeadsStoreNameDoltliteReadStore = "DoltliteReadStore"
+	// BeadsStoreNameBackendPluginStore is the diagnostic store name for plugin-backed stores.
+	BeadsStoreNameBackendPluginStore = "BackendPluginStore"
 
 	storeNameBdStore         = BeadsStoreNameBdStore
 	storeNameFileStore       = BeadsStoreNameFileStore

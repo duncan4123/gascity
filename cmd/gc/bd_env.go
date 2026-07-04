@@ -97,14 +97,23 @@ func bdStoreForScope(scopeRoot, cityPath string, cfg *config.City, knownPrefix .
 
 func openBdStoreForScope(scopeRoot, cityPath string, cfg *config.City, knownPrefix ...string) beads.Store {
 	store := bdStoreForScope(scopeRoot, cityPath, cfg, knownPrefix...)
-	if optimized, ok := openOptimizedDoltliteStore(scopeRoot, cityPath, store); ok {
+	if optimized, ok := openOptimizedBackendStore(scopeRoot, cityPath, store); ok {
 		return optimized
 	}
 	return store
 }
 
-func openOptimizedDoltliteStoreForScope(scopeRoot, cityPath string, cfg *config.City, knownPrefix ...string) (beads.Store, bool) {
-	return openOptimizedDoltliteStore(scopeRoot, cityPath, bdStoreForScope(scopeRoot, cityPath, cfg, knownPrefix...))
+func openOptimizedBackendStoreForScope(scopeRoot, cityPath string, cfg *config.City, knownPrefix ...string) (beads.Store, bool) {
+	return openOptimizedBackendStore(scopeRoot, cityPath, bdStoreForScope(scopeRoot, cityPath, cfg, knownPrefix...))
+}
+
+func openOptimizedBackendStore(scopeRoot, cityPath string, store *beads.BdStore) (beads.Store, bool) {
+	scopeRoot = resolveStoreScopeRoot(cityPath, scopeRoot)
+	backend := resolveScopeBeadsBackend(cityPath, scopeRoot)
+	if !backend.Capabilities().OptimizedLocalStore {
+		return nil, false
+	}
+	return backend.OpenOptimizedStore(scopeRoot, cityPath, store)
 }
 
 func bdStoreOptionsForConfig(cfg *config.City) []beads.BdStoreOption {

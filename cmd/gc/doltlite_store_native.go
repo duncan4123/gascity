@@ -10,6 +10,10 @@ func openOptimizedDoltliteStore(storePath, cityPath string, store *beads.BdStore
 	if !doltliteFastPathScope(cityPath, storePath) {
 		return nil, false
 	}
+	plugin, err := beads.NewBackendPluginStore(storePath, store)
+	if err == nil {
+		return plugin, true
+	}
 	direct, err := beads.NewDoltliteReadStore(storePath, store)
 	if err == nil {
 		return direct, true

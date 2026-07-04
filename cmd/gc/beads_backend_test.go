@@ -9,6 +9,54 @@ import (
 	"github.com/gastownhall/gascity/internal/fsys"
 )
 
+func TestBeadsBackendCapabilitiesConformance(t *testing.T) {
+	tests := []struct {
+		name    string
+		backend BeadsBackend
+	}{
+		{name: "dolt", backend: resolveBeadsBackendName("dolt")},
+		{name: "doltlite", backend: resolveBeadsBackendName("doltlite")},
+		{name: "postgres", backend: resolveBeadsBackendName("postgres")},
+		{name: "unknown_external", backend: resolveBeadsBackendName("custom")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			caps := tt.backend.Capabilities()
+			if got := caps.ManagedServer; got != tt.backend.NeedsManagedServer() {
+				t.Fatalf("ManagedServer = %v, NeedsManagedServer = %v", got, tt.backend.NeedsManagedServer())
+			}
+			if got := caps.DoltBinary; got != tt.backend.NeedsDoltBinary() {
+				t.Fatalf("DoltBinary = %v, NeedsDoltBinary = %v", got, tt.backend.NeedsDoltBinary())
+			}
+			if got := caps.BeadHooks; got != tt.backend.NeedsBeadHooks() {
+				t.Fatalf("BeadHooks = %v, NeedsBeadHooks = %v", got, tt.backend.NeedsBeadHooks())
+			}
+			if got := caps.DoltDoctorChecks; got != tt.backend.NeedsDoltDoctorChecks() {
+				t.Fatalf("DoltDoctorChecks = %v, NeedsDoltDoctorChecks = %v", got, tt.backend.NeedsDoltDoctorChecks())
+			}
+			if caps.OptimizedLocalStore && caps.OptimizedStoreName == "" {
+				t.Fatalf("OptimizedLocalStore=true but OptimizedStoreName is empty")
+			}
+			if !caps.OptimizedLocalStore && caps.OptimizedStoreName != "" {
+				t.Fatalf("OptimizedLocalStore=false but OptimizedStoreName = %q", caps.OptimizedStoreName)
+			}
+		})
+	}
+}
+
+func TestBeadsBackendOptimizedStoreCapabilityConformance(t *testing.T) {
+	if resolveBeadsBackendName("dolt").Capabilities().OptimizedLocalStore {
+		t.Fatal("dolt backend must not advertise Gas City optimized local store")
+	}
+	if !resolveBeadsBackendName("doltlite").Capabilities().OptimizedLocalStore {
+		t.Fatal("doltlite backend should advertise Gas City optimized local store capability")
+	}
+	if resolveBeadsBackendName("postgres").Capabilities().OptimizedLocalStore {
+		t.Fatal("postgres backend must not advertise Gas City optimized local store")
+	}
+}
+
 func TestScopeNeedsDoltDoctorChecksFollowsBackendCapability(t *testing.T) {
 	clearInheritedBeadsEnv(t)
 

@@ -4,6 +4,13 @@ package main
 
 import "github.com/gastownhall/gascity/internal/beads"
 
-func openOptimizedDoltliteStore(_, _ string, _ *beads.BdStore) (beads.Store, bool) {
+func openOptimizedDoltliteStore(storePath, cityPath string, store *beads.BdStore) (beads.Store, bool) {
+	if !scopeBackendIsDoltlite(cityPath, resolveStoreScopeRoot(cityPath, storePath)) {
+		return nil, false
+	}
+	plugin, err := beads.NewBackendPluginStore(storePath, store)
+	if err == nil {
+		return plugin, true
+	}
 	return nil, false
 }

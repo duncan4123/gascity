@@ -1,0 +1,14 @@
+{
+  "schema": "gascity.workflow-docs.manifest.v1",
+  "workflow_root_bead_id": "gc-wisp-2dw",
+  "docs_workspace": "default",
+  "docs_workspace_path": "/data/projects/doltlite-gascity/gascity",
+  "docs_base_revset": "default@",
+  "artifact_root": "/data/projects/doltlite-gascity/gascity/plans/gc-wisp-2dw",
+  "manifest_path": "/data/projects/doltlite-gascity/gascity/plans/gc-wisp-2dw/manifest.json",
+  "docs_change_id": "sxorvmotpznn",
+  "source_workspace": null,
+  "source_workspace_path": null,
+  "source_change_id": null,
+  "documents": []
+}

@@ -1199,12 +1199,13 @@ func openStoreResultAtForCity(storePath, cityPath string) (beads.StoreOpenResult
 		store, err := openExecStoreAtForCity(provider, scopeRoot, runtimeCityPath)
 		return beads.StoreOpenResult{Store: wrapStoreWithBeadPolicies(store, cfg), Diagnostic: beads.ExecStoreDiagnostic()}, err
 	}
-	if providerUsesBdStoreContract(provider) && scopeBackendIsDoltlite(runtimeCityPath, scopeRoot) {
-		if optimized, ok := openOptimizedDoltliteStoreForScope(scopeRoot, runtimeCityPath, cfg); ok {
+	backend := resolveScopeBeadsBackend(runtimeCityPath, scopeRoot)
+	if providerUsesBdStoreContract(provider) && backend.Capabilities().OptimizedLocalStore {
+		if optimized, ok := openOptimizedBackendStoreForScope(scopeRoot, runtimeCityPath, cfg); ok {
 			return beads.StoreOpenResult{
 				Store: wrapStoreWithBeadPolicies(optimized, cfg),
 				Diagnostic: beads.BeadsDiagnostic{
-					Store:               beads.BeadsStoreNameDoltliteReadStore,
+					Store:               backend.Capabilities().OptimizedStoreName,
 					NativeStoreEligible: true,
 				},
 			}, nil
@@ -1229,11 +1230,11 @@ func openStoreResultAtForCity(storePath, cityPath string) (beads.StoreOpenResult
 			return openExecStoreAtForCity(provider, scopeRoot, runtimeCityPath)
 		},
 		OpenNativeStore: func() (beads.Store, error) {
-			if optimized, ok := openOptimizedDoltliteStoreForScope(scopeRoot, runtimeCityPath, cfg); ok {
+			if optimized, ok := backend.OpenOptimizedStore(scopeRoot, runtimeCityPath, bdStoreForScope(scopeRoot, runtimeCityPath, cfg)); ok {
 				return optimized, nil
 			}
-			if providerUsesBdStoreContract(provider) && scopeBackendIsDoltlite(runtimeCityPath, scopeRoot) {
-				return nil, fmt.Errorf("doltlite fastpath unavailable for %s", scopeRoot)
+			if providerUsesBdStoreContract(provider) && backend.Capabilities().OptimizedLocalStore {
+				return nil, fmt.Errorf("%s optimized store unavailable for %s", backend.Name(), scopeRoot)
 			}
 			env, err := nativeDoltOpenEnvForScope(runtimeCityPath, nil, scopeRoot)
 			if err != nil {
