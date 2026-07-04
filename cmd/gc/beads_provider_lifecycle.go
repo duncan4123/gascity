@@ -1594,6 +1594,8 @@ func ensureCanonicalScopeMetadata(fs fsys.FS, scopeRoot, doltDatabase string, pr
 
 func ensureCanonicalDoltliteScopeMetadata(fs fsys.FS, scopeRoot, doltDatabase string, preserveExisting bool) error {
 	path := filepath.Join(scopeRoot, ".beads", "metadata.json")
+	var backendPluginCommand, gasCityBackendCommand string
+	var backendPluginArgs, gasCityBackendArgs []string
 	if preserveExisting {
 		if existing, ok, err := contract.LoadMetadataState(fs, path); err != nil {
 			if !allowLegacyDoltMetadataRepair(fs, path, err) {
@@ -1601,6 +1603,11 @@ func ensureCanonicalDoltliteScopeMetadata(fs fsys.FS, scopeRoot, doltDatabase st
 			}
 		} else if ok && existing.Backend == "postgres" {
 			return nil
+		} else if ok {
+			backendPluginCommand = existing.BackendPluginCommand
+			backendPluginArgs = append([]string(nil), existing.BackendPluginArgs...)
+			gasCityBackendCommand = existing.GasCityBackendCommand
+			gasCityBackendArgs = append([]string(nil), existing.GasCityBackendArgs...)
 		}
 		if existing, ok, err := contract.ReadDoltDatabase(fs, path); err != nil {
 			return err
@@ -1612,9 +1619,13 @@ func ensureCanonicalDoltliteScopeMetadata(fs fsys.FS, scopeRoot, doltDatabase st
 		return err
 	}
 	if _, err := contract.EnsureCanonicalMetadata(fs, path, contract.MetadataState{
-		Database:     "doltlite",
-		Backend:      "doltlite",
-		DoltDatabase: doltDatabase,
+		Database:              "doltlite",
+		Backend:               "doltlite",
+		DoltDatabase:          doltDatabase,
+		BackendPluginCommand:  backendPluginCommand,
+		BackendPluginArgs:     backendPluginArgs,
+		GasCityBackendCommand: gasCityBackendCommand,
+		GasCityBackendArgs:    gasCityBackendArgs,
 	}); err != nil {
 		return err
 	}
