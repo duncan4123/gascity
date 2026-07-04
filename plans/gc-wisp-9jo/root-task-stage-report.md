@@ -11,6 +11,10 @@ City root: /data/projects/doltlite-gascity/gascity
 - Workflow metadata beads: excluded when gc.kind is set
 - Wisps/orders: excluded by id/metadata/title
 
+## Query Notes
+
+- Skipped `gascity-packs`: bead store failed to open because DoltLite schema validation could not find `schema_migrations`.
+
 ## Summary
 
 | Rig | Total | Stages |
