@@ -109,6 +109,74 @@ func TestOpenSourceWorkflowStoresSkipsBrokenRigs(t *testing.T) {
 	}
 }
 
+type listFailingStore struct {
+	beads.Store
+}
+
+func (s listFailingStore) List(beads.ListQuery) ([]beads.Bead, error) {
+	return nil, errors.New("simulated schema_migrations missing")
+}
+
+func TestOpenSourceWorkflowStoresSkipsOpenedButUnqueryableNonSourceRig(t *testing.T) {
+	cityPath := "/city"
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Rigs: []config.Rig{
+			{Name: "alpha", Prefix: "al", Path: "rigs/alpha"},
+			{Name: "broken", Prefix: "br", Path: "rigs/broken"},
+		},
+	}
+
+	openStore := func(dir string) (beads.Store, error) {
+		if strings.Contains(dir, "rigs/broken") {
+			return listFailingStore{Store: beads.NewMemStore()}, nil
+		}
+		return beads.NewMemStore(), nil
+	}
+
+	stores, skips, err := openSourceWorkflowStoresWith(cfg, cityPath, "al-123", openStore)
+	if err != nil {
+		t.Fatalf("openSourceWorkflowStoresWith returned err = %v; want tolerance of unqueryable non-source rig", err)
+	}
+	for _, s := range stores {
+		if strings.Contains(s.path, "rigs/broken") {
+			t.Fatalf("unqueryable non-source rig should have been skipped, got path %q", s.path)
+		}
+	}
+	if len(skips) != 1 || !strings.Contains(skips[0].path, "rigs/broken") {
+		t.Fatalf("skips = %#v, want the unqueryable non-source rig recorded", skips)
+	}
+	if !strings.Contains(formatSourceWorkflowStoreSkips(skips), "schema_migrations") {
+		t.Fatalf("skip warning = %q, want underlying query error surfaced", formatSourceWorkflowStoreSkips(skips))
+	}
+}
+
+func TestOpenSourceWorkflowStoresFailsWhenSourceRigUnqueryable(t *testing.T) {
+	cityPath := "/city"
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Rigs: []config.Rig{
+			{Name: "alpha", Prefix: "al", Path: "rigs/alpha"},
+			{Name: "beta", Prefix: "be", Path: "rigs/beta"},
+		},
+	}
+
+	openStore := func(dir string) (beads.Store, error) {
+		if strings.Contains(dir, "rigs/alpha") {
+			return listFailingStore{Store: beads.NewMemStore()}, nil
+		}
+		return beads.NewMemStore(), nil
+	}
+
+	_, _, err := openSourceWorkflowStoresWith(cfg, cityPath, "al-123", openStore)
+	if err == nil {
+		t.Fatal("openSourceWorkflowStoresWith returned nil error; want source rig query failure")
+	}
+	if !strings.Contains(err.Error(), "schema_migrations") {
+		t.Fatalf("error = %v, want source rig query failure surfaced", err)
+	}
+}
+
 func TestOpenSourceWorkflowStoresFailsOnlyWhenEverythingBroken(t *testing.T) {
 	// If every candidate store is unopenable, the singleton check cannot
 	// run safely — surface the first underlying error so the caller knows

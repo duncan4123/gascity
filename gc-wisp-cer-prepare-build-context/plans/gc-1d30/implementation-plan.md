@@ -75,10 +75,10 @@ In the DoltLite backend plugin, `cmd/bd-backend-doltlite/main.go` serves the sam
    Add typed protocol structs in `/data/projects/doltlite-gascity/workspaces/beads-plugin-architecture/backend/plugin/protocol.go`:
 
    - `RawSQLParams` with `session_id`, `query`, and a read/write mode hint only if the caller already computes one for output behavior. Keep the SQL text opaque to the protocol; classification remains a CLI rendering concern unless the backend needs it for execution.
-   - `RawSQLResult` with `columns []string`, `rows []map[string]any` or `[][]any`, and optional `rows_affected`.
+   - `RawSQLResult` with `columns []string`, `rows []map[string]any`, optional `rows_affected`, and an explicit read/mutation flag.
    - A mutation result must be representable without fabricating columns or rows.
 
-   Prefer a stable JSON shape that is easy for table, JSON, and CSV output to consume. If rows are represented as maps, preserve a separate `columns` slice so CSV/table order is deterministic. If rows are represented as arrays, require values to align with `columns`.
+   Prefer a stable JSON shape that is easy for table, JSON, and CSV output to consume. Preserve a separate `columns` slice so CSV/table order is deterministic even though row values are keyed maps.
 
 2. Teach pluginprocess to call `raw_sql`.
 
@@ -171,3 +171,17 @@ Coverage matrix:
 | REQ-008 | covered |
 | REQ-009 | covered |
 | REQ-010 | covered |
+
+## GSTACK REVIEW REPORT
+
+| Run | Status | Findings |
+| --- | --- | --- |
+| Design scope | pass | No UI, UX, dashboard, frontend, screen, page, component, or user-facing interaction scope was found in the implementation plan. Visual mockups are not applicable. |
+| Requirements traceability | pass | The plan front matter and Markdown coverage table cover REQ-001 through REQ-010, matching the requirements artifact. |
+| Task boundaries | pass | The proposed work decomposes cleanly into protocol, pluginprocess client/store, CLI routing/rendering, DoltLite plugin server/provider, mutation semantics, protocol-copy compatibility, and verification tasks. |
+| Test strategy | pass | The plan names focused Go test packages and a smoke-script strategy for plugin-backed read and mutation SQL without requiring a broad local suite. |
+| Risk and rollback | pass_with_note | Risky files, ownership boundaries, capability truthfulness, direct-store compatibility, protocol-copy sync, and mutation durability are explicit. Decomposition should preserve the existing direct RawDBAccessor path as the rollback boundary. |
+
+VERDICT: PASS - ready for decomposition. The only plan edit made during review was to resolve the raw SQL row-shape ambiguity in favor of the existing keyed-row plus columns contract.
+
+NO UNRESOLVED DECISIONS
