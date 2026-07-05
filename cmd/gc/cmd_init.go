@@ -78,6 +78,24 @@ var initConventionDirs = cityinit.InitConventionDirs()
 
 const defaultInitTemplate = "gascity"
 
+const (
+	initTmuxKeybindingsScriptRel = "assets/scripts/tmux-keybindings.sh"
+	initTmuxKeybindingsLiveCmd   = "{{.ConfigDir}}/" + initTmuxKeybindingsScriptRel + " {{.ConfigDir}}"
+	initTmuxKeybindingsScript    = `#!/bin/sh
+# tmux-keybindings.sh - Gas City tmux scrollback bindings.
+# Usage: tmux-keybindings.sh <config-dir>
+
+# Socket-aware tmux command (uses GC_TMUX_SOCKET when set).
+gcmux() { tmux ${GC_TMUX_SOCKET:+-L "$GC_TMUX_SOCKET"} "$@"; }
+
+# Make the wheel drive tmux copy-mode scrollback instead of leaking to the
+# focused app. Without this, mouse-reporting TUIs can consume wheel events and
+# leave tmux scrollback unreachable from the mayor session.
+gcmux bind-key -T root WheelUpPane   if-shell -F -t= "#{pane_in_mode}" "send-keys -M" "copy-mode -e"
+gcmux bind-key -T root WheelDownPane send-keys -M
+`
+)
+
 // wizardConfig carries the results of the interactive init wizard (or defaults
 // for non-interactive paths). doInit uses it to decide which config to write.
 type wizardConfig struct {
@@ -333,7 +351,7 @@ func defaultWizardBeadsBackendChoice() wizardBeadsBackendChoice {
 func discoverWizardBeadsBackendChoices(ctx context.Context) ([]wizardBeadsBackendChoice, error) {
 	choices := []wizardBeadsBackendChoice{defaultWizardBeadsBackendChoice()}
 	home := gchome.Default()
-	if err := packregistry.EnsureDefaultRegistryConfig(home); err != nil {
+	if err := packregistry.EnsureInitRegistryConfig(home); err != nil {
 		return choices, err
 	}
 	cfg, err := packregistry.LoadConfig(home)
@@ -341,18 +359,15 @@ func discoverWizardBeadsBackendChoices(ctx context.Context) ([]wizardBeadsBacken
 		return choices, err
 	}
 
-	type discovered struct {
-		choice wizardBeadsBackendChoice
-		count  int
-	}
-	byBackend := map[string]discovered{}
-	for _, reg := range cfg.Registries {
-		catalog, _, err := packregistry.ReadCachedRegistryCatalog(home, reg)
+	byBackend := map[string]wizardBeadsBackendChoice{}
+	for _, reg := range initBackendDiscoveryRegistries(cfg.Registries) {
+		catalog, err := packregistry.RefreshRegistry(ctx, home, reg, packregistry.FetchOptions{})
 		if err != nil {
-			catalog, err = packregistry.RefreshRegistry(ctx, home, reg, packregistry.FetchOptions{})
-		}
-		if err != nil {
-			continue
+			cached, _, cacheErr := packregistry.ReadCachedRegistryCatalog(home, reg)
+			if cacheErr != nil {
+				continue
+			}
+			catalog = cached
 		}
 		for _, pack := range catalog.Packs {
 			for _, plugin := range pack.Plugins {
@@ -363,31 +378,51 @@ func discoverWizardBeadsBackendChoices(ctx context.Context) ([]wizardBeadsBacken
 				if backend == "" || backend == "dolt" {
 					continue
 				}
-				entry := byBackend[backend]
-				if entry.count == 0 {
-					entry.choice = wizardBeadsBackendChoice{
-						Backend:     backend,
-						DisplayName: wizardBackendDisplayName(plugin, backend),
-						Description: wizardBackendDescription(pack, plugin),
-					}
+				if _, exists := byBackend[backend]; exists {
+					continue
 				}
-				entry.count++
-				byBackend[backend] = entry
+				byBackend[backend] = wizardBeadsBackendChoice{
+					Backend:     backend,
+					DisplayName: wizardBackendDisplayName(plugin, backend),
+					Description: wizardBackendDescription(pack, plugin),
+				}
 			}
 		}
 	}
 
 	discoveredChoices := make([]wizardBeadsBackendChoice, 0, len(byBackend))
-	for _, entry := range byBackend {
-		if entry.count != 1 {
-			continue
-		}
-		discoveredChoices = append(discoveredChoices, entry.choice)
+	for _, choice := range byBackend {
+		discoveredChoices = append(discoveredChoices, choice)
 	}
 	sort.Slice(discoveredChoices, func(i, j int) bool {
 		return discoveredChoices[i].DisplayName < discoveredChoices[j].DisplayName
 	})
 	return append(choices, discoveredChoices...), nil
+}
+
+func initBackendDiscoveryRegistries(registries []packregistry.Registry) []packregistry.Registry {
+	out := make([]packregistry.Registry, 0, len(registries))
+	addMatches := func(match func(packregistry.Registry) bool) {
+		for _, reg := range registries {
+			if match(reg) {
+				out = append(out, reg)
+			}
+		}
+	}
+	addMatches(func(reg packregistry.Registry) bool {
+		return reg.Name == packregistry.ForkRegistryName || reg.Source == packregistry.ForkRegistrySource
+	})
+	addMatches(func(reg packregistry.Registry) bool {
+		return reg.Name == packregistry.DefaultRegistryName || reg.Source == packregistry.DefaultRegistrySource
+	})
+	for _, reg := range registries {
+		if reg.Name == packregistry.ForkRegistryName || reg.Name == packregistry.DefaultRegistryName ||
+			reg.Source == packregistry.ForkRegistrySource || reg.Source == packregistry.DefaultRegistrySource {
+			continue
+		}
+		out = append(out, reg)
+	}
+	return out
 }
 
 func wizardBackendDisplayName(plugin packregistry.CatalogPlugin, backend string) string {
@@ -1000,6 +1035,38 @@ func writeInitFile(fs fsys.FS, path string, data []byte, preserve bool) (wrote b
 	return true, fs.WriteFile(path, data, 0o644)
 }
 
+func writeInitExecutableFile(fs fsys.FS, path string, data []byte, preserve bool) (wrote bool, err error) {
+	if preserve {
+		if _, err := fs.Stat(path); err == nil {
+			return false, nil
+		} else if !os.IsNotExist(err) {
+			return false, err
+		}
+	}
+	return true, fs.WriteFile(path, data, 0o755)
+}
+
+func ensureInitTmuxKeybindings(fs fsys.FS, cityPath string, preserve bool) error {
+	path := filepath.Join(cityPath, initTmuxKeybindingsScriptRel)
+	if err := fs.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	_, err := writeInitExecutableFile(fs, path, []byte(initTmuxKeybindingsScript), preserve)
+	return err
+}
+
+func ensureInitTmuxKeybindingsGlobal(packCfg *initPackConfig) {
+	if packCfg == nil {
+		return
+	}
+	for _, cmd := range packCfg.Global.SessionLive {
+		if cmd == initTmuxKeybindingsLiveCmd {
+			return
+		}
+	}
+	packCfg.Global.SessionLive = append(packCfg.Global.SessionLive, initTmuxKeybindingsLiveCmd)
+}
+
 // writeInitPackTomlOpts marshals and writes pack.toml, honoring the
 // preserve-existing option. Returns (wrote, err) mirroring writeInitFile.
 func writeInitPackTomlOpts(fs fsys.FS, cityPath string, packCfg initPackConfig, preserve bool) (bool, error) {
@@ -1271,7 +1338,7 @@ func addBeadsBackendPluginImportToInitPack(packCfg *initPackConfig, backend stri
 
 func resolveBeadsBackendPluginImportFromRegistries(backend string) (string, config.Import, error) {
 	home := gchome.Default()
-	if err := packregistry.EnsureDefaultRegistryConfig(home); err != nil {
+	if err := packregistry.EnsureInitRegistryConfig(home); err != nil {
 		return "", config.Import{}, err
 	}
 	cfg, err := packregistry.LoadConfig(home)
@@ -1284,14 +1351,15 @@ func resolveBeadsBackendPluginImportFromRegistries(backend string) (string, conf
 	}
 	var matches []match
 	var failures []string
-	for _, reg := range cfg.Registries {
-		catalog, _, err := packregistry.ReadCachedRegistryCatalog(home, reg)
+	for _, reg := range initBackendDiscoveryRegistries(cfg.Registries) {
+		catalog, err := packregistry.RefreshRegistry(context.Background(), home, reg, packregistry.FetchOptions{})
 		if err != nil {
-			catalog, err = packregistry.RefreshRegistry(context.Background(), home, reg, packregistry.FetchOptions{})
-		}
-		if err != nil {
-			failures = append(failures, reg.Name+": "+err.Error())
-			continue
+			cached, _, cacheErr := packregistry.ReadCachedRegistryCatalog(home, reg)
+			if cacheErr != nil {
+				failures = append(failures, reg.Name+": "+err.Error())
+				continue
+			}
+			catalog = cached
 		}
 		for _, pack := range catalog.Packs {
 			for _, plugin := range pack.Plugins {
@@ -1308,13 +1376,6 @@ func resolveBeadsBackendPluginImportFromRegistries(backend string) (string, conf
 			msg += "; registry errors: " + strings.Join(failures, "; ")
 		}
 		return "", config.Import{}, errors.New(msg)
-	}
-	if len(matches) > 1 {
-		choices := make([]string, 0, len(matches))
-		for _, match := range matches {
-			choices = append(choices, match.registry+":"+match.pack.Name)
-		}
-		return "", config.Import{}, fmt.Errorf("beads backend %q is ambiguous; matching plugin packs: %s", backend, strings.Join(choices, ", "))
 	}
 	pack := matches[0].pack
 	imp := config.Import{Source: pack.Source}
@@ -1429,6 +1490,10 @@ func cmdInitFromTOMLFileWithOptionsInternal(fs fsys.FS, tomlSrc, cityPath, nameO
 		fmt.Fprintf(stderr, "gc init: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
+	if err := ensureInitTmuxKeybindings(fs, cityPath, preserveExisting); err != nil {
+		fmt.Fprintf(stderr, "gc init: %v\n", err) //nolint:errcheck // best-effort stderr
+		return 1
+	}
 	// Install Claude Code hooks (settings.json).
 	if code := installClaudeHooks(fs, cityPath, stderr); code != 0 {
 		return code
@@ -1446,6 +1511,7 @@ func cmdInitFromTOMLFileWithOptionsInternal(fs fsys.FS, tomlSrc, cityPath, nameO
 	rewriteInitPromptTemplates(cfg)
 	packCfg, cityCfg := splitInitConfig(cityName, cfg)
 	applyInitPackTemplateExtras(&packCfg, templatePack)
+	ensureInitTmuxKeybindingsGlobal(&packCfg)
 	// Builtin packs compose only through explicit imports: write the
 	// canonical bundled-source entries for this city's providers into
 	// pack.toml (mirrors doInit; the builtin-pack-imports doctor check
@@ -1590,6 +1656,10 @@ func doInit(fs fsys.FS, cityPath string, wiz wizardConfig, nameOverride string, 
 		fmt.Fprintf(stderr, "gc init: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
+	if err := ensureInitTmuxKeybindings(fs, cityPath, preserveExisting); err != nil {
+		fmt.Fprintf(stderr, "gc init: %v\n", err) //nolint:errcheck // best-effort stderr
+		return 1
+	}
 	// Install workspace hooks.
 	logInitProgress(stdout, 2, "Installing workspace hooks")
 	if code := installClaudeHooks(fs, cityPath, stderr); code != 0 {
@@ -1649,6 +1719,7 @@ func doInit(fs fsys.FS, cityPath string, wiz wizardConfig, nameOverride string, 
 	// prompt.template.md paths we actually scaffold.
 	rewriteInitPromptTemplates(&cfg)
 	packCfg, cityCfg := splitInitConfig(cityName, &cfg)
+	ensureInitTmuxKeybindingsGlobal(&packCfg)
 	// Fresh built-in init scaffolds its default agents by convention under
 	// agents/<name>/ instead of re-emitting inline [[agent]] entries into
 	// pack.toml. The built-in templates currently only need the prompt

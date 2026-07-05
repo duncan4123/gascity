@@ -635,10 +635,6 @@ func beadsBackend(cityPath string) string {
 	return backend
 }
 
-func cityUsesDoltliteBeadsBackend(cityPath string) bool {
-	return beadsBackend(cityPath) == "doltlite"
-}
-
 func cityUsesDoltBeadsBackend(cityPath string) bool {
 	return beadsBackend(cityPath) == "dolt"
 }

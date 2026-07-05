@@ -200,7 +200,7 @@ func startBeadsLifecycle(cityPath, _ string, cfg *config.City, stderr io.Writer)
 			return err
 		}
 		skipLocalDolt = !owned
-	case cityUsesDoltliteBeadsBackend(cityPath):
+	case cityUsesPluginBeadsBackendSetup(cityPath):
 		skipLocalDolt = true
 	}
 	if !skipLocalDolt {
@@ -246,6 +246,19 @@ func startBeadsLifecycle(cityPath, _ string, cfg *config.City, stderr io.Writer)
 // skipped init — the caller should tell the user it's deferred to gc start.
 func initDirIfReady(cityPath, dir, prefix string) (deferred bool, err error) {
 	provider := beadsProvider(cityPath)
+	if cityUsesPluginBeadsBackendSetup(cityPath) {
+		handled, err := initBeadsViaProviderSetupHook(cityPath, dir, prefix, "")
+		if err != nil {
+			return false, err
+		}
+		if !handled {
+			return false, fmt.Errorf("beads backend plugin %q has no setup hook", beadsBackend(cityPath))
+		}
+		if err := installBeadHooks(dir, cityPath); err != nil {
+			return false, fmt.Errorf("install hooks at %s: %w", dir, err)
+		}
+		return false, nil
+	}
 	if cityUsesManagedDoltBeadsLifecycle(cityPath) {
 		if gcDoltSkip() {
 			// Defer to controller/startup without forcing a new dolt_database:
@@ -416,9 +429,12 @@ func seedDeferredManagedBeads(cityPath, dir, prefix, doltDatabase string) {
 }
 
 func seedDeferredManagedBeadsErr(cityPath, dir, prefix, doltDatabase string) error {
-	if usesPostgres, err := scopeUsesPostgresBackendForInit(cityPath, dir); err != nil {
+	if usesPluginBackend, err := scopeUsesPluginBackendForInit(cityPath, dir); err != nil {
 		return err
-	} else if usesPostgres {
+	} else if usesPluginBackend {
+		if handled, setupErr := initBeadsViaProviderSetupHook(cityPath, dir, prefix, doltDatabase); handled || setupErr != nil {
+			return setupErr
+		}
 		return nil
 	}
 	if state, ok, err := desiredScopeDoltConfigStateForInit(cityPath, dir, prefix); err != nil {
@@ -436,9 +452,6 @@ func seedDeferredManagedBeadsErr(cityPath, dir, prefix, doltDatabase string) err
 			return err
 		}
 	}
-	if cityUsesDoltliteBeadsBackend(cityPath) {
-		return ensureCanonicalDoltliteScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase)
-	}
 	return ensureCanonicalScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase)
 }
 
@@ -451,6 +464,11 @@ func initBeadsViaProviderSetupHook(cityPath, dir, prefix, doltDatabase string) (
 			return false, nil
 		}
 	}
+	policy := normalizeBeadsBackendScopePolicy(beadsBackendPluginScopePolicy{})
+	if provider != nil {
+		policy = normalizeBeadsBackendScopePolicy(provider.ScopePolicy(pluginCtx))
+	}
+	scopeCtx := beadsBackendScopeContextForCityScope(cityPath, dir, prefix, doltDatabase)
 	env, err := providerLifecycleProcessEnvForScopeInitWithError(cityPath, dir, "exec:"+script)
 	if err != nil {
 		return true, err
@@ -461,6 +479,7 @@ func initBeadsViaProviderSetupHook(cityPath, dir, prefix, doltDatabase string) (
 		"GC_BEADS_SETUP_HOOK":  script,
 		"GC_BEADS_SETUP_SCOPE": dir,
 	}
+	applyBackendPluginScopeEnv(overrides, scopeCtx, policy)
 	if provider != nil {
 		if endpoint, ok := provider.BeadsEndpoint(pluginCtx); ok {
 			overrides["GC_BEADS_BACKEND_PLUGIN_COMMAND"] = endpoint.Command
@@ -491,8 +510,8 @@ func initBeadsViaProviderSetupHook(cityPath, dir, prefix, doltDatabase string) (
 	}
 	env = overlayEnvEntries(env, overrides)
 	args := []string{"init", dir, prefix}
-	if strings.TrimSpace(doltDatabase) != "" {
-		args = append(args, doltDatabase)
+	if strings.TrimSpace(scopeCtx.Namespace) != "" {
+		args = append(args, scopeCtx.Namespace)
 	}
 	if err := runProviderOpWithEnv(script, env, args...); err != nil {
 		if isBdAlreadyInitializedError(err) {
@@ -551,9 +570,9 @@ func normalizeCanonicalBdScopeFilesForInit(cityPath, dir, prefix, doltDatabase s
 	if !cityUsesBdStoreContract(cityPath) {
 		return nil
 	}
-	if usesPostgres, err := scopeUsesPostgresBackendForInit(cityPath, dir); err != nil {
+	if usesPluginBackend, err := scopeUsesPluginBackendForInit(cityPath, dir); err != nil {
 		return err
-	} else if usesPostgres {
+	} else if usesPluginBackend {
 		return nil
 	}
 	if state, ok, err := desiredScopeDoltConfigStateForInit(cityPath, dir, prefix); err != nil {
@@ -572,9 +591,6 @@ func normalizeCanonicalBdScopeFilesForInit(cityPath, dir, prefix, doltDatabase s
 		// reject this reserved name when it is not already pinned in metadata.
 		return ensureCanonicalScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase)
 	}
-	if cityUsesDoltliteBeadsBackend(cityPath) {
-		return ensureCanonicalDoltliteScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase)
-	}
 	return enforceCanonicalScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase)
 }
 
@@ -584,14 +600,6 @@ func normalizeCanonicalBdScopeFilesForInit(cityPath, dir, prefix, doltDatabase s
 // wipe existing hooks. installBeadHooks only removes gc-stamped hooks and
 // is always safe to run regardless of event_hooks config.
 func initAndHookDir(cityPath, dir, prefix string) error {
-	if usesPostgres, err := scopeUsesPostgresBackendForInit(cityPath, dir); err != nil {
-		return err
-	} else if usesPostgres {
-		if err := installBeadHooks(dir, cityPath); err != nil {
-			return fmt.Errorf("install hooks at %s: %w", dir, err)
-		}
-		return nil
-	}
 	doltDatabase := canonicalScopeDoltDatabase(cityPath, dir, prefix)
 	if err := normalizeCanonicalBdScopeFilesForInit(cityPath, dir, prefix, doltDatabase); err != nil {
 		return err
@@ -630,9 +638,12 @@ func initAndHookDir(cityPath, dir, prefix string) error {
 	return nil
 }
 
-func scopeUsesPostgresBackendForInit(cityPath, dir string) (bool, error) {
+func scopeUsesPluginBackendForInit(cityPath, dir string) (bool, error) {
 	if !cityUsesBdStoreContract(cityPath) {
 		return false, nil
+	}
+	if cityUsesPluginBeadsBackendSetup(cityPath) {
+		return true, nil
 	}
 	path := scopeMetadataJSONPath(dir)
 	state, ok, err := contract.LoadMetadataState(fsys.OSFS{}, path)
@@ -646,7 +657,7 @@ func scopeUsesPostgresBackendForInit(cityPath, dir string) (bool, error) {
 		switch state.Backend {
 		case "postgres":
 			return true, nil
-		case "dolt":
+		case "dolt", "doltlite":
 			return false, nil
 		}
 	}
@@ -799,7 +810,7 @@ func ensureBeadsProvider(cityPath string) error {
 	if cityUsesBdStoreContract(cityPath) && gcDoltSkip() {
 		return nil
 	}
-	if cityUsesDoltliteBeadsBackend(cityPath) {
+	if cityUsesPluginBeadsBackendSetup(cityPath) {
 		return nil
 	}
 	provider := beadsProvider(cityPath)
@@ -849,7 +860,7 @@ func shutdownBeadsProvider(cityPath string) error {
 	if cityUsesBdStoreContract(cityPath) && gcDoltSkip() {
 		return clearManagedDoltRuntimeStateUnlessPostgres(cityPath)
 	}
-	if cityUsesDoltliteBeadsBackend(cityPath) {
+	if cityUsesPluginBeadsBackendSetup(cityPath) {
 		return clearManagedDoltRuntimeStateUnlessPostgres(cityPath)
 	}
 	provider := beadsProvider(cityPath)
@@ -911,19 +922,6 @@ func initBeadsForDir(cityPath, dir, prefix, doltDatabase string) error {
 			args = append(args, doltDatabase)
 		}
 		script := strings.TrimPrefix(provider, "exec:")
-		if execProviderUsesCanonicalBdScopeFiles(provider) && cityUsesDoltliteBeadsBackend(cityPath) {
-			env, err := providerLifecycleProcessEnvWithError(cityPath, provider)
-			if err != nil {
-				return err
-			}
-			if err := runProviderOpWithEnv(script, env, args...); err != nil {
-				if isBdAlreadyInitializedError(err) {
-					return nil
-				}
-				return err
-			}
-			return nil
-		}
 		if execProviderUsesCanonicalBdScopeFiles(provider) && !execProviderNeedsScopedDoltInit(provider) {
 			baseEnv, err := providerLifecycleProcessEnvForScopeInitWithError(cityPath, dir, provider)
 			if err != nil {
@@ -1139,7 +1137,7 @@ func healthBeadsProvider(cityPath string) error {
 	if cityUsesBdStoreContract(cityPath) && gcDoltSkip() {
 		return nil
 	}
-	if cityUsesDoltliteBeadsBackend(cityPath) {
+	if cityUsesPluginBeadsBackendSetup(cityPath) {
 		return nil
 	}
 	provider := beadsProvider(cityPath)
@@ -1618,15 +1616,11 @@ func normalizeCanonicalBdScopeFiles(cityPath string, cfg *config.City, warns ...
 	}
 	resolveRigPaths(cityPath, cfg.Rigs)
 	if scopeUsesManagedBdStoreContract(cityPath, cityPath) {
-		if usesPostgres, err := scopeUsesPostgresBackendForInit(cityPath, cityPath); err != nil {
+		if usesPluginBackend, err := scopeUsesPluginBackendForInit(cityPath, cityPath); err != nil {
 			return fmt.Errorf("classifying city backend: %w", err)
-		} else if !usesPostgres {
+		} else if !usesPluginBackend {
 			doltDatabase := defaultScopeDoltDatabase(cityPath, cityPath, config.EffectiveHQPrefix(cfg))
-			if cityUsesDoltliteBeadsBackend(cityPath) {
-				if err := ensureCanonicalDoltliteScopeMetadataForInit(fsys.OSFS{}, cityPath, doltDatabase); err != nil {
-					return fmt.Errorf("canonicalizing city doltlite metadata: %w", err)
-				}
-			} else if err := ensureCanonicalScopeMetadataForInit(fsys.OSFS{}, cityPath, doltDatabase); err != nil {
+			if err := ensureCanonicalScopeMetadataForInit(fsys.OSFS{}, cityPath, doltDatabase); err != nil {
 				return fmt.Errorf("canonicalizing city metadata: %w", err)
 			}
 		}
@@ -1635,15 +1629,11 @@ func normalizeCanonicalBdScopeFiles(cityPath string, cfg *config.City, warns ...
 		if !rigUsesManagedBdStoreContract(cityPath, cfg.Rigs[i]) {
 			continue
 		}
-		if usesPostgres, err := scopeUsesPostgresBackendForInit(cityPath, cfg.Rigs[i].Path); err != nil {
+		if usesPluginBackend, err := scopeUsesPluginBackendForInit(cityPath, cfg.Rigs[i].Path); err != nil {
 			return fmt.Errorf("classifying rig %q backend: %w", cfg.Rigs[i].Name, err)
-		} else if !usesPostgres {
+		} else if !usesPluginBackend {
 			doltDatabase := defaultScopeDoltDatabase(cityPath, cfg.Rigs[i].Path, cfg.Rigs[i].EffectivePrefix())
-			if cityUsesDoltliteBeadsBackend(cityPath) {
-				if err := ensureCanonicalDoltliteScopeMetadataForInit(fsys.OSFS{}, cfg.Rigs[i].Path, doltDatabase); err != nil {
-					return fmt.Errorf("canonicalizing rig %q doltlite metadata: %w", cfg.Rigs[i].Name, err)
-				}
-			} else if err := ensureCanonicalScopeMetadataForInit(fsys.OSFS{}, cfg.Rigs[i].Path, doltDatabase); err != nil {
+			if err := ensureCanonicalScopeMetadataForInit(fsys.OSFS{}, cfg.Rigs[i].Path, doltDatabase); err != nil {
 				return fmt.Errorf("canonicalizing rig %q metadata: %w", cfg.Rigs[i].Name, err)
 			}
 		}
@@ -1668,13 +1658,13 @@ func syncConfiguredDoltPortFiles(cityPath string, cityDolt config.DoltConfig, ci
 	}
 	resolveRigPaths(cityPath, rigs)
 	cityUsesBd := scopeUsesManagedBdStoreContract(cityPath, cityPath)
-	cityUsesPostgres := false
+	cityUsesPluginBackend := false
 	if cityUsesBd {
-		usesPostgres, err := scopeUsesPostgresBackendForInit(cityPath, cityPath)
+		usesPluginBackend, err := scopeUsesPluginBackendForInit(cityPath, cityPath)
 		if err != nil {
 			return fmt.Errorf("classifying city backend: %w", err)
 		}
-		cityUsesPostgres = usesPostgres
+		cityUsesPluginBackend = usesPluginBackend
 	}
 	anyRigUsesBd := false
 	for _, rig := range rigs {
@@ -1686,7 +1676,6 @@ func syncConfiguredDoltPortFiles(cityPath string, cityDolt config.DoltConfig, ci
 	if !cityUsesBd && !anyRigUsesBd {
 		return nil
 	}
-	cityUsesDoltlite := cityUsesDoltliteBeadsBackend(cityPath)
 	// .beads/config.yaml is a bd compatibility mirror, not the canonical
 	// source of routing identity. GC owns reconciliation of the mirrored
 	// prefix and endpoint shape from city.toml plus runtime publication.
@@ -1698,20 +1687,20 @@ func syncConfiguredDoltPortFiles(cityPath string, cityDolt config.DoltConfig, ci
 		return err
 	}
 	managedPort := ""
-	if cityState.EndpointOrigin == contract.EndpointOriginManagedCity && !cityUsesPostgres && !cityUsesDoltlite {
+	if cityState.EndpointOrigin == contract.EndpointOriginManagedCity && !cityUsesPluginBackend {
 		managedPort = currentDoltPort(cityPath)
 	}
 	if cityUsesBd {
 		if err := normalizeScopeDoltConfig(cityPath, cityState); err != nil {
 			return err
 		}
-		if !cityUsesPostgres && !cityUsesDoltlite {
+		if !cityUsesPluginBackend {
 			if managedPort != "" {
 				writeDoltPortFile(cityPath, managedPort, "city", warn)
 			} else {
 				removeDoltPortFile(cityPath)
 			}
-		} else if cityUsesDoltlite {
+		} else {
 			removeDoltPortFile(cityPath)
 		}
 	} else {
@@ -1738,7 +1727,7 @@ func syncConfiguredDoltPortFiles(cityPath string, cityDolt config.DoltConfig, ci
 		if err := normalizeScopeDoltConfig(rig.Path, rigState); err != nil {
 			return err
 		}
-		if cityUsesDoltlite {
+		if cityUsesPluginBackend {
 			removeDoltPortFile(rig.Path)
 		} else if rigManagedPort != "" {
 			writeDoltPortFile(rig.Path, rigManagedPort, "rig "+rig.Name, warn)
@@ -2083,10 +2072,11 @@ func providerLifecycleProcessEnvFromBase(cityPath, provider string, env []string
 	if !providerUsesBdStoreContract(provider) {
 		return env
 	}
-	if cityUsesDoltliteBeadsBackend(cityPath) {
+	if cityUsesPluginBeadsBackendSetup(cityPath) {
+		backend := beadsBackend(cityPath)
 		env = removeEnvKey(env, "GC_BEADS_BACKEND")
 		env = removeEnvKey(env, "BEADS_BACKEND")
-		env = append(env, "GC_BEADS_BACKEND=doltlite", "BEADS_BACKEND=doltlite")
+		env = append(env, "GC_BEADS_BACKEND="+backend, "BEADS_BACKEND="+backend)
 		envMap := runtimeEnvEntriesToMap(env)
 		clearProjectedDoltEnv(envMap)
 		clearProjectedPostgresEnv(envMap)

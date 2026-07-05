@@ -58,9 +58,26 @@ BD_EXPORT_AUTO=%s
   "${BD_EXPORT_AUTO:-}" > "` + envFile + `"
 printf '%s
 ' "$*" > "` + argsFile + `"
-if [ "${1:-}" = "--dolt-auto-commit" ]; then
-  shift 2
-fi
+while [ $# -gt 0 ]; do
+  case "${1:-}" in
+    --dolt-auto-commit)
+      if [ "${2:-}" = "on" ] || [ "${2:-}" = "off" ] || [ "${2:-}" = "true" ] || [ "${2:-}" = "false" ]; then
+        shift 2
+      else
+        shift
+      fi
+      ;;
+    --dolt-auto-commit=*)
+      shift
+      ;;
+    --*)
+      shift
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 case "${1:-}" in
   create)
     cat <<'JSON'

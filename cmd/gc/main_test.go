@@ -3314,7 +3314,6 @@ func TestRunWizardSelectCodexAndDoltliteBackend(t *testing.T) {
 func TestDiscoverWizardBeadsBackendChoicesFromRegistry(t *testing.T) {
 	configureIsolatedRuntimeEnv(t)
 	home := os.Getenv("GC_HOME")
-	registryDir := t.TempDir()
 	registryBody := `schema = 1
 
 [[pack]]
@@ -3329,14 +3328,27 @@ backend = "doltlite"
 display_name = "DoltLite"
 capabilities = ["local store", "no Dolt server"]
 `
-	if err := os.WriteFile(filepath.Join(registryDir, "registry.toml"), []byte(registryBody), 0o644); err != nil {
-		t.Fatalf("WriteFile(registry.toml): %v", err)
+	for _, name := range []string{packregistry.DefaultRegistryName, packregistry.ForkRegistryName} {
+		if err := packregistry.WriteCatalogCache(home, name, []byte(registryBody)); err != nil {
+			t.Fatalf("WriteCatalogCache(%s): %v", name, err)
+		}
 	}
+	missingRegistry := filepath.Join(t.TempDir(), "missing-registry.toml")
 	if err := packregistry.SaveConfig(home, packregistry.Config{Registries: []packregistry.Registry{{
-		Name:   "local",
-		Source: registryDir,
+		Name:   packregistry.DefaultRegistryName,
+		Source: missingRegistry,
+	}, {
+		Name:   packregistry.ForkRegistryName,
+		Source: missingRegistry,
 	}}}); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
+	}
+	cached, _, err := packregistry.ReadCachedRegistryCatalog(home, packregistry.Registry{Name: packregistry.DefaultRegistryName, Source: missingRegistry})
+	if err != nil {
+		t.Fatalf("ReadCachedRegistryCatalog: %v", err)
+	}
+	if len(cached.Packs) != 1 || len(cached.Packs[0].Plugins) != 1 {
+		t.Fatalf("cached registry = %+v, want one plugin pack", cached)
 	}
 
 	choices, err := discoverWizardBeadsBackendChoices(context.Background())
