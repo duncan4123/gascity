@@ -8,15 +8,17 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"github.com/gastownhall/gascity/internal/api"
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
@@ -3301,81 +3303,98 @@ func TestRunWorkflowServeDedupsLegacyTraceWarningsAcrossNestedControlDispatch(t 
 	}
 }
 
-func TestWorkflowServeControlReadyQueryUsesControlTiers(t *testing.T) {
+func TestWorkflowServeControlReadyQueryIsInternalCachedQuery(t *testing.T) {
 	query := workflowServeControlReadyQuery(config.Agent{Name: config.ControlDispatcherAgentName})
-	if strings.Contains(query, "GC_SESSION_ORIGIN") {
-		t.Fatalf("workflowServeControlReadyQuery should not gate legacy routes on session origin: %q", query)
+	if !strings.HasPrefix(query, workflowServeControlReadyQueryPrefix) {
+		t.Fatalf("workflowServeControlReadyQuery = %q, want internal control query prefix", query)
 	}
-	if strings.Contains(query, "bd list --status in_progress") {
-		t.Fatalf("workflowServeControlReadyQuery should not return in-progress control beads: %q", query)
-	}
-	if !strings.Contains(query, "BD_EXPORT_AUTO=false") {
-		t.Fatalf("workflowServeControlReadyQuery should disable bd auto-export: %q", query)
-	}
-	for _, want := range []string{
-		`bd --readonly --sandbox ready --assignee="$cand" --exclude-type=epic --json --limit=20`,
-		`bd --readonly --sandbox ready --metadata-field "gc.run_target=$route" --unassigned --exclude-type=epic --json --sort oldest --limit=20`,
-		`bd --readonly --sandbox ready --metadata-field "gc.routed_to=$route" --unassigned --exclude-type=epic --json --sort oldest --limit=20`,
-		`routed_ready "$GC_CONTROL_TARGET"`,
-		`routed_ready "${GC_CONTROL_LEGACY_TARGET:-}"`,
-	} {
-		if !strings.Contains(query, want) {
-			t.Fatalf("workflowServeControlReadyQuery missing %q in %q", want, query)
+	for _, forbidden := range []string{"bd ", "bd --readonly", "sh -c", "BD_EXPORT_AUTO", "GC_SESSION_ORIGIN", "bd list --status in_progress"} {
+		if strings.Contains(query, forbidden) {
+			t.Fatalf("workflowServeControlReadyQuery contains %q: %q", forbidden, query)
 		}
 	}
-	if !strings.Contains(query, `--limit=20`) {
-		t.Fatalf("workflowServeControlReadyQuery missing scan limit: %q", query)
+	spec, ok, err := parseWorkflowServeControlReadyQuery(query)
+	if err != nil || !ok {
+		t.Fatalf("parseWorkflowServeControlReadyQuery() = spec=%+v ok=%v err=%v, want parsed", spec, ok, err)
 	}
-	if strings.Contains(query, "--include-ephemeral") {
-		t.Fatalf("workflowServeControlReadyQuery default must stay bd 1.0.4-compatible: %q", query)
-	}
-}
-
-func TestWorkflowServeWorkQueryRecognizesCoreControlDispatcher(t *testing.T) {
-	query := workflowServeWorkQuery(config.Agent{Name: "core.control-dispatcher", Dir: "fixture"})
-
-	if strings.Contains(query, "bd query --json") {
-		t.Fatalf("core control-dispatcher serve query should avoid generic ephemeral scans: %q", query)
-	}
-	if !strings.Contains(query, "BD_EXPORT_AUTO=false") {
-		t.Fatalf("core control-dispatcher serve query should use the specialized control query: %q", query)
-	}
-	if !strings.Contains(query, "GC_CONTROL_TARGET='fixture/core.control-dispatcher'") {
-		t.Fatalf("core control-dispatcher serve query missing scoped target: %q", query)
+	if spec.Target != config.ControlDispatcherAgentName {
+		t.Fatalf("spec.Target = %q, want %q", spec.Target, config.ControlDispatcherAgentName)
 	}
 }
 
-func TestWorkflowServeControlReadyQueryBD105IncludesEphemeral(t *testing.T) {
-	query := workflowServeControlReadyQueryForBeads(
-		config.Agent{Name: config.ControlDispatcherAgentName},
-		config.BeadsConfig{BDCompatibility: config.BeadsBDCompatibility105},
+func TestWorkflowServeControlReadyQueryPreservesRuntimeAndLegacyTargets(t *testing.T) {
+	query := workflowServeControlReadyQuery(
+		config.Agent{Name: config.ControlDispatcherAgentName, Dir: "gascity"},
+		"gascity--control-dispatcher",
 	)
-	for _, want := range []string{
-		`bd --readonly --sandbox ready --include-ephemeral --assignee="$cand" --exclude-type=epic --json --limit=20`,
-		`bd --readonly --sandbox ready --include-ephemeral --metadata-field "gc.run_target=$route" --unassigned --exclude-type=epic --json --sort oldest --limit=20`,
-		`bd --readonly --sandbox ready --include-ephemeral --metadata-field "gc.routed_to=$route" --unassigned --exclude-type=epic --json --sort oldest --limit=20`,
-	} {
-		if !strings.Contains(query, want) {
-			t.Fatalf("workflowServeControlReadyQueryForBeads(bd-1.0.5) missing %q in %q", want, query)
-		}
+	spec, ok, err := parseWorkflowServeControlReadyQuery(query)
+	if err != nil || !ok {
+		t.Fatalf("parseWorkflowServeControlReadyQuery() = spec=%+v ok=%v err=%v, want parsed", spec, ok, err)
+	}
+	if spec.Target != "gascity/control-dispatcher" {
+		t.Fatalf("spec.Target = %q, want gascity/control-dispatcher", spec.Target)
+	}
+	if spec.ControlSessionName != "gascity--control-dispatcher" {
+		t.Fatalf("spec.ControlSessionName = %q, want configured runtime name", spec.ControlSessionName)
+	}
+	if spec.LegacyTarget != "gascity/workflow-control" {
+		t.Fatalf("spec.LegacyTarget = %q, want gascity/workflow-control", spec.LegacyTarget)
 	}
 }
 
 // TestWorkflowServeControlReadyQueryHonorsBareLegacyRoute guards the upgrade
 // gap: a qualified "core.control-dispatcher" serve loop must still claim
 // control beads that pre-1.3 builds routed to the binding-stripped bare name
-// "control-dispatcher". The bare alias is queried alongside the qualified
-// target so persisted in-flight work is not stranded after upgrade.
+// "control-dispatcher". The supervisor-cache spec carries the bare alias and
+// the route consumer scans it alongside the qualified target so persisted
+// in-flight work is not stranded after upgrade.
 func TestWorkflowServeControlReadyQueryHonorsBareLegacyRoute(t *testing.T) {
 	query := workflowServeControlReadyQuery(config.Agent{Name: config.ControlDispatcherAgentName, BindingName: "core"})
-	if !strings.Contains(query, "GC_CONTROL_TARGET='core.control-dispatcher'") {
-		t.Fatalf("serve query missing qualified target: %q", query)
+	spec, ok, err := parseWorkflowServeControlReadyQuery(query)
+	if err != nil || !ok {
+		t.Fatalf("parseWorkflowServeControlReadyQuery() = spec=%+v ok=%v err=%v, want parsed", spec, ok, err)
 	}
-	if !strings.Contains(query, "GC_CONTROL_BARE_TARGET='control-dispatcher'") {
-		t.Fatalf("serve query missing bare legacy target: %q", query)
+	if spec.Target != "core.control-dispatcher" {
+		t.Fatalf("spec.Target = %q, want core.control-dispatcher", spec.Target)
 	}
-	if !strings.Contains(query, `routed_ready "${GC_CONTROL_BARE_TARGET:-}"`) {
-		t.Fatalf("serve query missing bare routed_ready scan: %q", query)
+	if spec.BareTarget != "control-dispatcher" {
+		t.Fatalf("spec.BareTarget = %q, want control-dispatcher", spec.BareTarget)
+	}
+	routes := workflowServeControlReadyRoutes(spec)
+	if !slices.Contains(routes, "core.control-dispatcher") {
+		t.Fatalf("routes = %#v, want qualified target", routes)
+	}
+	if !slices.Contains(routes, "control-dispatcher") {
+		t.Fatalf("routes = %#v, want bare legacy route scanned", routes)
+	}
+}
+
+// TestWorkflowServeControlReadyBeadsClaimsBareRoutedWork pins the end-to-end
+// behavior the bare route exists for: a qualified dispatcher must claim an
+// unassigned bead routed to the pre-1.3 bare name out of the supervisor cache.
+func TestWorkflowServeControlReadyBeadsClaimsBareRoutedWork(t *testing.T) {
+	spec := workflowServeControlReadySpec{
+		Target:     "core.control-dispatcher",
+		BareTarget: "control-dispatcher",
+	}
+	ready := []beads.Bead{
+		{ID: "ga-bare-routed", Metadata: map[string]string{"gc.routed_to": "control-dispatcher", "gc.kind": "workflow-finalize"}},
+		{ID: "ga-qualified-routed", Metadata: map[string]string{"gc.run_target": "core.control-dispatcher", "gc.kind": "scope-check"}},
+		{ID: "ga-other", Metadata: map[string]string{"gc.routed_to": "other/control-dispatcher", "gc.kind": "scope-check"}},
+	}
+	got := filterWorkflowServeControlReadyBeads(ready, spec, map[string]string{})
+	var ids []string
+	for _, b := range got {
+		ids = append(ids, b.ID)
+	}
+	if !slices.Contains(ids, "ga-bare-routed") {
+		t.Fatalf("filtered ids = %#v, want bare-routed work claimed", ids)
+	}
+	if !slices.Contains(ids, "ga-qualified-routed") {
+		t.Fatalf("filtered ids = %#v, want qualified-routed work claimed", ids)
+	}
+	if slices.Contains(ids, "ga-other") {
+		t.Fatalf("filtered ids = %#v, want unrelated route excluded", ids)
 	}
 }
 
@@ -3396,436 +3415,319 @@ func TestControlDispatcherBareRoute(t *testing.T) {
 	}
 }
 
-func TestWorkflowServeControlReadyQueryIgnoresInProgressAssigned(t *testing.T) {
-	query := workflowServeControlReadyQuery(config.Agent{Name: config.ControlDispatcherAgentName, Dir: "gascity"})
-	out := runWorkflowServeShellQueryForTest(t, query, map[string]string{
-		"GC_SESSION_NAME":   "gascity--control-dispatcher",
-		"GC_ALIAS":          "gascity/control-dispatcher",
-		"GC_SESSION_ORIGIN": "named",
-	}, `#!/bin/sh
-set -eu
-case "$*" in
-  "list --status in_progress --assignee=gascity--control-dispatcher --json --limit=20")
-    printf '[{"id":"ga-in-progress"}]'
-    ;;
-  "--readonly --sandbox ready --assignee=gascity--control-dispatcher --json --limit=20")
-    printf '[{"id":"ga-epic-leak"}]'
-    ;;
-  "--readonly --sandbox ready --assignee=gascity--control-dispatcher --exclude-type=epic --json --limit=20")
-    printf '[{"id":"ga-ready"}]'
-    ;;
-  "--readonly --sandbox ready --metadata-field gc.run_target=gascity/control-dispatcher --unassigned --exclude-type=epic --json --sort oldest --limit=20")
-    printf '[{"id":"ga-routed"}]'
-    ;;
-  *)
-    printf '[]'
-    ;;
-esac
-`)
-	assertJSONEqual(t, out, `[{"id":"ga-ready"},{"id":"ga-routed"}]`)
-}
-
-func TestWorkflowServeControlReadyQueryIncludesMetadataRoutedWorkAfterAssignedPending(t *testing.T) {
-	query := workflowServeControlReadyQuery(config.Agent{Name: config.ControlDispatcherAgentName, Dir: "gascity"})
-	out := runWorkflowServeShellQueryForTest(t, query, map[string]string{
-		"GC_SESSION_NAME": "gascity--control-dispatcher",
-		"GC_ALIAS":        "gascity/control-dispatcher",
-	}, `#!/bin/sh
-set -eu
-case "$*" in
-  "--readonly --sandbox ready --assignee=gascity--control-dispatcher --exclude-type=epic --json --limit=20")
-    printf '[{"id":"ga-pending","metadata":{"gc.kind":"retry"}}]'
-    ;;
-  "--readonly --sandbox ready --metadata-field gc.run_target=gascity/control-dispatcher --unassigned --exclude-type=epic --json --sort oldest --limit=20")
-    printf '[{"id":"ga-ready","metadata":{"gc.kind":"scope-check"}}]'
-    ;;
-  *)
-    printf '[]'
-    ;;
-esac
-`)
-	assertJSONEqual(t, out, `[{"id":"ga-pending","metadata":{"gc.kind":"retry"}},{"id":"ga-ready","metadata":{"gc.kind":"scope-check"}}]`)
-}
-
-func TestWorkflowServeControlReadyQueryIncludesCanonicalRoutedControlWork(t *testing.T) {
-	query := workflowServeControlReadyQuery(config.Agent{Name: config.ControlDispatcherAgentName, Dir: "gascity"})
-	out := runWorkflowServeShellQueryForTest(t, query, map[string]string{
-		"GC_SESSION_NAME": "gascity--control-dispatcher",
-		"GC_ALIAS":        "gascity/control-dispatcher",
-	}, `#!/bin/sh
-set -eu
-case "$*" in
-  "--readonly --sandbox ready --metadata-field gc.routed_to=gascity/control-dispatcher --unassigned --exclude-type=epic --json --sort oldest --limit=20")
-    printf '[{"id":"ga-control-routed","metadata":{"gc.routed_to":"gascity/control-dispatcher","gc.kind":"workflow-finalize"}}]'
-    ;;
-  *)
-    printf '[]'
-    ;;
-esac
-`)
-	assertJSONEqual(t, out, `[{"id":"ga-control-routed","metadata":{"gc.routed_to":"gascity/control-dispatcher","gc.kind":"workflow-finalize"}}]`)
-}
-
-func TestWorkflowServeControlReadyQuerySkipsInstantiatingBeads(t *testing.T) {
-	query := workflowServeControlReadyQuery(config.Agent{Name: config.ControlDispatcherAgentName, Dir: "gascity"})
-	out := runWorkflowServeShellQueryForTest(t, query, map[string]string{
-		"GC_SESSION_NAME": "gascity--control-dispatcher",
-		"GC_ALIAS":        "gascity/control-dispatcher",
-	}, fmt.Sprintf(`#!/bin/sh
-set -eu
-case "$*" in
-  "--readonly --sandbox ready --assignee=gascity--control-dispatcher --exclude-type=epic --json --limit=20")
-    printf '[{"id":"ga-instantiating-assigned","metadata":{"%s":"true"}},{"id":"ga-assigned","metadata":{"gc.kind":"retry"}}]'
-    ;;
-  "--readonly --sandbox ready --metadata-field gc.run_target=gascity/control-dispatcher --unassigned --exclude-type=epic --json --sort oldest --limit=20")
-    printf '[{"id":"ga-instantiating-routed","metadata":{"%s":"true"}},{"id":"ga-routed","metadata":{"gc.kind":"scope-check"}}]'
-    ;;
-  *)
-    printf '[]'
-    ;;
-esac
-`, beadmeta.InstantiatingMetadataKey, beadmeta.InstantiatingMetadataKey))
-	assertJSONEqual(t, out, `[{"id":"ga-assigned","metadata":{"gc.kind":"retry"}},{"id":"ga-routed","metadata":{"gc.kind":"scope-check"}}]`)
-}
-
-func TestWorkflowServeControlReadyQueryPreservesQueryPriorityWhenMerging(t *testing.T) {
-	query := workflowServeControlReadyQuery(config.Agent{Name: config.ControlDispatcherAgentName, Dir: "gascity"})
-	out := runWorkflowServeShellQueryForTest(t, query, map[string]string{
-		"GC_SESSION_NAME": "gascity--control-dispatcher",
-		"GC_ALIAS":        "gascity/control-dispatcher",
-	}, `#!/bin/sh
-set -eu
-case "$*" in
-  "--readonly --sandbox ready --assignee=gascity--control-dispatcher --exclude-type=epic --json --limit=20")
-    printf '[{"id":"ga-z-assigned"},{"id":"ga-dup","source":"assigned"}]'
-    ;;
-  "--readonly --sandbox ready --metadata-field gc.run_target=gascity/control-dispatcher --unassigned --exclude-type=epic --json --sort oldest --limit=20")
-    printf '[{"id":"ga-a-routed"},{"id":"ga-route-dup","source":"run-target"}]'
-    ;;
-  "--readonly --sandbox ready --metadata-field gc.routed_to=gascity/control-dispatcher --unassigned --exclude-type=epic --json --sort oldest --limit=20")
-    printf '[{"id":"ga-route-dup","source":"routed-to"}]'
-    ;;
-  *)
-    printf '[]'
-    ;;
-esac
-`)
-	assertJSONEqual(t, out, `[{"id":"ga-z-assigned"},{"id":"ga-dup","source":"assigned"},{"id":"ga-a-routed"},{"id":"ga-route-dup","source":"run-target"}]`)
-}
-
-func TestWorkflowServeControlReadyQueryUsesConfiguredRuntimeNameWhenEnvIsManualSession(t *testing.T) {
-	query := workflowServeControlReadyQuery(
-		config.Agent{Name: config.ControlDispatcherAgentName, Dir: "gascity"},
-		"gascity--control-dispatcher",
-	)
-	out := runWorkflowServeShellQueryForTest(t, query, map[string]string{
-		"GC_SESSION_ID":     "mc-manual",
-		"GC_SESSION_NAME":   "s-mc-manual",
-		"GC_AGENT":          "s-mc-manual",
-		"GC_SESSION_ORIGIN": "manual",
-	}, `#!/bin/sh
-set -eu
-case "$*" in
-  "--readonly --sandbox ready --assignee=gascity--control-dispatcher --exclude-type=epic --json --limit=20")
-    printf '[{"id":"ga-control-ready"}]'
-    ;;
-  *)
-    printf '[]'
-    ;;
-esac
-`)
-	assertJSONEqual(t, out, `[{"id":"ga-control-ready"}]`)
-}
-
-func TestWorkflowServeControlReadyQueryFailsFastOnBDReadyError(t *testing.T) {
-	query := workflowServeControlReadyQuery(
-		config.Agent{Name: config.ControlDispatcherAgentName, Dir: "gascity"},
-		"gascity--control-dispatcher",
-	)
-	tmp := t.TempDir()
-	bdPath := filepath.Join(tmp, "bd")
-	logPath := filepath.Join(tmp, "bd.log")
-	if err := os.WriteFile(bdPath, []byte(`#!/bin/sh
-set -eu
-printf '%s\n' "$*" >> "$BD_LOG"
-printf '[mysql] read tcp 127.0.0.1:1->127.0.0.1:3307: i/o timeout\n' >&2
-printf '{"error":"failed to open database: invalid connection"}\n'
-exit 1
-`), 0o755); err != nil {
-		t.Fatalf("write fake bd: %v", err)
+func TestFilterWorkflowServeControlReadyBeadsPreservesPriorityAndPredicates(t *testing.T) {
+	clearGCEnv(t)
+	spec := workflowServeControlReadySpec{
+		Target:             "gascity/control-dispatcher",
+		ControlSessionName: "gascity--control-dispatcher",
+		LegacyTarget:       "gascity/workflow-control",
+	}
+	ready := []beads.Bead{
+		{ID: "ga-routed-first-in-input", Metadata: map[string]string{"gc.run_target": "gascity/control-dispatcher", "gc.kind": "scope-check"}},
+		{ID: "ga-epic", Type: "epic", Assignee: "gascity--control-dispatcher", Metadata: map[string]string{"gc.kind": "scope-check"}},
+		{ID: "ga-assigned", Assignee: "gascity--control-dispatcher", Metadata: map[string]string{"gc.kind": "retry"}},
+		{ID: "ga-legacy-assigned", Assignee: "gascity/workflow-control", Metadata: map[string]string{"gc.kind": "retry-eval"}},
+		{ID: "ga-route-dup", Metadata: map[string]string{"gc.run_target": "gascity/control-dispatcher", "gc.kind": "scope-check"}},
+		{ID: "ga-route-dup", Metadata: map[string]string{"gc.routed_to": "gascity/control-dispatcher", "gc.kind": "scope-check-duplicate"}},
+		{ID: "ga-legacy-route", Metadata: map[string]string{"gc.run_target": "gascity/workflow-control", "gc.kind": "workflow-finalize"}},
+		{ID: "ga-unrelated", Metadata: map[string]string{"gc.run_target": "other/control-dispatcher", "gc.kind": "scope-check"}},
+		{ID: "ga-assigned-other", Assignee: "other", Metadata: map[string]string{"gc.kind": "scope-check"}},
 	}
 
-	_, err := shellWorkQueryWithEnv(query, t.TempDir(), []string{
-		"PATH=" + tmp + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"BD_LOG=" + logPath,
-		"GC_SESSION_NAME=gascity--control-dispatcher",
-		"GC_ALIAS=gascity/control-dispatcher",
+	got := filterWorkflowServeControlReadyBeads(ready, spec, map[string]string{
+		"GC_SESSION_NAME": "manual-session",
+		"GC_ALIAS":        "gascity/control-dispatcher",
 	})
+
+	var ids []string
+	var kinds []string
+	for _, b := range got {
+		ids = append(ids, b.ID)
+		kinds = append(kinds, b.Metadata["gc.kind"])
+	}
+	wantIDs := []string{"ga-assigned", "ga-legacy-assigned", "ga-routed-first-in-input", "ga-route-dup", "ga-legacy-route"}
+	if !slices.Equal(ids, wantIDs) {
+		t.Fatalf("filtered ids = %#v, want %#v", ids, wantIDs)
+	}
+	if kinds[3] != "scope-check" {
+		t.Fatalf("duplicate route kept kind = %q, want first routed match", kinds[3])
+	}
+}
+
+func TestWorkflowServeControlReadyAssigneesPrioritizeConfiguredRuntimeName(t *testing.T) {
+	clearGCEnv(t)
+	spec := workflowServeControlReadySpec{
+		Target:             "gascity/control-dispatcher",
+		ControlSessionName: "gascity--control-dispatcher",
+	}
+	got := workflowServeControlReadyAssignees(spec, map[string]string{
+		"GC_SESSION_ID":   "mc-manual",
+		"GC_SESSION_NAME": "s-mc-manual",
+		"GC_ALIAS":        "gascity/control-dispatcher",
+	})
+	wantPrefix := []string{"gascity--control-dispatcher", "gascity--workflow-control", "s-mc-manual"}
+	if len(got) < len(wantPrefix) || !slices.Equal(got[:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("assignees = %#v, want prefix %#v", got, wantPrefix)
+	}
+}
+
+func TestNextWorkflowServeBeadsRejectsControlReadyWithoutSupervisorAPI(t *testing.T) {
+	clearGCEnv(t)
+	cityDir := t.TempDir()
+	query := workflowServeControlReadyQuery(config.Agent{Name: config.ControlDispatcherAgentName})
+	_, err := nextWorkflowServeBeads(query, cityDir, map[string]string{"GC_CITY_PATH": cityDir})
+	if err == nil || !strings.Contains(err.Error(), "requires supervisor API") {
+		t.Fatalf("nextWorkflowServeBeads err = %v, want supervisor API requirement", err)
+	}
+	// A down/restarting controller API must be transient so the --follow serve
+	// loop backs off and retries instead of exiting and crash-looping the
+	// long-running dispatcher (the cache-backed scan has no direct-store fallback).
+	if !dispatch.IsTransientControllerError(err) {
+		t.Fatalf("nextWorkflowServeBeads err = %v, want transient classification", err)
+	}
+}
+
+func TestNextWorkflowServeBeadsControlReadyTransientWhenNoAPIEscapeHatch(t *testing.T) {
+	clearGCEnv(t)
+	// GC_NO_API is the documented direct-bd escape hatch, but graph control
+	// dispatch reads control-ready work from the supervisor API and has no
+	// direct-store fallback. The scan must classify the disabled API as transient
+	// so the serve loop retries rather than crash-looping the dispatcher process.
+	t.Setenv("GC_NO_API", "1")
+	cityDir := t.TempDir()
+	query := workflowServeControlReadyQuery(config.Agent{Name: config.ControlDispatcherAgentName})
+	_, err := nextWorkflowServeBeads(query, cityDir, map[string]string{"GC_CITY_PATH": cityDir})
+	if err == nil || !strings.Contains(err.Error(), "requires supervisor API") {
+		t.Fatalf("nextWorkflowServeBeads err = %v, want supervisor API requirement", err)
+	}
+	if !dispatch.IsTransientControllerError(err) {
+		t.Fatalf("nextWorkflowServeBeads err = %v, want transient classification under GC_NO_API", err)
+	}
+}
+
+// TestNextWorkflowServeControlReadyTransientOnInCallReadFailure pins the
+// in-call failure path: once a supervisor client exists, a transient ready read
+// (cache priming, store slow, generic 5xx, or a dropped connection) must be
+// classified transient so the --follow serve loop backs off and retries instead
+// of exiting and crash-looping the long-running dispatcher. A genuinely
+// unexpected error (e.g. a 4xx) must stay fatal so it surfaces loudly. The seam
+// drives the real api.Client decode path against an httptest server.
+func TestNextWorkflowServeControlReadyTransientOnInCallReadFailure(t *testing.T) {
+	clearGCEnv(t)
+	prev := workflowServeControlReadyList
+	t.Cleanup(func() { workflowServeControlReadyList = prev })
+
+	problem := func(status int, detail string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(status)
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
+				"title":  http.StatusText(status),
+				"status": status,
+				"detail": detail,
+			})
+		}
+	}
+	cases := []struct {
+		name          string
+		handler       http.HandlerFunc
+		closeServer   bool
+		wantTransient bool
+	}{
+		{name: "cache_not_live", handler: problem(http.StatusServiceUnavailable, "cache_not_live: supervisor cache is priming"), wantTransient: true},
+		{name: "store_slow", handler: problem(http.StatusServiceUnavailable, "store_slow: ready read timed out"), wantTransient: true},
+		{name: "server_5xx", handler: problem(http.StatusInternalServerError, "boom"), wantTransient: true},
+		{name: "conn_error", handler: func(http.ResponseWriter, *http.Request) {}, closeServer: true, wantTransient: true},
+		{name: "bad_request_stays_fatal", handler: problem(http.StatusBadRequest, "malformed control ready query"), wantTransient: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(tc.handler)
+			if tc.closeServer {
+				ts.Close()
+			} else {
+				defer ts.Close()
+			}
+			client := api.NewCityScopedClient(ts.URL, "test-city")
+			workflowServeControlReadyList = func(_ string, filter beads.ControlReadyFilter) (api.ReadyBeads, error) {
+				return client.ListReadyBeads(filter)
+			}
+
+			cityDir := t.TempDir()
+			query := workflowServeControlReadyQuery(config.Agent{Name: config.ControlDispatcherAgentName})
+			_, err := nextWorkflowServeBeads(query, cityDir, map[string]string{"GC_CITY_PATH": cityDir})
+			if err == nil {
+				t.Fatalf("nextWorkflowServeBeads err = nil, want error for in-call %s", tc.name)
+			}
+			if got := dispatch.IsTransientControllerError(err); got != tc.wantTransient {
+				t.Fatalf("IsTransientControllerError(%v) = %v, want %v for in-call %s", err, got, tc.wantTransient, tc.name)
+			}
+		})
+	}
+}
+
+// TestNextWorkflowServeControlReadyPartialCityReadIsTransient pins that a
+// partial federated ready read that omitted the city store (where graph control
+// beads live) is treated as a transient, non-authoritative read: acting on it
+// would mistake hidden control work for an idle queue.
+func TestNextWorkflowServeControlReadyPartialCityReadIsTransient(t *testing.T) {
+	clearGCEnv(t)
+	prev := workflowServeControlReadyList
+	t.Cleanup(func() { workflowServeControlReadyList = prev })
+	workflowServeControlReadyList = func(string, beads.ControlReadyFilter) (api.ReadyBeads, error) {
+		return api.ReadyBeads{
+			Partial:       true,
+			PartialErrors: []string{"city: read ready: store slow"},
+		}, nil
+	}
+
+	cityDir := t.TempDir()
+	query := workflowServeControlReadyQuery(config.Agent{Name: config.ControlDispatcherAgentName})
+	_, err := nextWorkflowServeBeads(query, cityDir, map[string]string{"GC_CITY_PATH": cityDir})
 	if err == nil {
-		t.Fatal("workflow serve query succeeded after bd ready failed")
+		t.Fatalf("nextWorkflowServeBeads err = nil, want transient error for city-store partial read")
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "i/o timeout") || !strings.Contains(msg, "failed to open database") {
-		t.Fatalf("error = %q, want bd stderr/stdout details", msg)
-	}
-	logData, readErr := os.ReadFile(logPath)
-	if readErr != nil {
-		t.Fatalf("read bd log: %v", readErr)
-	}
-	calls := strings.Split(strings.TrimSpace(string(logData)), "\n")
-	if len(calls) != 1 {
-		t.Fatalf("bd calls = %d, want fail-fast after first call; calls:\n%s", len(calls), string(logData))
+	if !dispatch.IsTransientControllerError(err) {
+		t.Fatalf("IsTransientControllerError(%v) = false, want transient for city-store partial read", err)
 	}
 }
 
-func TestWorkflowServeControlReadyQueryKeepsSuccessfulBDStderrOutOfJSON(t *testing.T) {
-	query := workflowServeControlReadyQuery(
-		config.Agent{Name: config.ControlDispatcherAgentName, Dir: "gascity"},
-		"gascity--control-dispatcher",
-	)
-	tmp := t.TempDir()
-	logPath := filepath.Join(tmp, "bd.log")
-	bdPath := filepath.Join(tmp, "bd")
-	if err := os.WriteFile(bdPath, []byte(`#!/bin/sh
-set -eu
-printf '%s\n' "$*" >> "$BD_LOG"
-case "$*" in
-  "--readonly --sandbox ready --assignee=gascity--control-dispatcher --exclude-type=epic --json --limit=20")
-    printf '[{"id":"ga-control-ready"}]'
-    printf 'notice: refreshed export metadata\n' >&2
-    ;;
-  *)
-    printf '[]'
-    ;;
-esac
-`), 0o755); err != nil {
-		t.Fatalf("write fake bd: %v", err)
+// TestNextWorkflowServeControlReadyPartialRigOnlyStillAuthoritative pins that a
+// partial read that lost only an unrelated rig store still dispatches the
+// present control work: the city store remains authoritative for control beads,
+// so an unrelated rig hiccup must not stall control dispatch.
+func TestNextWorkflowServeControlReadyPartialRigOnlyStillAuthoritative(t *testing.T) {
+	clearGCEnv(t)
+	prev := workflowServeControlReadyList
+	t.Cleanup(func() { workflowServeControlReadyList = prev })
+	workflowServeControlReadyList = func(string, beads.ControlReadyFilter) (api.ReadyBeads, error) {
+		return api.ReadyBeads{
+			Body: []beads.Bead{
+				{ID: "ga-control-ready", Assignee: "gascity/control-dispatcher", Metadata: map[string]string{"gc.kind": "scope-check"}},
+			},
+			Partial:       true,
+			PartialErrors: []string{"rig alpha: read ready: store slow"},
+		}, nil
 	}
-	out, err := shellWorkQueryWithEnv(query, t.TempDir(), []string{
-		"PATH=" + tmp + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"BD_LOG=" + logPath,
-		"GC_SESSION_NAME=gascity--control-dispatcher",
-		"GC_ALIAS=gascity/control-dispatcher",
+
+	cityDir := t.TempDir()
+	query := workflowServeControlReadyQuery(config.Agent{Name: config.ControlDispatcherAgentName})
+	got, err := nextWorkflowServeBeads(query, cityDir, map[string]string{
+		"GC_CITY_PATH": cityDir,
+		"GC_ALIAS":     "gascity/control-dispatcher",
 	})
 	if err != nil {
-		t.Fatalf("run workflow serve query: %v", err)
+		t.Fatalf("nextWorkflowServeBeads err = %v, want authoritative read for rig-only partial", err)
 	}
-	assertJSONEqual(t, out, `[{"id":"ga-control-ready"}]`)
-}
-
-func TestWorkflowServeControlReadyQueryFailsOnMalformedBDJSON(t *testing.T) {
-	query := workflowServeControlReadyQuery(
-		config.Agent{Name: config.ControlDispatcherAgentName, Dir: "gascity"},
-		"gascity--control-dispatcher",
-	)
-	tmp := t.TempDir()
-	bdPath := filepath.Join(tmp, "bd")
-	if err := os.WriteFile(bdPath, []byte(`#!/bin/sh
-set -eu
-case "$*" in
-  "--readonly --sandbox ready --assignee=gascity--control-dispatcher --exclude-type=epic --json --limit=20")
-    printf 'not-json'
-    ;;
-  *)
-    printf '[]'
-    ;;
-esac
-`), 0o755); err != nil {
-		t.Fatalf("write fake bd: %v", err)
+	var ids []string
+	for _, b := range got {
+		ids = append(ids, b.ID)
 	}
-	_, err := shellWorkQueryWithEnv(query, t.TempDir(), []string{
-		"PATH=" + tmp + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"GC_SESSION_NAME=gascity--control-dispatcher",
-		"GC_ALIAS=gascity/control-dispatcher",
-	})
-	if err == nil {
-		t.Fatal("workflow serve query succeeded with malformed bd JSON")
+	if !slices.Contains(ids, "ga-control-ready") {
+		t.Fatalf("filtered ids = %#v, want ga-control-ready dispatched despite rig-only partial", ids)
 	}
 }
 
-func TestWorkflowServeControlReadyQueryPrioritizesConfiguredRuntimeName(t *testing.T) {
-	query := workflowServeControlReadyQuery(
-		config.Agent{Name: config.ControlDispatcherAgentName, Dir: "gascity"},
-		"gascity--control-dispatcher",
-	)
-	tmp := t.TempDir()
-	logPath := filepath.Join(tmp, "bd.log")
-	bdPath := filepath.Join(tmp, "bd")
-	if err := os.WriteFile(bdPath, []byte(`#!/bin/sh
-set -eu
-[ "${BD_EXPORT_AUTO:-}" = "false" ] || {
-  echo "BD_EXPORT_AUTO=${BD_EXPORT_AUTO:-}" >&2
-  exit 43
-}
-printf '%s\n' "$*" >> "$BD_LOG"
-case "$*" in
-  "--readonly --sandbox ready --assignee=gascity--control-dispatcher --exclude-type=epic --json --limit=20")
-    printf '[{"id":"ga-control-ready"}]'
-    ;;
-  *)
-    printf '[]'
-    ;;
-esac
-`), 0o755); err != nil {
-		t.Fatalf("write fake bd: %v", err)
+// TestFilterWorkflowServeControlReadyBeadsMatchesExecutionRoutedTo pins the
+// intended route-match broadening: a graph-routed control bead carrying only
+// gc.execution_routed_to (no gc.run_target/gc.routed_to) is claimed by the
+// control dispatcher rather than stranded, while one routed to another target is
+// ignored.
+func TestFilterWorkflowServeControlReadyBeadsMatchesExecutionRoutedTo(t *testing.T) {
+	clearGCEnv(t)
+	spec := workflowServeControlReadySpec{Target: "gascity/control-dispatcher"}
+	ready := []beads.Bead{
+		{ID: "ga-exec-routed", Metadata: map[string]string{beadmeta.ExecutionRoutedToMetadataKey: "gascity/control-dispatcher", "gc.kind": "scope-check"}},
+		{ID: "ga-exec-routed-other", Metadata: map[string]string{beadmeta.ExecutionRoutedToMetadataKey: "other/control-dispatcher", "gc.kind": "scope-check"}},
+		{ID: "ga-exec-routed-assigned", Assignee: "someone-else", Metadata: map[string]string{beadmeta.ExecutionRoutedToMetadataKey: "gascity/control-dispatcher", "gc.kind": "scope-check"}},
 	}
-	out, err := shellWorkQueryWithEnv(query, t.TempDir(), []string{
-		"PATH=" + tmp + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"BD_LOG=" + logPath,
-		"GC_SESSION_ID=mc-manual",
-		"GC_SESSION_NAME=s-mc-manual",
-		"GC_AGENT=s-mc-manual",
-		"GC_SESSION_ORIGIN=manual",
-	})
+	got := filterWorkflowServeControlReadyBeads(ready, spec, map[string]string{})
+	var ids []string
+	for _, b := range got {
+		ids = append(ids, b.ID)
+	}
+	if !slices.Contains(ids, "ga-exec-routed") {
+		t.Fatalf("filtered ids = %#v, want execution_routed_to-only control bead claimed", ids)
+	}
+	if slices.Contains(ids, "ga-exec-routed-other") {
+		t.Fatalf("filtered ids = %#v, want execution_routed_to bead for another target ignored", ids)
+	}
+	// The route predicate only matches unassigned beads; an already-assigned bead
+	// is claimed by the assignee scan, not broadened in via execution_routed_to.
+	if slices.Contains(ids, "ga-exec-routed-assigned") {
+		t.Fatalf("filtered ids = %#v, want assigned bead excluded from the route predicate", ids)
+	}
+}
+
+// TestControllerWorkQueryEnvIdentityRecoveredByControlReadyScan exercises the
+// production serve-env wiring: controllerWorkQueryEnv builds the control
+// dispatcher's work-query env from store/bd coordinates only and does not carry
+// the live session identity. The cache-backed control-ready assignee scan must
+// recover GC_SESSION_NAME/GC_ALIAS/GC_SESSION_ID from the process environment
+// (as the pre-cache shell scan did) or a control bead assigned to the live
+// session name/alias/id is stranded.
+func TestControllerWorkQueryEnvIdentityRecoveredByControlReadyScan(t *testing.T) {
+	clearGCEnv(t)
+	disableManagedDoltRecoveryForTest(t)
+	t.Setenv("GC_SESSION_NAME", "s-live")
+	t.Setenv("GC_ALIAS", "alias-live")
+	t.Setenv("GC_SESSION_ID", "mc-live")
+
+	cityDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte("[workspace]\nname = \"test-city\"\n\n[daemon]\nformula_v2 = true\n"+testControlDispatcherAgentTOML("")), 0o644); err != nil {
+		t.Fatalf("write city.toml: %v", err)
+	}
+	cfg, err := loadCityConfig(cityDir, io.Discard)
 	if err != nil {
-		t.Fatalf("run workflow serve query: %v", err)
+		t.Fatalf("loadCityConfig: %v", err)
 	}
-	assertJSONEqual(t, out, `[{"id":"ga-control-ready"}]`)
-	logData, err := os.ReadFile(logPath)
+	agentCfg, ok := resolveAgentIdentity(cfg, config.ControlDispatcherAgentName, currentRigContext(cfg))
+	if !ok {
+		t.Fatalf("resolveAgentIdentity(control-dispatcher) not found")
+	}
+	workEnv, err := controllerWorkQueryEnv(cityDir, cfg, &agentCfg)
 	if err != nil {
-		t.Fatalf("read bd log: %v", err)
+		t.Fatalf("controllerWorkQueryEnv: %v", err)
 	}
-	firstCall, _, _ := strings.Cut(strings.TrimSpace(string(logData)), "\n")
-	if want := "--readonly --sandbox ready --assignee=gascity--control-dispatcher --exclude-type=epic --json --limit=20"; firstCall != want {
-		t.Fatalf("first bd call = %q, want %q; all calls:\n%s", firstCall, want, string(logData))
+	// Pin the production gap: the serve env builder must not carry session
+	// identity. If this ever changes, the os.Getenv recovery becomes redundant
+	// and this test should be revisited rather than silently masking a wiring bug.
+	for _, key := range []string{"GC_SESSION_NAME", "GC_ALIAS", "GC_SESSION_ID"} {
+		if v := workEnv[key]; v != "" {
+			t.Fatalf("controllerWorkQueryEnv populated %s=%q; production identity gap no longer exists", key, v)
+		}
+	}
+
+	spec := workflowServeControlReadySpec{Target: "gascity/control-dispatcher"}
+	got := workflowServeControlReadyAssignees(spec, workEnv)
+	for _, want := range []string{"s-live", "alias-live", "mc-live"} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("assignees = %#v, want live identity %q recovered from process env", got, want)
+		}
 	}
 }
 
-func TestWorkflowServeControlReadyQueryDeduplicatesAssigneeProbes(t *testing.T) {
-	query := workflowServeControlReadyQuery(
-		config.Agent{Name: config.ControlDispatcherAgentName, Dir: "gascity"},
-		"gascity--control-dispatcher",
-	)
-	tmp := t.TempDir()
-	logPath := filepath.Join(tmp, "bd.log")
-	bdPath := filepath.Join(tmp, "bd")
-	if err := os.WriteFile(bdPath, []byte(`#!/bin/sh
-set -eu
-printf '%s\n' "$*" >> "$BD_LOG"
-case "$*" in
-  "--readonly --sandbox ready --assignee=gascity--control-dispatcher --exclude-type=epic --json --limit=20")
-    printf '[{"id":"ga-control-ready"}]'
-    ;;
-  *)
-    printf '[]'
-    ;;
-esac
-`), 0o755); err != nil {
-		t.Fatalf("write fake bd: %v", err)
+// TestFilterWorkflowServeControlReadyBeadsExcludesInstantiating pins the
+// defense-in-depth guard that keeps fenced/instantiating control beads out of
+// dispatch even if the upstream ready projection ever returns one.
+func TestFilterWorkflowServeControlReadyBeadsExcludesInstantiating(t *testing.T) {
+	clearGCEnv(t)
+	spec := workflowServeControlReadySpec{Target: "gascity/control-dispatcher"}
+	ready := []beads.Bead{
+		{ID: "ga-instantiating-assigned", Assignee: "gascity/control-dispatcher", Metadata: map[string]string{"gc.kind": "scope-check", beadmeta.InstantiatingMetadataKey: "true"}},
+		{ID: "ga-instantiating-routed", Metadata: map[string]string{"gc.run_target": "gascity/control-dispatcher", "gc.kind": "scope-check", beadmeta.InstantiatingMetadataKey: "true"}},
+		{ID: "ga-ready", Assignee: "gascity/control-dispatcher", Metadata: map[string]string{"gc.kind": "scope-check"}},
 	}
-	out, err := shellWorkQueryWithEnv(query, t.TempDir(), []string{
-		"PATH=" + tmp + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"BD_LOG=" + logPath,
-		"GC_SESSION_ID=gascity--control-dispatcher",
-		"GC_SESSION_NAME=gascity--control-dispatcher",
-		"GC_ALIAS=gascity/control-dispatcher",
-	})
-	if err != nil {
-		t.Fatalf("run workflow serve query: %v", err)
+	got := filterWorkflowServeControlReadyBeads(ready, spec, map[string]string{})
+	var ids []string
+	for _, b := range got {
+		ids = append(ids, b.ID)
 	}
-	assertJSONEqual(t, out, `[{"id":"ga-control-ready"}]`)
-	logData, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("read bd log: %v", err)
+	if slices.Contains(ids, "ga-instantiating-assigned") || slices.Contains(ids, "ga-instantiating-routed") {
+		t.Fatalf("filtered ids = %#v, want fenced/instantiating control beads excluded", ids)
 	}
-	if got := strings.Count(string(logData), "--assignee=gascity--control-dispatcher "); got != 1 {
-		t.Fatalf("gascity--control-dispatcher query count = %d, want 1; calls:\n%s", got, string(logData))
-	}
-	if got := strings.Count(string(logData), "--assignee=gascity--workflow-control "); got != 1 {
-		t.Fatalf("gascity--workflow-control query count = %d, want 1; calls:\n%s", got, string(logData))
-	}
-}
-
-func TestWorkflowServeControlReadyQueryQuotesMetadataFallbackTarget(t *testing.T) {
-	query := workflowServeControlReadyQuery(config.Agent{Name: config.ControlDispatcherAgentName, Dir: "my rig"})
-	tmp := t.TempDir()
-	argsPath := filepath.Join(tmp, "matched.args")
-	out := runWorkflowServeShellQueryForTest(t, query, map[string]string{
-		"BD_MATCHED_ARGS": argsPath,
-	}, `#!/bin/sh
-set -eu
-if [ "$#" -eq 11 ] &&
-   [ "$1" = "--readonly" ] &&
-   [ "$2" = "--sandbox" ] &&
-   [ "$3" = "ready" ] &&
-   [ "$4" = "--metadata-field" ] &&
-   [ "$5" = "gc.run_target=my rig/control-dispatcher" ] &&
-   [ "$6" = "--unassigned" ] &&
-   [ "$7" = "--exclude-type=epic" ] &&
-   [ "$8" = "--json" ] &&
-   [ "$9" = "--sort" ] &&
-   [ "${10}" = "oldest" ] &&
-   [ "${11}" = "--limit=20" ]; then
-  printf '%s\n' "$@" > "$BD_MATCHED_ARGS"
-  printf '[{"id":"ga-routed"}]'
-  exit 0
-fi
-printf '[]'
-`)
-	assertJSONEqual(t, out, `[{"id":"ga-routed"}]`)
-	argsData, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatalf("read matched args: %v", err)
-	}
-	gotArgs := strings.Split(strings.TrimSpace(string(argsData)), "\n")
-	wantArgs := []string{"--readonly", "--sandbox", "ready", "--metadata-field", "gc.run_target=my rig/control-dispatcher", "--unassigned", "--exclude-type=epic", "--json", "--sort", "oldest", "--limit=20"}
-	if !slices.Equal(gotArgs, wantArgs) {
-		t.Fatalf("matched bd args = %#v, want %#v", gotArgs, wantArgs)
-	}
-}
-
-func TestWorkflowServeControlReadyQueryUsesLegacyRouteForNamedSessions(t *testing.T) {
-	query := workflowServeControlReadyQuery(config.Agent{Name: config.ControlDispatcherAgentName, Dir: "gascity"})
-	out := runWorkflowServeShellQueryForTest(t, query, map[string]string{
-		"GC_SESSION_NAME":   "gascity--control-dispatcher",
-		"GC_ALIAS":          "gascity/control-dispatcher",
-		"GC_SESSION_ORIGIN": "named",
-	}, `#!/bin/sh
-set -eu
-case "$*" in
-  "--readonly --sandbox ready --metadata-field gc.run_target=gascity/workflow-control --unassigned --exclude-type=epic --json --sort oldest --limit=20")
-    printf '[{"id":"ga-legacy-route"}]'
-    ;;
-  *)
-    printf '[]'
-    ;;
-esac
-`)
-	assertJSONEqual(t, out, `[{"id":"ga-legacy-route"}]`)
-}
-
-func runWorkflowServeShellQueryForTest(t *testing.T, query string, env map[string]string, bdScript string) string {
-	t.Helper()
-
-	tmp := t.TempDir()
-	bdPath := filepath.Join(tmp, "bd")
-	if err := os.WriteFile(bdPath, []byte(bdScript), 0o755); err != nil {
-		t.Fatalf("write fake bd: %v", err)
-	}
-
-	queryEnv := []string{"PATH=" + tmp + string(os.PathListSeparator) + os.Getenv("PATH")}
-	for key, value := range env {
-		queryEnv = append(queryEnv, key+"="+value)
-	}
-	out, err := shellWorkQueryWithEnv(query, t.TempDir(), queryEnv)
-	if err != nil {
-		t.Fatalf("run workflow serve query: %v", err)
-	}
-	return out
-}
-
-func assertJSONEqual(t *testing.T, got, want string) {
-	t.Helper()
-	var gotValue any
-	if err := json.Unmarshal([]byte(got), &gotValue); err != nil {
-		t.Fatalf("unmarshal got JSON %q: %v", got, err)
-	}
-	var wantValue any
-	if err := json.Unmarshal([]byte(want), &wantValue); err != nil {
-		t.Fatalf("unmarshal want JSON %q: %v", want, err)
-	}
-	if !reflect.DeepEqual(gotValue, wantValue) {
-		t.Fatalf("JSON output = %s, want %s", got, want)
+	if !slices.Contains(ids, "ga-ready") {
+		t.Fatalf("filtered ids = %#v, want non-instantiating control bead retained", ids)
 	}
 }
 

@@ -372,6 +372,12 @@ type City struct {
 	// land here too; conflicting re-declarations are composition errors.
 	// Runtime-only.
 	Runtimes map[string]DiscoveredRuntime `toml:"-" json:"-"`
+	// BackendPlugins holds pack-declared backend plugin bundles composed from
+	// [[backend_plugins]] entries. Each bundle describes the storage backend,
+	// setup/provider hook, and the Beads/Gas City plugin endpoints that work
+	// together for that backend.
+	// Runtime-only.
+	BackendPlugins []DiscoveredBackendPlugin `toml:"-" json:"-"`
 	// PackSkills holds binding-qualified shared skill catalogs composed
 	// from city-level imported packs. Runtime-only.
 	PackSkills []DiscoveredSkillCatalog `toml:"-" json:"-"`
@@ -1100,6 +1106,60 @@ type PackRuntimeEntry struct {
 	// the only version today; the declaration exists so future protocol
 	// bumps fail at composition instead of at session start.
 	Protocol int `toml:"protocol,omitempty"`
+}
+
+// PackBackendPluginEntry declares a pack-provided backend plugin bundle.
+// A backend bundle can include both the bd/Beads endpoint and the Gas City
+// fastpath endpoint because Gas City bead storage always crosses Beads scope
+// and metadata boundaries.
+type PackBackendPluginEntry struct {
+	// Backend is the logical [beads].backend value this bundle implements.
+	Backend string `toml:"backend" jsonschema:"required"`
+	// SetupHook is the pack-relative exec provider script GC calls for
+	// backend initialization, metadata creation, and readiness repair.
+	SetupHook string `toml:"setup_hook,omitempty"`
+	// ProviderCommand is the bd-compatible provider command for normal
+	// lifecycle/data operations. It defaults to SetupHook when omitted.
+	ProviderCommand string `toml:"provider_command,omitempty"`
+	// StorePath is the backend-owned store path relative to the scope root.
+	StorePath string `toml:"store_path,omitempty"`
+	// BDCompatibility is the bd metadata/CLI contract this bundle expects.
+	BDCompatibility string `toml:"bd_compatibility,omitempty"`
+	// BeadsEndpoint is the bd backend plugin endpoint.
+	BeadsEndpoint PackBackendPluginEndpoint `toml:"beads_endpoint,omitempty"`
+	// GascityEndpoint is the Gas City fastpath/backend endpoint.
+	GascityEndpoint PackBackendPluginEndpoint `toml:"gascity_endpoint,omitempty"`
+	// Capabilities names backend surfaces this bundle supports, such as
+	// "setup", "provider", "metadata", "fastpath", and "store-health".
+	Capabilities []string `toml:"capabilities,omitempty"`
+}
+
+// PackBackendPluginEndpoint declares one process in a backend plugin bundle.
+type PackBackendPluginEndpoint struct {
+	Command  string   `toml:"command,omitempty"`
+	Args     []string `toml:"args,omitempty"`
+	Protocol string   `toml:"protocol,omitempty"`
+}
+
+// DiscoveredBackendPlugin is a resolved pack-declared backend plugin bundle.
+type DiscoveredBackendPlugin struct {
+	Backend         string
+	SetupHook       string
+	ProviderCommand string
+	StorePath       string
+	BDCompatibility string
+	BeadsEndpoint   DiscoveredBackendPluginEndpoint
+	GascityEndpoint DiscoveredBackendPluginEndpoint
+	Capabilities    []string
+	PackName        string
+	PackDir         string
+}
+
+// DiscoveredBackendPluginEndpoint is one resolved process endpoint.
+type DiscoveredBackendPluginEndpoint struct {
+	Command  string
+	Args     []string
+	Protocol string
 }
 
 // PackCommandEntry declares a CLI subcommand provided by a pack.
