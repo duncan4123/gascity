@@ -428,7 +428,78 @@ func seedDeferredManagedBeadsErr(cityPath, dir, prefix, doltDatabase string) err
 	if strings.TrimSpace(doltDatabase) == "" {
 		doltDatabase = readDeferredManagedDoltDatabase(filepath.Join(dir, ".beads", "metadata.json"), defaultScopeDoltDatabase(cityPath, dir, prefix))
 	}
+	if handled, err := initBeadsViaProviderSetupHook(cityPath, dir, prefix, doltDatabase); handled || err != nil {
+		return err
+	}
+	if cityUsesDoltliteBeadsBackend(cityPath) {
+		return ensureCanonicalDoltliteScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase)
+	}
 	return ensureCanonicalScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase)
+}
+
+func initBeadsViaProviderSetupHook(cityPath, dir, prefix, doltDatabase string) (bool, error) {
+	script, provider, pluginCtx, ok := beadsProviderSetupHookWithPlugin(cityPath)
+	if !ok {
+		if fallbackScript, fallbackOK := beadsProviderSetupHook(cityPath); fallbackOK {
+			script = fallbackScript
+		} else {
+			return false, nil
+		}
+	}
+	env, err := providerLifecycleProcessEnvForScopeInitWithError(cityPath, dir, "exec:"+script)
+	if err != nil {
+		return true, err
+	}
+	overrides := map[string]string{
+		"BEADS_DIR":            filepath.Join(dir, ".beads"),
+		"GC_BEADS_SCOPE_ROOT":  dir,
+		"GC_BEADS_SETUP_HOOK":  script,
+		"GC_BEADS_SETUP_SCOPE": dir,
+	}
+	if provider != nil {
+		if endpoint, ok := provider.BeadsEndpoint(pluginCtx); ok {
+			overrides["GC_DOLTLITE_BACKEND_PLUGIN_COMMAND"] = endpoint.Command
+			if len(endpoint.Args) > 0 {
+				overrides["GC_DOLTLITE_BACKEND_PLUGIN_ARGS"] = strings.Join(endpoint.Args, " ")
+			}
+			if endpoint.Protocol != "" {
+				overrides["GC_DOLTLITE_BACKEND_PLUGIN_PROTOCOL"] = endpoint.Protocol
+			}
+		}
+		if endpoint, ok := provider.GascityEndpoint(pluginCtx); ok {
+			overrides["GC_DOLTLITE_GASCITY_BACKEND_PLUGIN_COMMAND"] = endpoint.Command
+			if len(endpoint.Args) > 0 {
+				overrides["GC_DOLTLITE_GASCITY_BACKEND_PLUGIN_ARGS"] = strings.Join(endpoint.Args, " ")
+			}
+			if endpoint.Protocol != "" {
+				overrides["GC_DOLTLITE_GASCITY_BACKEND_PLUGIN_PROTOCOL"] = endpoint.Protocol
+			}
+		}
+	}
+	env = overlayEnvEntries(env, overrides)
+	args := []string{"init", dir, prefix}
+	if strings.TrimSpace(doltDatabase) != "" {
+		args = append(args, doltDatabase)
+	}
+	if err := runProviderOpWithEnv(script, env, args...); err != nil {
+		if isBdAlreadyInitializedError(err) {
+			return true, nil
+		}
+		return true, err
+	}
+	return true, nil
+}
+
+func beadsProviderSetupHookWithPlugin(cityPath string) (string, beadsBackendPlugin, beadsBackendSetupContext, bool) {
+	if script := strings.TrimSpace(os.Getenv("GC_BEADS_SETUP")); script != "" {
+		return script, nil, beadsBackendSetupContext{}, true
+	}
+	provider, ctx, ok := beadsBackendPluginForCity(cityPath)
+	if !ok {
+		return "", nil, ctx, false
+	}
+	script, ok := provider.SetupHook(ctx)
+	return script, provider, ctx, ok
 }
 
 func readDeferredManagedDoltDatabase(path, fallback string) string {
@@ -488,6 +559,9 @@ func normalizeCanonicalBdScopeFilesForInit(cityPath, dir, prefix, doltDatabase s
 		// reject this reserved name when it is not already pinned in metadata.
 		return ensureCanonicalScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase)
 	}
+	if cityUsesDoltliteBeadsBackend(cityPath) {
+		return ensureCanonicalDoltliteScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase)
+	}
 	return enforceCanonicalScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase)
 }
 
@@ -515,7 +589,7 @@ func initAndHookDir(cityPath, dir, prefix string) error {
 	if err := normalizeCanonicalBdScopeFilesForInit(cityPath, dir, prefix, doltDatabase); err != nil {
 		return err
 	}
-	if cityUsesBdStoreContract(cityPath) && currentResolvableManagedDoltPort(cityPath) != "" {
+	if cityUsesManagedDoltBeadsLifecycle(cityPath) && currentResolvableManagedDoltPort(cityPath) != "" {
 		if err := syncManagedDoltPortMirrors(cityPath); err != nil {
 			return fmt.Errorf("sync managed dolt port mirrors after init: %w", err)
 		}
@@ -807,6 +881,12 @@ func initBeadsForDir(cityPath, dir, prefix, doltDatabase string) error {
 			return err
 		}
 		return nil
+	}
+	if strings.TrimSpace(doltDatabase) == "" {
+		doltDatabase = readDeferredManagedDoltDatabase(filepath.Join(dir, ".beads", "metadata.json"), defaultScopeDoltDatabase(cityPath, dir, prefix))
+	}
+	if handled, err := initBeadsViaProviderSetupHook(cityPath, dir, prefix, doltDatabase); handled || err != nil {
+		return err
 	}
 	provider := beadsProvider(cityPath)
 	if provider == "file" {
@@ -1590,6 +1670,7 @@ func syncConfiguredDoltPortFiles(cityPath string, cityDolt config.DoltConfig, ci
 	if !cityUsesBd && !anyRigUsesBd {
 		return nil
 	}
+	cityUsesDoltlite := cityUsesDoltliteBeadsBackend(cityPath)
 	// .beads/config.yaml is a bd compatibility mirror, not the canonical
 	// source of routing identity. GC owns reconciliation of the mirrored
 	// prefix and endpoint shape from city.toml plus runtime publication.
@@ -1601,19 +1682,21 @@ func syncConfiguredDoltPortFiles(cityPath string, cityDolt config.DoltConfig, ci
 		return err
 	}
 	managedPort := ""
-	if cityState.EndpointOrigin == contract.EndpointOriginManagedCity && !cityUsesPostgres {
+	if cityState.EndpointOrigin == contract.EndpointOriginManagedCity && !cityUsesPostgres && !cityUsesDoltlite {
 		managedPort = currentDoltPort(cityPath)
 	}
 	if cityUsesBd {
 		if err := normalizeScopeDoltConfig(cityPath, cityState); err != nil {
 			return err
 		}
-		if !cityUsesPostgres {
+		if !cityUsesPostgres && !cityUsesDoltlite {
 			if managedPort != "" {
 				writeDoltPortFile(cityPath, managedPort, "city", warn)
 			} else {
 				removeDoltPortFile(cityPath)
 			}
+		} else if cityUsesDoltlite {
+			removeDoltPortFile(cityPath)
 		}
 	} else {
 		removeDoltPortFile(cityPath)
@@ -1639,7 +1722,9 @@ func syncConfiguredDoltPortFiles(cityPath string, cityDolt config.DoltConfig, ci
 		if err := normalizeScopeDoltConfig(rig.Path, rigState); err != nil {
 			return err
 		}
-		if rigManagedPort != "" {
+		if cityUsesDoltlite {
+			removeDoltPortFile(rig.Path)
+		} else if rigManagedPort != "" {
 			writeDoltPortFile(rig.Path, rigManagedPort, "rig "+rig.Name, warn)
 		} else {
 			removeDoltPortFile(rig.Path)
