@@ -225,6 +225,8 @@ func knownTOMLKeys() []string {
 		reflect.TypeOf(PackDoctorEntry{}),
 		reflect.TypeOf(PackCommandEntry{}),
 		reflect.TypeOf(PackRuntimeEntry{}),
+		reflect.TypeOf(PackBackendPluginEntry{}),
+		reflect.TypeOf(PackBackendPluginEndpoint{}),
 		reflect.TypeOf(PackGlobal{}),
 		reflect.TypeOf(PackDefaults{}),
 		reflect.TypeOf(PackRigDefaults{}),
