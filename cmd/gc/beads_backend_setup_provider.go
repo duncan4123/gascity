@@ -17,6 +17,16 @@ type beadsBackendSetupContext struct {
 	Backend  string
 }
 
+type beadsBackendScopeContext struct {
+	CityPath  string
+	ScopeRoot string
+	ScopeKind string
+	ScopeName string
+	Prefix    string
+	Namespace string
+	Backend   string
+}
+
 type beadsBackendPluginCapabilities struct {
 	// SetupHook means the plugin can initialize scope files and owns
 	// .beads/metadata.json creation/normalization for this backend.
@@ -39,6 +49,18 @@ type beadsBackendPluginCapabilities struct {
 	BDCompatibility string
 }
 
+type beadsBackendPluginScopePolicy struct {
+	Model                  string
+	Resource               string
+	NamespaceFrom          string
+	InheritsCityConnection bool
+	MetadataOwner          string
+	Routes                 string
+	Adopt                  string
+	Remove                 string
+	RequiresGit            bool
+}
+
 type beadsBackendPluginEndpoint struct {
 	Command  string
 	Args     []string
@@ -48,6 +70,7 @@ type beadsBackendPluginEndpoint struct {
 type beadsBackendPlugin interface {
 	Name() string
 	Capabilities(beadsBackendSetupContext) beadsBackendPluginCapabilities
+	ScopePolicy(beadsBackendSetupContext) beadsBackendPluginScopePolicy
 	SetupHook(beadsBackendSetupContext) (string, bool)
 	StorePath(beadsBackendSetupContext) (string, bool)
 	BeadsEndpoint(beadsBackendSetupContext) (beadsBackendPluginEndpoint, bool)
@@ -117,12 +140,28 @@ func beadsBackendPluginCapabilitiesForCity(cityPath string) (beadsBackendPluginC
 	return provider.Capabilities(ctx), true
 }
 
+func cityUsesPluginBeadsBackendSetup(cityPath string) bool {
+	if rawBeadsProvider(cityPath) != "plugin" {
+		return false
+	}
+	caps, ok := beadsBackendPluginCapabilitiesForCity(cityPath)
+	return ok && caps.SetupHook
+}
+
 func beadsBackendPluginStorePath(cityPath string) (string, bool) {
 	provider, ctx, ok := beadsBackendPluginForCity(cityPath)
 	if !ok {
 		return "", false
 	}
 	return provider.StorePath(ctx)
+}
+
+func beadsBackendPluginScopePolicyForCity(cityPath string) (beadsBackendPluginScopePolicy, bool) {
+	provider, ctx, ok := beadsBackendPluginForCity(cityPath)
+	if !ok {
+		return beadsBackendPluginScopePolicy{}, false
+	}
+	return normalizeBeadsBackendScopePolicy(provider.ScopePolicy(ctx)), true
 }
 
 type discoveredBeadsBackendPlugin struct {
@@ -160,6 +199,20 @@ func (p discoveredBeadsBackendPlugin) Capabilities(beadsBackendSetupContext) bea
 		NativeReadStore:         capSet["fastpath"] || capSet["native-read"] || capSet["native-read-store"],
 		StoreHealthPath:         p.plugin.StorePath != "" || capSet["store-health"],
 		BDCompatibility:         p.plugin.BDCompatibility,
+	}
+}
+
+func (p discoveredBeadsBackendPlugin) ScopePolicy(beadsBackendSetupContext) beadsBackendPluginScopePolicy {
+	return beadsBackendPluginScopePolicy{
+		Model:                  p.plugin.Scope.Model,
+		Resource:               p.plugin.Scope.Resource,
+		NamespaceFrom:          p.plugin.Scope.NamespaceFrom,
+		InheritsCityConnection: p.plugin.Scope.InheritsCityConnection,
+		MetadataOwner:          p.plugin.Scope.MetadataOwner,
+		Routes:                 p.plugin.Scope.Routes,
+		Adopt:                  p.plugin.Scope.Adopt,
+		Remove:                 p.plugin.Scope.Remove,
+		RequiresGit:            p.plugin.Scope.RequiresGit,
 	}
 }
 
@@ -233,6 +286,19 @@ func (p scriptBeadsBackendPlugin) Capabilities(beadsBackendSetupContext) beadsBa
 	}
 }
 
+func (p scriptBeadsBackendPlugin) ScopePolicy(beadsBackendSetupContext) beadsBackendPluginScopePolicy {
+	return beadsBackendPluginScopePolicy{
+		Model:                  "per_scope",
+		Resource:               "database",
+		NamespaceFrom:          "city_or_prefix",
+		InheritsCityConnection: true,
+		MetadataOwner:          "plugin",
+		Routes:                 "gc-prefix-routes",
+		Adopt:                  "validate_or_repair",
+		Remove:                 "preserve",
+	}
+}
+
 func (p scriptBeadsBackendPlugin) SetupHook(ctx beadsBackendSetupContext) (string, bool) {
 	if strings.TrimSpace(ctx.CityPath) == "" {
 		return "", false
@@ -280,4 +346,126 @@ func mustLookupBeadsBackendPlugin(name string) (beadsBackendPlugin, error) {
 		return nil, fmt.Errorf("unknown beads backend plugin %q", strings.TrimSpace(name))
 	}
 	return provider, nil
+}
+
+func normalizeBeadsBackendScopePolicy(policy beadsBackendPluginScopePolicy) beadsBackendPluginScopePolicy {
+	if strings.TrimSpace(policy.Model) == "" {
+		policy.Model = "per_scope"
+	}
+	if strings.TrimSpace(policy.Resource) == "" {
+		policy.Resource = "database"
+	}
+	if strings.TrimSpace(policy.NamespaceFrom) == "" {
+		policy.NamespaceFrom = "city_or_prefix"
+	}
+	if strings.TrimSpace(policy.MetadataOwner) == "" {
+		policy.MetadataOwner = "plugin"
+	}
+	if strings.TrimSpace(policy.Routes) == "" {
+		policy.Routes = "gc-prefix-routes"
+	}
+	if strings.TrimSpace(policy.Adopt) == "" {
+		policy.Adopt = "validate_or_repair"
+	}
+	if strings.TrimSpace(policy.Remove) == "" {
+		policy.Remove = "preserve"
+	}
+	return policy
+}
+
+func beadsBackendScopeContextForCityScope(cityPath, scopeRoot, prefix, namespaceOverride string) beadsBackendScopeContext {
+	policy, ok := beadsBackendPluginScopePolicyForCity(cityPath)
+	if !ok {
+		policy = normalizeBeadsBackendScopePolicy(beadsBackendPluginScopePolicy{})
+	}
+	scopeKind, scopeName := backendPluginScopeKindAndName(cityPath, scopeRoot)
+	namespace := strings.TrimSpace(namespaceOverride)
+	if namespace == "" {
+		namespace = backendPluginScopeNamespace(policy, scopeKind, scopeName, prefix)
+	}
+	return beadsBackendScopeContext{
+		CityPath:  cityPath,
+		ScopeRoot: scopeRoot,
+		ScopeKind: scopeKind,
+		ScopeName: scopeName,
+		Prefix:    strings.TrimSpace(prefix),
+		Namespace: namespace,
+		Backend:   beadsBackend(cityPath),
+	}
+}
+
+func backendPluginScopeKindAndName(cityPath, scopeRoot string) (string, string) {
+	cityPath = filepath.Clean(cityPath)
+	scopeRoot = filepath.Clean(scopeRoot)
+	if samePath(cityPath, scopeRoot) {
+		return "city", filepath.Base(cityPath)
+	}
+	if cfg, err := loadCityConfig(cityPath, io.Discard); err == nil && cfg != nil {
+		resolveRigPaths(cityPath, cfg.Rigs)
+		for i := range cfg.Rigs {
+			if strings.TrimSpace(cfg.Rigs[i].Path) == "" {
+				continue
+			}
+			if samePath(resolveStoreScopeRoot(cityPath, cfg.Rigs[i].Path), scopeRoot) {
+				return "rig", cfg.Rigs[i].Name
+			}
+		}
+	}
+	return "rig", filepath.Base(scopeRoot)
+}
+
+func backendPluginScopeNamespace(policy beadsBackendPluginScopePolicy, scopeKind, scopeName, prefix string) string {
+	policy = normalizeBeadsBackendScopePolicy(policy)
+	scopeKind = strings.TrimSpace(scopeKind)
+	scopeName = strings.TrimSpace(scopeName)
+	prefix = strings.TrimSpace(prefix)
+	switch strings.TrimSpace(policy.NamespaceFrom) {
+	case "none":
+		return ""
+	case "scope_name":
+		return scopeName
+	case "prefix":
+		return prefix
+	case "city_or_prefix":
+		if scopeKind == "city" {
+			return "hq"
+		}
+		if prefix != "" {
+			return prefix
+		}
+		return scopeName
+	default:
+		if prefix != "" {
+			return prefix
+		}
+		return scopeName
+	}
+}
+
+func applyBackendPluginScopeEnv(overrides map[string]string, scope beadsBackendScopeContext, policy beadsBackendPluginScopePolicy) {
+	if overrides == nil {
+		return
+	}
+	policy = normalizeBeadsBackendScopePolicy(policy)
+	overrides["GC_BEADS_BACKEND"] = scope.Backend
+	overrides["GC_BEADS_SETUP_SCOPE"] = scope.ScopeRoot
+	overrides["GC_BEADS_SETUP_SCOPE_ROOT"] = scope.ScopeRoot
+	overrides["GC_BEADS_SETUP_SCOPE_KIND"] = scope.ScopeKind
+	overrides["GC_BEADS_SETUP_SCOPE_NAME"] = scope.ScopeName
+	overrides["GC_BEADS_SETUP_PREFIX"] = scope.Prefix
+	overrides["GC_BEADS_SETUP_NAMESPACE"] = scope.Namespace
+	overrides["GC_BEADS_SCOPE_ROOT"] = scope.ScopeRoot
+	overrides["GC_BEADS_SCOPE_KIND"] = scope.ScopeKind
+	overrides["GC_BEADS_SCOPE_NAME"] = scope.ScopeName
+	overrides["GC_BEADS_SCOPE_NAMESPACE"] = scope.Namespace
+	overrides["GC_BEADS_SCOPE_MODEL"] = policy.Model
+	overrides["GC_BEADS_SCOPE_RESOURCE"] = policy.Resource
+	overrides["GC_BEADS_SCOPE_NAMESPACE_FROM"] = policy.NamespaceFrom
+	overrides["GC_BEADS_SCOPE_ROUTES"] = policy.Routes
+	overrides["GC_BEADS_METADATA_OWNER"] = policy.MetadataOwner
+	if policy.InheritsCityConnection {
+		overrides["GC_BEADS_SCOPE_INHERITS_CITY_CONNECTION"] = "true"
+	} else {
+		overrides["GC_BEADS_SCOPE_INHERITS_CITY_CONNECTION"] = "false"
+	}
 }

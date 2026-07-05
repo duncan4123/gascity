@@ -20,9 +20,19 @@ backend = "doltlite"
 setup_hook = "assets/scripts/gc-beads-doltlite-bd.sh"
 provider_command = "assets/scripts/gc-beads-doltlite-bd.sh"
 prepare_command = ["build", "backend", "--install"]
-store_path = ".beads/doltlite"
-bd_compatibility = "bd-1.0.5"
-capabilities = ["setup", "provider", "metadata", "fastpath", "store-health"]
+	store_path = ".beads/doltlite"
+	bd_compatibility = "bd-1.0.5"
+	capabilities = ["setup", "provider", "metadata", "fastpath", "store-health"]
+
+	[backend_plugins.scope]
+	model = "per_scope"
+	resource = "schema"
+	namespace_from = "prefix"
+	inherits_city_connection = true
+	metadata_owner = "plugin"
+	routes = "gc-prefix-routes"
+	adopt = "validate_or_repair"
+	remove = "preserve"
 
 [backend_plugins.beads_endpoint]
 command = ".gc/runtime/packs/bd-gc-dl/bin/bd-backend-doltlite"
@@ -61,6 +71,12 @@ protocol = "gascity.backend.v1alpha1"
 	}
 	if plugin.BDCompatibility != "bd-1.0.5" {
 		t.Fatalf("BDCompatibility = %q, want bd-1.0.5", plugin.BDCompatibility)
+	}
+	if plugin.Scope.Model != "per_scope" || plugin.Scope.Resource != "schema" || plugin.Scope.NamespaceFrom != "prefix" {
+		t.Fatalf("Scope = %+v, want per_scope/schema/prefix", plugin.Scope)
+	}
+	if !plugin.Scope.InheritsCityConnection || plugin.Scope.MetadataOwner != "plugin" || plugin.Scope.Routes != "gc-prefix-routes" || plugin.Scope.Adopt != "validate_or_repair" || plugin.Scope.Remove != "preserve" {
+		t.Fatalf("Scope = %+v, want resolved plugin rig policy", plugin.Scope)
 	}
 }
 

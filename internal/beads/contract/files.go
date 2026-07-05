@@ -335,10 +335,10 @@ func ReadDoltDatabase(fs fsys.FS, path string) (string, bool, error) {
 //
 // Validation order is deterministic: the operator always sees the same
 // top-most message when several things are wrong. Order is JSON parse (E1) →
-// mixed-backend (E3) → unknown backend (E2) → postgres-required (E4) →
-// postgres-port-format (E5). An empty Backend is permitted at the parse
-// layer; downstream consumers that need a backend must check
-// state.Backend != "" themselves.
+// mixed-backend (E3) → postgres-required (E4) → postgres-port-format (E5).
+// An empty Backend is permitted at the parse layer; downstream consumers that
+// need a backend must check state.Backend != "" themselves. Unknown backend
+// names are allowed so installed backend plugins can own their own names.
 func LoadMetadataState(fs fsys.FS, path string) (MetadataState, bool, error) {
 	data, err := fs.ReadFile(path)
 	if err != nil {
@@ -365,16 +365,6 @@ func LoadMetadataState(fs fsys.FS, path string) (MetadataState, bool, error) {
 		return MetadataState{}, false, &MetadataParseError{
 			Path:   abs,
 			Reason: fmt.Sprintf("cannot mix dolt and postgres fields in a single scope (backend=%s but %s is also set)", state.Backend, other),
-		}
-	}
-
-	switch state.Backend {
-	case "", "dolt", "doltlite", "postgres":
-		// allowed
-	default:
-		return MetadataState{}, false, &MetadataParseError{
-			Path:   abs,
-			Reason: fmt.Sprintf("unsupported backend %q (supported: dolt, doltlite, postgres)", state.Backend),
 		}
 	}
 

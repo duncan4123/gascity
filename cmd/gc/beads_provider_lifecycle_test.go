@@ -5650,6 +5650,151 @@ JSON
 	}
 }
 
+func TestInitDirIfReadyPassesRigScopeDatabaseToPluginSetupHook(t *testing.T) {
+	cityPath := t.TempDir()
+	rigPath := filepath.Join(cityPath, "rigs", "pg")
+	if err := os.MkdirAll(filepath.Join(cityPath, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(cityPath, ".gc", "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(rigPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte(`[workspace]
+name = "demo"
+
+[beads]
+provider = "plugin"
+backend = "doltlite"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	callsPath := filepath.Join(t.TempDir(), "setup-hook-calls")
+	script := filepath.Join(cityPath, ".gc", "scripts", "gc-beads-doltlite-bd.sh")
+	scriptBody := fmt.Sprintf(`#!/bin/sh
+set -eu
+printf '%%s\n' "$*" > %q
+mkdir -p "$2/.beads"
+cat > "$2/.beads/metadata.json" <<JSON
+{"database":"plugin-owned","backend":"plugin-owned","dolt_database":"$4"}
+JSON
+`, callsPath)
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	deferred, err := initDirIfReady(cityPath, rigPath, "pg")
+	if err != nil {
+		t.Fatalf("initDirIfReady: %v", err)
+	}
+	if deferred {
+		t.Fatal("initDirIfReady deferred plugin setup, want immediate setup")
+	}
+	calls, err := os.ReadFile(callsPath)
+	if err != nil {
+		t.Fatalf("read setup hook calls: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(calls)), "init "+rigPath+" pg pg"; got != want {
+		t.Fatalf("setup hook call = %q, want %q", got, want)
+	}
+}
+
+func TestInitDirIfReadyUsesPackPluginRigScopePolicy(t *testing.T) {
+	t.Setenv("GC_BEADS", "")
+	t.Setenv("GC_BEADS_BACKEND", "")
+	cityPath := t.TempDir()
+	rigPath := filepath.Join(cityPath, "rigs", "repo")
+	if err := os.MkdirAll(filepath.Join(cityPath, "assets", "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(cityPath, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(rigPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte(`[workspace]
+name = "demo"
+
+[beads]
+provider = "plugin"
+backend = "postgres"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	callsPath := filepath.Join(t.TempDir(), "setup-hook-calls")
+	script := filepath.Join(cityPath, "assets", "scripts", "setup-postgres.sh")
+	scriptBody := fmt.Sprintf(`#!/bin/sh
+set -eu
+{
+  printf 'args=%%s\n' "$*"
+  printf 'scope_kind=%%s\n' "${GC_BEADS_SETUP_SCOPE_KIND:-}"
+  printf 'scope_name=%%s\n' "${GC_BEADS_SETUP_SCOPE_NAME:-}"
+  printf 'prefix=%%s\n' "${GC_BEADS_SETUP_PREFIX:-}"
+  printf 'namespace=%%s\n' "${GC_BEADS_SETUP_NAMESPACE:-}"
+  printf 'resource=%%s\n' "${GC_BEADS_SCOPE_RESOURCE:-}"
+} > %q
+mkdir -p "$2/.beads"
+cat > "$2/.beads/metadata.json" <<JSON
+{"database":"$4","backend":"postgres","backend_plugin_command":"/plugin/bd","gascity_backend_command":"/plugin/gc"}
+JSON
+`, callsPath)
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, "pack.toml"), []byte(`
+[pack]
+name = "city"
+schema = 2
+
+[[backend_plugins]]
+backend = "postgres"
+setup_hook = "assets/scripts/setup-postgres.sh"
+capabilities = ["setup", "provider", "metadata", "fastpath"]
+
+[backend_plugins.scope]
+model = "per_scope"
+resource = "schema"
+namespace_from = "scope_name"
+inherits_city_connection = true
+metadata_owner = "plugin"
+routes = "gc-prefix-routes"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !cityUsesPluginBeadsBackendSetup(cityPath) {
+		caps, capsOK := beadsBackendPluginCapabilitiesForCity(cityPath)
+		t.Fatalf("cityUsesPluginBeadsBackendSetup = false; raw_provider=%q backend=%q caps_ok=%v caps=%+v", rawBeadsProvider(cityPath), beadsBackend(cityPath), capsOK, caps)
+	}
+
+	deferred, err := initDirIfReady(cityPath, rigPath, "bbp")
+	if err != nil {
+		t.Fatalf("initDirIfReady: %v", err)
+	}
+	if deferred {
+		t.Fatal("initDirIfReady deferred plugin setup, want immediate setup")
+	}
+	data, err := os.ReadFile(callsPath)
+	if err != nil {
+		t.Fatalf("read setup hook calls: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"args=init " + rigPath + " bbp repo",
+		"scope_kind=rig",
+		"scope_name=repo",
+		"prefix=bbp",
+		"namespace=repo",
+		"resource=schema",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("setup hook output missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestSeedDeferredManagedBeadsPassesPackPluginEndpointsToSetupHook(t *testing.T) {
 	t.Setenv("GC_BEADS", "")
 	t.Setenv("GC_BEADS_BACKEND", "")

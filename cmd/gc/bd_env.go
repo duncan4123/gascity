@@ -367,16 +367,10 @@ func applyCanonicalScopeBackendEnv(env map[string]string, cityPath, scopeRoot st
 		} else if usedPostgres {
 			return true, nil
 		}
-	}
-	if resolved.State.EndpointOrigin == contract.EndpointOriginInheritedCity &&
-		(meta.Backend == "" || meta.Backend == "doltlite") &&
-		cityUsesDoltliteBeadsBackend(cityPath) {
-		clearProjectedDoltEnv(env)
-		clearProjectedPostgresEnv(env)
-		env["GC_BEADS_BACKEND"] = "doltlite"
-		env["BEADS_BACKEND"] = "doltlite"
-		mirrorBeadsDoltEnv(env)
-		return true, nil
+		if backend, ok := cityPluginBackendName(cityPath); ok {
+			applyPluginBackendEnv(env, backend)
+			return true, nil
+		}
 	}
 	switch meta.Backend {
 	case "", "dolt":
@@ -390,19 +384,15 @@ func applyCanonicalScopeBackendEnv(env map[string]string, cityPath, scopeRoot st
 		applyCanonicalDoltAuthEnv(env, cityPath, scopeRoot, target)
 		mirrorBeadsDoltEnv(env)
 		return true, nil
-	case "doltlite":
-		clearProjectedDoltEnv(env)
-		clearProjectedPostgresEnv(env)
-		env["GC_BEADS_BACKEND"] = "doltlite"
-		env["BEADS_BACKEND"] = "doltlite"
-		mirrorBeadsDoltEnv(env)
-		return true, nil
 	case "postgres":
 		if err := applyResolvedScopePostgresEnv(env, cityPath, scopeRoot, meta); err != nil {
 			return true, err
 		}
 		return true, nil
 	default:
+		if applyPluginBackendEnv(env, meta.Backend) {
+			return true, nil
+		}
 		return true, fmt.Errorf("unsupported backend %q for scope %s", meta.Backend, scopeRoot)
 	}
 }
@@ -425,27 +415,75 @@ func applyCityPostgresBackendEnv(env map[string]string, cityPath string) (bool, 
 			return true, err
 		}
 		return true, nil
-	case "", "dolt", "doltlite":
+	case "", "dolt":
 		return false, nil
 	default:
+		if isPluginBackendName(meta.Backend) {
+			return false, nil
+		}
 		return true, fmt.Errorf("unsupported backend %q for scope %s", meta.Backend, cityPath)
 	}
 }
 
-func scopeBackendIsDoltlite(cityPath, scopeRoot string) bool {
+func isPluginBackendName(backend string) bool {
+	switch strings.TrimSpace(backend) {
+	case "", "dolt", "postgres":
+		return false
+	default:
+		return true
+	}
+}
+
+func applyPluginBackendEnv(env map[string]string, backend string) bool {
+	backend = strings.TrimSpace(backend)
+	if !isPluginBackendName(backend) {
+		return false
+	}
+	clearProjectedDoltEnv(env)
+	clearProjectedPostgresEnv(env)
+	env["GC_BEADS_BACKEND"] = backend
+	env["BEADS_BACKEND"] = backend
+	mirrorBeadsDoltEnv(env)
+	return true
+}
+
+func cityPluginBackendName(cityPath string) (string, bool) {
+	meta, ok, err := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(cityPath))
+	if err == nil && ok && meta.Backend != "" {
+		if isPluginBackendName(meta.Backend) {
+			return meta.Backend, true
+		}
+		return "", false
+	}
+	if !cityUsesBdStoreContract(cityPath) {
+		return "", false
+	}
+	backend := beadsBackend(cityPath)
+	if !isPluginBackendName(backend) {
+		return "", false
+	}
+	return backend, true
+}
+
+func scopePluginBackendName(cityPath, scopeRoot string) (string, bool) {
 	meta, ok, err := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(scopeRoot))
 	if err == nil && ok && meta.Backend != "" {
-		return meta.Backend == "doltlite"
+		if isPluginBackendName(meta.Backend) {
+			return meta.Backend, true
+		}
+		return "", false
 	}
 	if samePath(cityPath, scopeRoot) {
-		return cityUsesDoltliteBeadsBackend(cityPath)
+		return cityPluginBackendName(cityPath)
 	}
 	resolved, err := contract.ResolveScopeConfigState(fsys.OSFS{}, cityPath, scopeRoot, "")
 	if err != nil || resolved.Kind != contract.ScopeConfigAuthoritative {
-		return false
+		return "", false
 	}
-	return resolved.State.EndpointOrigin == contract.EndpointOriginInheritedCity &&
-		cityUsesDoltliteBeadsBackend(cityPath)
+	if resolved.State.EndpointOrigin != contract.EndpointOriginInheritedCity {
+		return "", false
+	}
+	return cityPluginBackendName(cityPath)
 }
 
 func scopeOverridesCityBackend(cityPath, scopeRoot string) bool {
@@ -1278,14 +1316,8 @@ func bdRuntimeEnvForRigWithErrorRecovery(cityPath string, cfg *config.City, rigP
 			env["GC_RIG"] = explicitRig.Name
 		}
 	}
-	rigDoltlite := scopeBackendIsDoltlite(cityPath, rigPath)
-	cityDoltlite := scopeBackendIsDoltlite(cityPath, cityPath)
-	if rigDoltlite || (cityDoltlite && !scopeOverridesCityBackend(cityPath, rigPath)) {
-		clearProjectedDoltEnv(env)
-		clearProjectedPostgresEnv(env)
-		env["GC_BEADS_BACKEND"] = "doltlite"
-		env["BEADS_BACKEND"] = "doltlite"
-		mirrorBeadsDoltEnv(env)
+	if backend, ok := scopePluginBackendName(cityPath, rigPath); ok {
+		applyPluginBackendEnv(env, backend)
 		return env, nil
 	}
 	if err := applyResolvedRigDoltEnv(env, cityPath, rigPath, explicitRig, allowRecovery); err != nil {
@@ -1372,12 +1404,8 @@ func bdRuntimeEnvWithErrorRecovery(cityPath string, allowRecovery bool) (map[str
 	if !cityUsesBdStoreContract(cityPath) {
 		return env, nil
 	}
-	if scopeBackendIsDoltlite(cityPath, cityPath) {
-		clearProjectedDoltEnv(env)
-		clearProjectedPostgresEnv(env)
-		env["GC_BEADS_BACKEND"] = "doltlite"
-		env["BEADS_BACKEND"] = "doltlite"
-		mirrorBeadsDoltEnv(env)
+	if backend, ok := scopePluginBackendName(cityPath, cityPath); ok {
+		applyPluginBackendEnv(env, backend)
 		return env, nil
 	}
 	if usedPostgres, err := applyCityPostgresBackendEnv(env, cityPath); err != nil {
@@ -1427,18 +1455,17 @@ func cityRuntimeProcessEnvWithError(cityPath string) ([]string, error) {
 		applyBdContributorRoutingOptOut(source)
 		applyBdCLIRemoteSyncOptOut(source)
 		applyBdAutoBackupOptOut(source)
-		if backend := beadsBackend(cityPath); backend != "" && backend != "dolt" {
-			clearProjectedDoltEnv(source)
-			clearProjectedPostgresEnv(source)
-			source["GC_BEADS_BACKEND"] = backend
-			source["BEADS_BACKEND"] = backend
-			mirrorBeadsDoltEnv(source)
-		} else if usedPostgres, err := applyCityPostgresBackendEnv(source, cityPath); err != nil {
+		if usedPostgres, err := applyCityPostgresBackendEnv(source, cityPath); err != nil {
 			clearProjectedDoltEnv(source)
 			clearProjectedPostgresEnv(source)
 			mirrorBeadsDoltEnv(source)
 			projectionErr = err
-		} else if !usedPostgres {
+		} else if usedPostgres {
+			// Postgres projection includes credentials, so it must win over the
+			// generic plugin backend projection.
+		} else if backend, ok := scopePluginBackendName(cityPath, cityPath); ok {
+			applyPluginBackendEnv(source, backend)
+		} else {
 			err := applyResolvedCityDoltEnv(source, cityPath, false)
 			if err != nil {
 				clearProjectedDoltEnv(source)
