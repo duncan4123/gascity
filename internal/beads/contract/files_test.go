@@ -1524,6 +1524,14 @@ func TestLoadMetadataStateValidFixtures(t *testing.T) {
 				Database: "beads",
 			},
 		},
+		{
+			name:    "plugin backend name permitted",
+			fixture: "reject_unknown_backend.json",
+			want: MetadataState{
+				Database: "beads",
+				Backend:  "postgress",
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1553,11 +1561,6 @@ func TestLoadMetadataStateRejectFixtures(t *testing.T) {
 			name:            "E1 invalid json",
 			fixture:         "reject_invalid_json.json",
 			wantErrContains: "invalid metadata.json:",
-		},
-		{
-			name:            "E2 unknown backend",
-			fixture:         "reject_unknown_backend.json",
-			wantErrContains: `unsupported backend "postgress" (supported: dolt, doltlite, postgres)`,
 		},
 		{
 			name:            "E3 mixed backends fires before required-fields",

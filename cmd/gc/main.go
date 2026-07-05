@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/beads/contract"
 	beadsexec "github.com/gastownhall/gascity/internal/beads/exec"
 	"github.com/gastownhall/gascity/internal/citylayout"
 	"github.com/gastownhall/gascity/internal/config"
@@ -1221,6 +1222,7 @@ func openStoreResultAtForCity(storePath, cityPath string) (beads.StoreOpenResult
 		OpenExecStore: func() (beads.Store, error) {
 			return openExecStoreAtForCity(provider, scopeRoot, runtimeCityPath)
 		},
+		OpenBackendStore: gascityBackendStoreOpener(runtimeCityPath, scopeRoot),
 		OpenNativeStore: func() (beads.Store, error) {
 			env, err := nativeDoltOpenEnvForScope(runtimeCityPath, nil, scopeRoot)
 			if err != nil {
@@ -1234,6 +1236,53 @@ func openStoreResultAtForCity(storePath, cityPath string) (beads.StoreOpenResult
 	}
 	result.Store = wrapStoreWithBeadPolicies(result.Store, cfg)
 	return result, nil
+}
+
+func gascityBackendStoreOpener(cityPath, scopeRoot string) func() (beads.Store, error) {
+	endpoint, database, ok := gascityBackendEndpointForScope(cityPath, scopeRoot)
+	if !ok {
+		return nil
+	}
+	return func() (beads.Store, error) {
+		return beads.OpenGascityBackendStore(context.Background(), beads.GascityBackendStoreConfig{
+			Command:  endpoint.Command,
+			Args:     endpoint.Args,
+			Env:      gascityBackendStoreEnv(cityPath, scopeRoot),
+			BeadsDir: filepath.Join(scopeRoot, ".beads"),
+			Database: database,
+		})
+	}
+}
+
+func gascityBackendEndpointForScope(cityPath, scopeRoot string) (beadsBackendPluginEndpoint, string, bool) {
+	meta, ok, _ := contract.LoadMetadataState(fsys.OSFS{}, filepath.Join(scopeRoot, ".beads", "metadata.json"))
+	database := ""
+	if ok {
+		database = strings.TrimSpace(meta.DoltDatabase)
+		if database == "" {
+			database = strings.TrimSpace(meta.Database)
+		}
+		if command := strings.TrimSpace(meta.GasCityBackendCommand); command != "" {
+			return beadsBackendPluginEndpoint{Command: command, Args: append([]string(nil), meta.GasCityBackendArgs...), Protocol: beads.GascityBackendProtocolV1Alpha1}, database, true
+		}
+	}
+	provider, ctx, pluginOK := beadsBackendPluginForCity(cityPath)
+	if !pluginOK {
+		return beadsBackendPluginEndpoint{}, "", false
+	}
+	endpoint, endpointOK := provider.GascityEndpoint(ctx)
+	if !endpointOK || endpoint.Protocol != beads.GascityBackendProtocolV1Alpha1 {
+		return beadsBackendPluginEndpoint{}, "", false
+	}
+	return endpoint, database, true
+}
+
+func gascityBackendStoreEnv(cityPath, scopeRoot string) map[string]string {
+	return map[string]string{
+		"GC_CITY_PATH":        cityPath,
+		"GC_BEADS_SCOPE_ROOT": scopeRoot,
+		"BEADS_DIR":           filepath.Join(scopeRoot, ".beads"),
+	}
 }
 
 func openExecStoreAtForCity(provider, scopeRoot, runtimeCityPath string) (beads.Store, error) {
@@ -1286,19 +1335,11 @@ func resolveStoreScopeRoot(cityPath, storePath string) string {
 
 func openBdStoreAt(storePath, cityPath string) (beads.Store, error) {
 	if filepath.Clean(storePath) == filepath.Clean(cityPath) {
-		store := bdStoreForCity(storePath, cityPath)
-		if optimized, ok := openOptimizedDoltliteStore(storePath, store); ok {
-			return optimized, nil
-		}
-		return store, nil
+		return bdStoreForCity(storePath, cityPath), nil
 	}
 	cfg, err := loadCityConfig(cityPath, io.Discard)
 	if err != nil {
 		cfg = nil
 	}
-	store := bdStoreForRig(storePath, cityPath, cfg)
-	if optimized, ok := openOptimizedDoltliteStore(storePath, store); ok {
-		return optimized, nil
-	}
-	return store, nil
+	return bdStoreForRig(storePath, cityPath, cfg), nil
 }

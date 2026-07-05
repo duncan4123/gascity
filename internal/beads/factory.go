@@ -19,12 +19,15 @@ const (
 	BeadsStoreNameFileStore = "FileStore"
 	// BeadsStoreNameExecStore is the diagnostic store name for exec-backed stores.
 	BeadsStoreNameExecStore = "ExecStore"
+	// BeadsStoreNameGascityBackendStore is the diagnostic store name for Gas City backend plugin stores.
+	BeadsStoreNameGascityBackendStore = "GascityBackendStore"
 	// BeadsStoreNameNativeDoltStore is the diagnostic store name for native Dolt stores.
 	BeadsStoreNameNativeDoltStore = "NativeDoltStore"
 
 	storeNameBdStore         = BeadsStoreNameBdStore
 	storeNameFileStore       = BeadsStoreNameFileStore
 	storeNameExecStore       = BeadsStoreNameExecStore
+	storeNameGascityBackend  = BeadsStoreNameGascityBackendStore
 	storeNameNativeDoltStore = BeadsStoreNameNativeDoltStore
 	nativeForceFallbackEnv   = "GC_BEADS_FORCE_FALLBACK"
 	nativeForceFallbackGate  = "force_fallback"
@@ -59,6 +62,7 @@ type StoreOpenOptions struct {
 	OpenBdStore      func() (Store, error)
 	OpenFileStore    func() (Store, error)
 	OpenExecStore    func() (Store, error)
+	OpenBackendStore func() (Store, error)
 	OpenNativeStore  func() (Store, error)
 }
 
@@ -105,6 +109,20 @@ func OpenStoreAtForCity(ctx context.Context, opts StoreOpenOptions) (StoreOpenRe
 		}
 		logNativeUnavailable(opts.Logger, opts.ScopeRoot, diag.PreflightGate, diag.PreflightReason)
 		return opts.openBdFallback(provider, diag)
+	}
+
+	if opts.OpenBackendStore != nil {
+		store, err := callStoreOpen("Gas City backend plugin store", opts.OpenBackendStore)
+		if err == nil {
+			return StoreOpenResult{
+				Store: store,
+				Diagnostic: BeadsDiagnostic{
+					Store:               storeNameGascityBackend,
+					NativeStoreEligible: true,
+				},
+			}, nil
+		}
+		logNativeUnavailable(opts.Logger, opts.ScopeRoot, "gascity_backend_open", err.Error())
 	}
 
 	result, err := opts.PreflightChecker.Check(opts.ScopeRoot)

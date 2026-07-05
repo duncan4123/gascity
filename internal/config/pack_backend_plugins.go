@@ -37,6 +37,7 @@ func packLocalBackendPlugins(tc *PackConfig, packDir, cityRoot string) ([]Discov
 			ProviderCommand: providerCommand,
 			PrepareCommand:  trimStringList(entry.PrepareCommand),
 			StorePath:       strings.TrimSpace(entry.StorePath),
+			Scope:           resolveBackendPluginScopePolicy(entry.Scope),
 			BDCompatibility: strings.TrimSpace(entry.BDCompatibility),
 			BeadsEndpoint:   resolveBackendPluginEndpoint(entry.BeadsEndpoint, packDir, cityRoot),
 			GascityEndpoint: resolveBackendPluginEndpoint(entry.GascityEndpoint, packDir, cityRoot),
@@ -53,6 +54,20 @@ func resolveBackendPluginEndpoint(entry PackBackendPluginEndpoint, packDir, city
 		Command:  resolveBackendPluginPath(strings.TrimSpace(entry.Command), packDir, cityRoot),
 		Args:     append([]string(nil), entry.Args...),
 		Protocol: strings.TrimSpace(entry.Protocol),
+	}
+}
+
+func resolveBackendPluginScopePolicy(entry PackBackendPluginScopePolicy) DiscoveredBackendPluginScopePolicy {
+	return DiscoveredBackendPluginScopePolicy{
+		Model:                  strings.TrimSpace(entry.Model),
+		Resource:               strings.TrimSpace(entry.Resource),
+		NamespaceFrom:          strings.TrimSpace(entry.NamespaceFrom),
+		InheritsCityConnection: entry.InheritsCityConnection,
+		MetadataOwner:          strings.TrimSpace(entry.MetadataOwner),
+		Routes:                 strings.TrimSpace(entry.Routes),
+		Adopt:                  strings.TrimSpace(entry.Adopt),
+		Remove:                 strings.TrimSpace(entry.Remove),
+		RequiresGit:            entry.RequiresGit,
 	}
 }
 
@@ -101,6 +116,7 @@ func sameBackendPluginDeclaration(a, b DiscoveredBackendPlugin) bool {
 		a.ProviderCommand == b.ProviderCommand &&
 		reflect.DeepEqual(a.PrepareCommand, b.PrepareCommand) &&
 		a.StorePath == b.StorePath &&
+		reflect.DeepEqual(a.Scope, b.Scope) &&
 		a.BDCompatibility == b.BDCompatibility &&
 		a.BeadsEndpoint.Command == b.BeadsEndpoint.Command &&
 		reflect.DeepEqual(a.BeadsEndpoint.Args, b.BeadsEndpoint.Args) &&
