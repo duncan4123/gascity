@@ -890,6 +890,13 @@ func currentPublishedOrRecoveredManagedDoltPort(cityPath string, allowRecovery b
 	if !allowRecovery {
 		return "", nil
 	}
+	owned, err := managedDoltLifecycleOwned(cityPath)
+	if err != nil {
+		return "", err
+	}
+	if !owned {
+		return "", nil
+	}
 	state, ok := readValidProviderManagedDoltState(cityPath)
 	if !ok {
 		return "", nil
@@ -1420,7 +1427,13 @@ func cityRuntimeProcessEnvWithError(cityPath string) ([]string, error) {
 		applyBdContributorRoutingOptOut(source)
 		applyBdCLIRemoteSyncOptOut(source)
 		applyBdAutoBackupOptOut(source)
-		if usedPostgres, err := applyCityPostgresBackendEnv(source, cityPath); err != nil {
+		if backend := beadsBackend(cityPath); backend != "" && backend != "dolt" {
+			clearProjectedDoltEnv(source)
+			clearProjectedPostgresEnv(source)
+			source["GC_BEADS_BACKEND"] = backend
+			source["BEADS_BACKEND"] = backend
+			mirrorBeadsDoltEnv(source)
+		} else if usedPostgres, err := applyCityPostgresBackendEnv(source, cityPath); err != nil {
 			clearProjectedDoltEnv(source)
 			clearProjectedPostgresEnv(source)
 			mirrorBeadsDoltEnv(source)

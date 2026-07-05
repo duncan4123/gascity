@@ -104,6 +104,10 @@ func finalizeInit(cityPath string, stdout, stderr io.Writer, opts initFinalizeOp
 			return 1
 		}
 	}
+	if err := prepareBeadsBackendPluginForInit(cityPath, cfg, stdout, stderr); err != nil {
+		fmt.Fprintf(stderr, "%s: preparing beads backend plugin: %v\n", opts.commandName, err) //nolint:errcheck // best-effort stderr
+		return 1
+	}
 	prefix := config.EffectiveHQPrefix(cfg)
 	if _, err := initDirIfReady(cityPath, cityPath, prefix); err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", opts.commandName, err)        //nolint:errcheck // best-effort stderr

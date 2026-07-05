@@ -1213,7 +1213,10 @@ func openStoreResultAtForCity(storePath, cityPath string) (beads.StoreOpenResult
 			if _, err := exec.LookPath("bd"); err != nil {
 				return nil, fmt.Errorf("bd not found in PATH (install beads or set GC_BEADS=file)")
 			}
-			return openBdStoreAt(scopeRoot, runtimeCityPath)
+			if filepath.Clean(scopeRoot) == filepath.Clean(runtimeCityPath) {
+				return bdStoreForCity(scopeRoot, runtimeCityPath), nil
+			}
+			return bdStoreForRig(scopeRoot, runtimeCityPath, cfg), nil
 		},
 		OpenExecStore: func() (beads.Store, error) {
 			return openExecStoreAtForCity(provider, scopeRoot, runtimeCityPath)

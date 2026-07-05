@@ -43,6 +43,7 @@ func TestInitWizardConfigProviderFlagDefaultsToGascity(t *testing.T) {
 
 func TestRunWizardBlankTemplateChoiceUsesGascity(t *testing.T) {
 	stubWizardProviderReadiness(t, "claude")
+	stubWizardBeadsBackendChoices(t)
 	stdin := strings.NewReader("\n")
 	var stdout bytes.Buffer
 	wiz := runWizard(stdin, &stdout)

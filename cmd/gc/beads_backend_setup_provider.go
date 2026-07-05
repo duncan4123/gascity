@@ -99,7 +99,7 @@ func beadsBackendPluginForCity(cityPath string) (beadsBackendPlugin, beadsBacken
 		Provider: rawBeadsProvider(cityPath),
 		Backend:  beadsBackend(cityPath),
 	}
-	if ctx.Provider != "plugin" {
+	if !providerUsesBdStoreContract(ctx.Provider) {
 		return nil, ctx, false
 	}
 	if provider, ok := discoveredBeadsBackendPluginForCity(ctx.CityPath, ctx.Backend); ok {
@@ -260,6 +260,12 @@ func (p scriptBeadsBackendPlugin) GascityEndpoint(beadsBackendSetupContext) (bea
 }
 
 func init() {
+	registerBeadsBackendPlugin(scriptBeadsBackendPlugin{
+		name:       "dolt",
+		scriptBase: "gc-beads-bd.sh",
+		storeDir:   "dolt",
+		compat:     "bd-1.0.5",
+	})
 	registerBeadsBackendPlugin(scriptBeadsBackendPlugin{
 		name:       "doltlite",
 		scriptBase: "gc-beads-doltlite-bd.sh",

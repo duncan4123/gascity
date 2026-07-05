@@ -66,6 +66,22 @@ func TestExecEnvForBd_MergesOtherOverrides(t *testing.T) {
 	}
 }
 
+func TestBdArgsWithDBOverrideUsesBeadsDir(t *testing.T) {
+	got := bdArgsWithDBOverride([]string{"list", "--json"}, "/city/.beads")
+	want := []string{"--db", "/city/.beads", "list", "--json"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("bdArgsWithDBOverride() = %#v, want %#v", got, want)
+	}
+}
+
+func TestBdArgsWithDBOverridePreservesExplicitDB(t *testing.T) {
+	got := bdArgsWithDBOverride([]string{"--db", "/explicit/.beads", "list"}, "/city/.beads")
+	want := []string{"--db", "/explicit/.beads", "list"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("bdArgsWithDBOverride() = %#v, want %#v", got, want)
+	}
+}
+
 func TestExecEnvForNonBd_LeavesEnvAlone(t *testing.T) {
 	// The runner also execs dolt directly; non-bd commands keep the
 	// caller-visible environment untouched.

@@ -1121,6 +1121,9 @@ type PackBackendPluginEntry struct {
 	// ProviderCommand is the bd-compatible provider command for normal
 	// lifecycle/data operations. It defaults to SetupHook when omitted.
 	ProviderCommand string `toml:"provider_command,omitempty"`
+	// PrepareCommand is an optional pack command to run before setup, for
+	// example to install endpoint binaries into the pack runtime directory.
+	PrepareCommand []string `toml:"prepare_command,omitempty"`
 	// StorePath is the backend-owned store path relative to the scope root.
 	StorePath string `toml:"store_path,omitempty"`
 	// BDCompatibility is the bd metadata/CLI contract this bundle expects.
@@ -1146,6 +1149,7 @@ type DiscoveredBackendPlugin struct {
 	Backend         string
 	SetupHook       string
 	ProviderCommand string
+	PrepareCommand  []string
 	StorePath       string
 	BDCompatibility string
 	BeadsEndpoint   DiscoveredBackendPluginEndpoint

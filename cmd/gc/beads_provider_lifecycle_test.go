@@ -5674,6 +5674,12 @@ backend = "doltlite"
 	scriptBody := fmt.Sprintf(`#!/bin/sh
 set -eu
 {
+  printf 'generic_bd=%%s\n' "${GC_BEADS_BACKEND_PLUGIN_COMMAND:-}"
+  printf 'generic_bd_args=%%s\n' "${GC_BEADS_BACKEND_PLUGIN_ARGS:-}"
+  printf 'generic_bd_protocol=%%s\n' "${GC_BEADS_BACKEND_PLUGIN_PROTOCOL:-}"
+  printf 'generic_gc=%%s\n' "${GC_GASCITY_BACKEND_PLUGIN_COMMAND:-}"
+  printf 'generic_gc_args=%%s\n' "${GC_GASCITY_BACKEND_PLUGIN_ARGS:-}"
+  printf 'generic_gc_protocol=%%s\n' "${GC_GASCITY_BACKEND_PLUGIN_PROTOCOL:-}"
   printf 'bd=%%s\n' "${GC_DOLTLITE_BACKEND_PLUGIN_COMMAND:-}"
   printf 'bd_args=%%s\n' "${GC_DOLTLITE_BACKEND_PLUGIN_ARGS:-}"
   printf 'bd_protocol=%%s\n' "${GC_DOLTLITE_BACKEND_PLUGIN_PROTOCOL:-}"
@@ -5721,6 +5727,12 @@ protocol = "gascity.backend.v1alpha1"
 	}
 	text := string(data)
 	for _, want := range []string{
+		"generic_bd=" + filepath.Join(cityPath, ".gc/runtime/packs/bd-gc-dl/bin/bd-backend-doltlite"),
+		"generic_bd_args=--trace .gc/backend-plugin-trace.jsonl serve",
+		"generic_bd_protocol=beads.backend.v1alpha1",
+		"generic_gc=" + filepath.Join(cityPath, ".gc/runtime/packs/bd-gc-dl/bin/gc-doltlite-fastpath"),
+		"generic_gc_args=serve",
+		"generic_gc_protocol=gascity.backend.v1alpha1",
 		"bd=" + filepath.Join(cityPath, ".gc/runtime/packs/bd-gc-dl/bin/bd-backend-doltlite"),
 		"bd_args=--trace .gc/backend-plugin-trace.jsonl serve",
 		"bd_protocol=beads.backend.v1alpha1",
