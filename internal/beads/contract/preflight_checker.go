@@ -99,7 +99,7 @@ func (c PreflightChecker) checkProvider() PreflightCheckResult {
 // store contract needed for native-store preflight and fallback decisions.
 func ProviderUsesBDContract(provider string) bool {
 	provider = strings.TrimSpace(provider)
-	if provider == "" || provider == "bd" {
+	if provider == "" || provider == "bd" || provider == "plugin" {
 		return true
 	}
 	if !strings.HasPrefix(provider, "exec:") {
