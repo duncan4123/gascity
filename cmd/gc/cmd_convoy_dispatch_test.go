@@ -1870,6 +1870,361 @@ func TestRunWorkflowServeProcessesReadyControlBeadsThenExits(t *testing.T) {
 	}
 }
 
+func TestRunWorkflowServeCitySingletonFansAcrossRigStores(t *testing.T) {
+	clearGCEnv(t)
+	disableManagedDoltRecoveryForTest(t)
+
+	cityDir := t.TempDir()
+	rigDir := t.TempDir()
+	cityToml := fmt.Sprintf(
+		"[workspace]\nname = \"test-city\"\n\n[daemon]\nformula_v2 = true\n\n[[rigs]]\nname = \"testrig\"\npath = %q\n",
+		rigDir,
+	) + testControlDispatcherAgentTOML("")
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(cityToml), 0o644); err != nil {
+		t.Fatalf("write city.toml: %v", err)
+	}
+	t.Setenv("GC_CITY", cityDir)
+
+	prevCityFlag := cityFlag
+	prevList := workflowServeList
+	prevControl := controlDispatcherServe
+	prevInterval := workflowServeIdlePollInterval
+	prevAttempts := workflowServeIdlePollAttempts
+	cityFlag = ""
+	workflowServeIdlePollInterval = 0
+	workflowServeIdlePollAttempts = 0
+	t.Cleanup(func() {
+		cityFlag = prevCityFlag
+		workflowServeList = prevList
+		controlDispatcherServe = prevControl
+		workflowServeIdlePollInterval = prevInterval
+		workflowServeIdlePollAttempts = prevAttempts
+	})
+
+	var gotDirs []string
+	envByDir := map[string]map[string]string{}
+	rigQueue := []hookBead{{ID: "gr-ctrl-1", Metadata: map[string]string{"gc.kind": "workflow-finalize"}}}
+	workflowServeList = func(_, dir string, env map[string]string) ([]hookBead, error) {
+		gotDirs = append(gotDirs, dir)
+		envByDir[canonicalTestPath(dir)] = maps.Clone(env)
+		if canonicalTestPath(dir) == canonicalTestPath(rigDir) && len(rigQueue) > 0 {
+			next := rigQueue
+			rigQueue = nil
+			return next, nil
+		}
+		return nil, nil
+	}
+	type controlledCall struct {
+		storePath string
+		beadID    string
+	}
+	var controlled []controlledCall
+	controlDispatcherServe = func(_, storePath string, beadID string, _ io.Writer, _ io.Writer) error {
+		controlled = append(controlled, controlledCall{storePath: storePath, beadID: beadID})
+		return nil
+	}
+
+	if err := runWorkflowServe("", false, io.Discard, io.Discard); err != nil {
+		t.Fatalf("runWorkflowServe: %v", err)
+	}
+
+	// The city-singleton dispatcher owns rig-routed control beads
+	// (config.PreferredDeterministicControlDispatcher prefers it), so its
+	// serve loop must scan the rig store too — a city-only scan strands rig
+	// control beads (gastownhall/gascity#3872 incident 2).
+	sawCity, sawRig := false, false
+	for _, dir := range gotDirs {
+		switch canonicalTestPath(dir) {
+		case canonicalTestPath(cityDir):
+			sawCity = true
+		case canonicalTestPath(rigDir):
+			sawRig = true
+		default:
+			t.Fatalf("workflowServeList queried unexpected dir %q", dir)
+		}
+	}
+	if !sawCity || !sawRig {
+		t.Fatalf("workflowServeList dirs = %#v, want both city %q and rig %q scanned", gotDirs, cityDir, rigDir)
+	}
+	cityEnv := envByDir[canonicalTestPath(cityDir)]
+	if cityEnv["GC_STORE_ROOT"] != cityDir || cityEnv["GC_STORE_SCOPE"] != "city" {
+		t.Fatalf("city query env = root %q scope %q, want root %q scope city", cityEnv["GC_STORE_ROOT"], cityEnv["GC_STORE_SCOPE"], cityDir)
+	}
+	rigEnv := envByDir[canonicalTestPath(rigDir)]
+	if canonicalTestPath(rigEnv["GC_STORE_ROOT"]) != canonicalTestPath(rigDir) || rigEnv["GC_STORE_SCOPE"] != "rig" || rigEnv["GC_RIG"] != "testrig" {
+		t.Fatalf("rig query env = root %q scope %q rig %q, want root %q scope rig rig testrig", rigEnv["GC_STORE_ROOT"], rigEnv["GC_STORE_SCOPE"], rigEnv["GC_RIG"], rigDir)
+	}
+	if len(controlled) != 1 || controlled[0].beadID != "gr-ctrl-1" {
+		t.Fatalf("controlled = %#v, want exactly the rig-store control bead gr-ctrl-1", controlled)
+	}
+	if canonicalTestPath(controlled[0].storePath) != canonicalTestPath(rigDir) {
+		t.Fatalf("control bead dispatched against store %q, want the rig store %q that holds it", controlled[0].storePath, rigDir)
+	}
+}
+
+// setupWorkflowServeStubTest writes a city.toml, points GC_CITY at it, zeroes
+// the serve idle-poll knobs, and arranges restoration of the workflowServeList
+// / controlDispatcherServe stubs the caller installs.
+func setupWorkflowServeStubTest(t *testing.T, cityToml string) (cityDir string) {
+	t.Helper()
+	clearGCEnv(t)
+	disableManagedDoltRecoveryForTest(t)
+	cityDir = t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(cityToml), 0o644); err != nil {
+		t.Fatalf("write city.toml: %v", err)
+	}
+	t.Setenv("GC_CITY", cityDir)
+	prevCityFlag := cityFlag
+	prevList := workflowServeList
+	prevControl := controlDispatcherServe
+	prevInterval := workflowServeIdlePollInterval
+	prevAttempts := workflowServeIdlePollAttempts
+	cityFlag = ""
+	workflowServeIdlePollInterval = 0
+	workflowServeIdlePollAttempts = 0
+	t.Cleanup(func() {
+		cityFlag = prevCityFlag
+		workflowServeList = prevList
+		controlDispatcherServe = prevControl
+		workflowServeIdlePollInterval = prevInterval
+		workflowServeIdlePollAttempts = prevAttempts
+	})
+	return cityDir
+}
+
+func workflowServeRigCityTOML(rigName, rigDir string) string {
+	return fmt.Sprintf(
+		"[workspace]\nname = \"test-city\"\n\n[daemon]\nformula_v2 = true\n\n[[rigs]]\nname = %q\npath = %q\n",
+		rigName, rigDir,
+	) + testControlDispatcherAgentTOML("")
+}
+
+func TestRunWorkflowServeIsolatesFailingTargetStore(t *testing.T) {
+	rigDir := t.TempDir()
+	cityDir := setupWorkflowServeStubTest(t, workflowServeRigCityTOML("testrig", rigDir))
+
+	rigQueue := []hookBead{{ID: "gr-ctrl-1", Metadata: map[string]string{"gc.kind": "workflow-finalize"}}}
+	cityQueries := 0
+	workflowServeList = func(_, dir string, _ map[string]string) ([]hookBead, error) {
+		if canonicalTestPath(dir) == canonicalTestPath(cityDir) {
+			cityQueries++
+			return nil, fmt.Errorf("synthetic city store failure")
+		}
+		if len(rigQueue) > 0 {
+			next := rigQueue
+			rigQueue = nil
+			return next, nil
+		}
+		return nil, nil
+	}
+	var controlled []string
+	controlDispatcherServe = func(_, _ string, beadID string, _ io.Writer, _ io.Writer) error {
+		controlled = append(controlled, beadID)
+		return nil
+	}
+
+	// One structurally broken store must not gate dispatch for the healthy
+	// ones, and must not kill the serve loop (the --follow session would
+	// crash-loop on the same store otherwise).
+	if err := runWorkflowServe("", false, io.Discard, io.Discard); err != nil {
+		t.Fatalf("runWorkflowServe = %v, want nil while any target store is healthy", err)
+	}
+	if !slices.Equal(controlled, []string{"gr-ctrl-1"}) {
+		t.Fatalf("controlled = %#v, want the healthy rig store's bead drained despite the city store failing", controlled)
+	}
+	if cityQueries == 0 {
+		t.Fatal("city store never queried — the failing target should be retried each sweep, not dropped")
+	}
+}
+
+func TestRunWorkflowServeReturnsErrorWhenAllTargetsFail(t *testing.T) {
+	rigDir := t.TempDir()
+	setupWorkflowServeStubTest(t, workflowServeRigCityTOML("testrig", rigDir))
+
+	workflowServeList = func(_, _ string, _ map[string]string) ([]hookBead, error) {
+		return nil, fmt.Errorf("synthetic store failure")
+	}
+	controlDispatcherServe = func(_, _ string, _ string, _ io.Writer, _ io.Writer) error {
+		return nil
+	}
+
+	err := runWorkflowServe("", false, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "synthetic store failure") {
+		t.Fatalf("runWorkflowServe = %v, want the global failure surfaced when every target store fails", err)
+	}
+}
+
+func TestRunWorkflowServeInterleavesBusyCityStoreWithRigStores(t *testing.T) {
+	rigDir := t.TempDir()
+	cityDir := setupWorkflowServeStubTest(t, workflowServeRigCityTOML("testrig", rigDir))
+
+	cityBeads := []hookBead{
+		{ID: "gc-ctrl-1", Metadata: map[string]string{"gc.kind": "scope-check"}},
+		{ID: "gc-ctrl-2", Metadata: map[string]string{"gc.kind": "scope-check"}},
+		{ID: "gc-ctrl-3", Metadata: map[string]string{"gc.kind": "scope-check"}},
+	}
+	rigQueue := []hookBead{{ID: "gr-ctrl-1", Metadata: map[string]string{"gc.kind": "workflow-finalize"}}}
+	var gotDirs []string
+	workflowServeList = func(_, dir string, _ map[string]string) ([]hookBead, error) {
+		gotDirs = append(gotDirs, dir)
+		if canonicalTestPath(dir) == canonicalTestPath(cityDir) {
+			if len(cityBeads) > 0 {
+				next := cityBeads[:1]
+				cityBeads = cityBeads[1:]
+				return next, nil
+			}
+			return nil, nil
+		}
+		if len(rigQueue) > 0 {
+			next := rigQueue
+			rigQueue = nil
+			return next, nil
+		}
+		return nil, nil
+	}
+	var controlled []string
+	controlDispatcherServe = func(_, _ string, beadID string, _ io.Writer, _ io.Writer) error {
+		controlled = append(controlled, beadID)
+		return nil
+	}
+
+	if err := runWorkflowServe("", false, io.Discard, io.Discard); err != nil {
+		t.Fatalf("runWorkflowServe: %v", err)
+	}
+
+	// Each sweep takes one batch per target before re-querying anyone, so a
+	// city store that keeps producing work cannot starve the rig stores.
+	if len(gotDirs) < 2 || canonicalTestPath(gotDirs[1]) != canonicalTestPath(rigDir) {
+		t.Fatalf("query order = %#v, want the rig store scanned after one city batch, not after the city store drains", gotDirs)
+	}
+	if len(controlled) < 2 || controlled[1] != "gr-ctrl-1" {
+		t.Fatalf("controlled = %#v, want the rig bead dispatched within the first sweep", controlled)
+	}
+}
+
+func TestRunWorkflowServeCustomWorkQueryKeepsSingleStore(t *testing.T) {
+	rigDir := t.TempDir()
+	cityToml := fmt.Sprintf(
+		"[workspace]\nname = \"test-city\"\n\n[daemon]\nformula_v2 = true\n\n[[rigs]]\nname = \"testrig\"\npath = %q\n\n[[agent]]\nname = \"control-dispatcher\"\nwork_query = \"echo []\"\nstart_command = \"gc convoy control --serve --follow {{.Agent}}\"\nprompt_mode = \"none\"\nprocess_names = [\"gc\"]\nmax_active_sessions = 1\n",
+		rigDir,
+	)
+	cityDir := setupWorkflowServeStubTest(t, cityToml)
+
+	var gotDirs []string
+	workflowServeList = func(_, dir string, _ map[string]string) ([]hookBead, error) {
+		gotDirs = append(gotDirs, dir)
+		return nil, nil
+	}
+	controlDispatcherServe = func(_, _ string, _ string, _ io.Writer, _ io.Writer) error {
+		return nil
+	}
+
+	if err := runWorkflowServe("", false, io.Discard, io.Discard); err != nil {
+		t.Fatalf("runWorkflowServe: %v", err)
+	}
+
+	// A custom work_query may embed rig-specific template expansions that do
+	// not transfer across stores, so it keeps the single-store contract.
+	if len(gotDirs) == 0 {
+		t.Fatal("workflowServeList never called")
+	}
+	for _, dir := range gotDirs {
+		if canonicalTestPath(dir) != canonicalTestPath(cityDir) {
+			t.Fatalf("workflowServeList dir = %q, want only the city store for a custom work_query", dir)
+		}
+	}
+}
+
+func TestRunWorkflowServeDedupesAliasedStorePaths(t *testing.T) {
+	cityDir := setupWorkflowServeStubTest(t, "") // placeholder; rewritten below
+	// A rig whose path aliases the city root must not be scanned twice.
+	cityToml := workflowServeRigCityTOML("aliasrig", cityDir)
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(cityToml), 0o644); err != nil {
+		t.Fatalf("rewrite city.toml: %v", err)
+	}
+
+	var gotDirs []string
+	workflowServeList = func(_, dir string, _ map[string]string) ([]hookBead, error) {
+		gotDirs = append(gotDirs, dir)
+		return nil, nil
+	}
+	controlDispatcherServe = func(_, _ string, _ string, _ io.Writer, _ io.Writer) error {
+		return nil
+	}
+
+	if err := runWorkflowServe("", false, io.Discard, io.Discard); err != nil {
+		t.Fatalf("runWorkflowServe: %v", err)
+	}
+
+	if len(gotDirs) != 1 || canonicalTestPath(gotDirs[0]) != canonicalTestPath(cityDir) {
+		t.Fatalf("workflowServeList dirs = %#v, want the aliased city/rig store scanned exactly once", gotDirs)
+	}
+}
+
+func TestRunWorkflowServeRigScopedDispatcherQueriesOnlyItsRigStore(t *testing.T) {
+	clearGCEnv(t)
+	disableManagedDoltRecoveryForTest(t)
+
+	cityDir := t.TempDir()
+	rigDir := t.TempDir()
+	otherRigDir := t.TempDir()
+	// The city singleton coexists with the rig-scoped instance, as in a real
+	// city: resolving the rig-scoped one must not inherit the singleton's
+	// fan-out behavior.
+	cityToml := fmt.Sprintf(
+		"[workspace]\nname = \"test-city\"\n\n[daemon]\nformula_v2 = true\n\n[[rigs]]\nname = \"testrig\"\npath = %q\n\n[[rigs]]\nname = \"otherrig\"\npath = %q\n",
+		rigDir, otherRigDir,
+	) + testControlDispatcherAgentTOML("") + testControlDispatcherAgentTOML("testrig")
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(cityToml), 0o644); err != nil {
+		t.Fatalf("write city.toml: %v", err)
+	}
+	t.Setenv("GC_CITY", cityDir)
+
+	prevCityFlag := cityFlag
+	prevList := workflowServeList
+	prevControl := controlDispatcherServe
+	prevInterval := workflowServeIdlePollInterval
+	prevAttempts := workflowServeIdlePollAttempts
+	cityFlag = ""
+	workflowServeIdlePollInterval = 0
+	workflowServeIdlePollAttempts = 0
+	t.Cleanup(func() {
+		cityFlag = prevCityFlag
+		workflowServeList = prevList
+		controlDispatcherServe = prevControl
+		workflowServeIdlePollInterval = prevInterval
+		workflowServeIdlePollAttempts = prevAttempts
+	})
+
+	var gotDirs []string
+	workflowServeList = func(_, dir string, _ map[string]string) ([]hookBead, error) {
+		gotDirs = append(gotDirs, dir)
+		return nil, nil
+	}
+	controlDispatcherServe = func(_, _ string, _ string, _ io.Writer, _ io.Writer) error {
+		return nil
+	}
+
+	// Address the rig instance by its qualified name, as the production
+	// start_command's `--follow {{.Agent}}` expansion does; the bare name
+	// resolves to the city singleton when both exist.
+	if err := runWorkflowServe("testrig/control-dispatcher", false, io.Discard, io.Discard); err != nil {
+		t.Fatalf("runWorkflowServe: %v", err)
+	}
+
+	// A rig-scoped dispatcher instance owns only its rig's control beads;
+	// fanning it across the city or sibling rigs would double-dispatch
+	// against the city singleton.
+	if len(gotDirs) == 0 {
+		t.Fatal("workflowServeList never called")
+	}
+	for _, dir := range gotDirs {
+		if canonicalTestPath(dir) != canonicalTestPath(rigDir) {
+			t.Fatalf("workflowServeList dir = %q, want only the agent's rig store %q", dir, rigDir)
+		}
+	}
+}
+
 func TestRunWorkflowServeDrainsReadyBatchBeforeRequery(t *testing.T) {
 	clearGCEnv(t)
 	disableManagedDoltRecoveryForTest(t)
@@ -4903,9 +5258,8 @@ func TestRunWorkflowServeFollowUsesSweepFallback(t *testing.T) {
 	err := runWorkflowServeFollow(
 		wfcAgent,
 		t.TempDir(),
-		t.TempDir(),
+		[]workflowServeTarget{{storePath: t.TempDir()}},
 		wfcAgent.EffectiveWorkQuery(),
-		nil,
 		io.Discard,
 	)
 	if err == nil || !strings.Contains(err.Error(), "synthetic dispatch failure") {
@@ -4985,7 +5339,7 @@ func TestRunWorkflowServeFollowResetsBackoffForProcessedEventAndPending(t *testi
 	}
 
 	agent := config.Agent{Name: "control-dispatcher"}
-	err := runWorkflowServeFollow(agent, t.TempDir(), t.TempDir(), agent.EffectiveWorkQuery(), nil, io.Discard)
+	err := runWorkflowServeFollow(agent, t.TempDir(), []workflowServeTarget{{storePath: t.TempDir()}}, agent.EffectiveWorkQuery(), io.Discard)
 	if !errors.Is(err, stopErr) {
 		t.Fatalf("runWorkflowServeFollow error = %v, want %v", err, stopErr)
 	}
@@ -5075,7 +5429,7 @@ func TestRunWorkflowServeFollowDrainsObservedWakeBeforeSurfacingWatcherErr(t *te
 	}
 
 	agent := config.Agent{Name: "control-dispatcher"}
-	err := runWorkflowServeFollow(agent, t.TempDir(), t.TempDir(), agent.EffectiveWorkQuery(), nil, io.Discard)
+	err := runWorkflowServeFollow(agent, t.TempDir(), []workflowServeTarget{{storePath: t.TempDir()}}, agent.EffectiveWorkQuery(), io.Discard)
 	if !errors.Is(err, watcherErr) {
 		t.Fatalf("runWorkflowServeFollow error = %v, want %v", err, watcherErr)
 	}
@@ -5126,7 +5480,7 @@ func TestRunWorkflowServeFollowSurvivesTransientWorkQueryTimeout(t *testing.T) {
 	}
 
 	agent := config.Agent{Name: "control-dispatcher"}
-	err := runWorkflowServeFollow(agent, t.TempDir(), t.TempDir(), agent.EffectiveWorkQuery(), nil, io.Discard)
+	err := runWorkflowServeFollow(agent, t.TempDir(), []workflowServeTarget{{storePath: t.TempDir()}}, agent.EffectiveWorkQuery(), io.Discard)
 	if !errors.Is(err, fatalErr) {
 		t.Fatalf("runWorkflowServeFollow err = %v, want fatal error after surviving the transient timeout", err)
 	}
