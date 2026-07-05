@@ -269,5 +269,9 @@ func logNativeUnavailable(logger *slog.Logger, scope, gate, reason string) {
 		logger.Debug(nativeUnavailableMessage, args...)
 		return
 	}
+	if gate == string(contract.PreflightCheckMetadataBackend) && strings.Contains(reason, "doltlite") {
+		logger.Debug(nativeUnavailableMessage, args...)
+		return
+	}
 	logger.Warn(nativeUnavailableMessage, args...)
 }
