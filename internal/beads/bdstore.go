@@ -76,6 +76,9 @@ func ExecCommandRunnerWithEnvContext(ctx context.Context, env map[string]string)
 
 func execCommandRunnerWithEnv(parent context.Context, env map[string]string) CommandRunner {
 	return func(dir, name string, args ...string) ([]byte, error) {
+		if name == "bd" {
+			args = bdArgsWithDBOverride(args, env["BEADS_DIR"])
+		}
 		start := time.Now()
 		trace := newBDExecTrace(start, dir, name, args)
 		trace("start", nil)
@@ -112,6 +115,26 @@ func execCommandRunnerWithEnv(parent context.Context, env map[string]string) Com
 		trace(status, traceErr)
 		return out, resultErr
 	}
+}
+
+func bdArgsWithDBOverride(args []string, beadsDir string) []string {
+	beadsDir = strings.TrimSpace(beadsDir)
+	if beadsDir == "" || bdArgsHaveDBOverride(args) {
+		return args
+	}
+	out := make([]string, 0, len(args)+2)
+	out = append(out, "--db", beadsDir)
+	out = append(out, args...)
+	return out
+}
+
+func bdArgsHaveDBOverride(args []string) bool {
+	for _, arg := range args {
+		if arg == "--db" || strings.HasPrefix(arg, "--db=") {
+			return true
+		}
+	}
+	return false
 }
 
 // newBDExecTrace returns the legacy line-format trace callback for one command

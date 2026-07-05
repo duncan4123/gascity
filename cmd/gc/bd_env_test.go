@@ -936,6 +936,50 @@ dolt.auto-start: false
 	}
 }
 
+func TestCurrentPublishedOrRecoveredManagedDoltPortSkipsPostgresPluginCity(t *testing.T) {
+	t.Setenv("GC_BEADS", "plugin")
+	t.Setenv("GC_DOLT", "skip")
+	_ = os.Unsetenv("GC_DOLT_HOST")
+	_ = os.Unsetenv("GC_DOLT_PORT")
+
+	cityPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte(`[workspace]
+name = "demo"
+
+[beads]
+provider = "plugin"
+backend = "postgres"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(cityPath, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, ".beads", "metadata.json"), []byte(`{
+  "database": "demo",
+  "backend": "postgres",
+  "postgres_host": "127.0.0.1",
+  "postgres_port": "5432",
+  "postgres_user": "bd",
+  "postgres_database": "beads"
+}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeReachableProviderManagedDoltState(t, cityPath)
+
+	port, err := currentPublishedOrRecoveredManagedDoltPort(cityPath, true)
+	if err != nil {
+		t.Fatalf("currentPublishedOrRecoveredManagedDoltPort() error = %v, want nil", err)
+	}
+	if port != "" {
+		t.Fatalf("currentPublishedOrRecoveredManagedDoltPort() = %q, want empty for postgres plugin city", port)
+	}
+	if _, err := os.Stat(managedDoltStatePath(cityPath)); !os.IsNotExist(err) {
+		t.Fatalf("published dolt state should remain absent for postgres plugin city, stat err = %v", err)
+	}
+}
+
 func TestResolvedRuntimeCityDoltTargetFallsBackToEnvWhenProviderStateIsNotOwned(t *testing.T) {
 	t.Setenv("GC_BEADS", "file")
 	t.Setenv("GC_DOLT", "skip")

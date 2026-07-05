@@ -35,6 +35,7 @@ func packLocalBackendPlugins(tc *PackConfig, packDir, cityRoot string) ([]Discov
 			Backend:         backend,
 			SetupHook:       setupHook,
 			ProviderCommand: providerCommand,
+			PrepareCommand:  trimStringList(entry.PrepareCommand),
 			StorePath:       strings.TrimSpace(entry.StorePath),
 			BDCompatibility: strings.TrimSpace(entry.BDCompatibility),
 			BeadsEndpoint:   resolveBackendPluginEndpoint(entry.BeadsEndpoint, packDir, cityRoot),
@@ -98,6 +99,7 @@ func sameBackendPluginDeclaration(a, b DiscoveredBackendPlugin) bool {
 	return samePackDir(a.PackDir, b.PackDir) &&
 		a.SetupHook == b.SetupHook &&
 		a.ProviderCommand == b.ProviderCommand &&
+		reflect.DeepEqual(a.PrepareCommand, b.PrepareCommand) &&
 		a.StorePath == b.StorePath &&
 		a.BDCompatibility == b.BDCompatibility &&
 		a.BeadsEndpoint.Command == b.BeadsEndpoint.Command &&
@@ -142,6 +144,7 @@ func deepCopyBackendPlugins(in []DiscoveredBackendPlugin) []DiscoveredBackendPlu
 		out[i].BeadsEndpoint.Args = append([]string(nil), out[i].BeadsEndpoint.Args...)
 		out[i].GascityEndpoint.Args = append([]string(nil), out[i].GascityEndpoint.Args...)
 		out[i].Capabilities = append([]string(nil), out[i].Capabilities...)
+		out[i].PrepareCommand = append([]string(nil), out[i].PrepareCommand...)
 	}
 	return out
 }

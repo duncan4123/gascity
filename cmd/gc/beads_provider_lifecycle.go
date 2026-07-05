@@ -320,6 +320,9 @@ func desiredScopeDoltConfigStateForInit(cityPath, dir, prefix string) (contract.
 	if strings.TrimSpace(dir) == "" || strings.TrimSpace(prefix) == "" {
 		return contract.ConfigState{}, false, nil
 	}
+	if !cityUsesDoltBeadsBackend(cityPath) {
+		return contract.ConfigState{}, false, nil
+	}
 	cityPath = normalizePathForCompare(cityPath)
 	cityDolt := config.DoltConfig{}
 	if cfg, err := loadCityConfig(cityPath, io.Discard); err == nil {
@@ -428,8 +431,10 @@ func seedDeferredManagedBeadsErr(cityPath, dir, prefix, doltDatabase string) err
 	if strings.TrimSpace(doltDatabase) == "" {
 		doltDatabase = readDeferredManagedDoltDatabase(filepath.Join(dir, ".beads", "metadata.json"), defaultScopeDoltDatabase(cityPath, dir, prefix))
 	}
-	if handled, err := initBeadsViaProviderSetupHook(cityPath, dir, prefix, doltDatabase); handled || err != nil {
-		return err
+	if !cityUsesDoltBeadsBackend(cityPath) {
+		if handled, err := initBeadsViaProviderSetupHook(cityPath, dir, prefix, doltDatabase); handled || err != nil {
+			return err
+		}
 	}
 	if cityUsesDoltliteBeadsBackend(cityPath) {
 		return ensureCanonicalDoltliteScopeMetadataForInit(fsys.OSFS{}, dir, doltDatabase)
@@ -458,20 +463,28 @@ func initBeadsViaProviderSetupHook(cityPath, dir, prefix, doltDatabase string) (
 	}
 	if provider != nil {
 		if endpoint, ok := provider.BeadsEndpoint(pluginCtx); ok {
+			overrides["GC_BEADS_BACKEND_PLUGIN_COMMAND"] = endpoint.Command
 			overrides["GC_DOLTLITE_BACKEND_PLUGIN_COMMAND"] = endpoint.Command
 			if len(endpoint.Args) > 0 {
-				overrides["GC_DOLTLITE_BACKEND_PLUGIN_ARGS"] = strings.Join(endpoint.Args, " ")
+				args := strings.Join(endpoint.Args, " ")
+				overrides["GC_BEADS_BACKEND_PLUGIN_ARGS"] = args
+				overrides["GC_DOLTLITE_BACKEND_PLUGIN_ARGS"] = args
 			}
 			if endpoint.Protocol != "" {
+				overrides["GC_BEADS_BACKEND_PLUGIN_PROTOCOL"] = endpoint.Protocol
 				overrides["GC_DOLTLITE_BACKEND_PLUGIN_PROTOCOL"] = endpoint.Protocol
 			}
 		}
 		if endpoint, ok := provider.GascityEndpoint(pluginCtx); ok {
+			overrides["GC_GASCITY_BACKEND_PLUGIN_COMMAND"] = endpoint.Command
 			overrides["GC_DOLTLITE_GASCITY_BACKEND_PLUGIN_COMMAND"] = endpoint.Command
 			if len(endpoint.Args) > 0 {
-				overrides["GC_DOLTLITE_GASCITY_BACKEND_PLUGIN_ARGS"] = strings.Join(endpoint.Args, " ")
+				args := strings.Join(endpoint.Args, " ")
+				overrides["GC_GASCITY_BACKEND_PLUGIN_ARGS"] = args
+				overrides["GC_DOLTLITE_GASCITY_BACKEND_PLUGIN_ARGS"] = args
 			}
 			if endpoint.Protocol != "" {
+				overrides["GC_GASCITY_BACKEND_PLUGIN_PROTOCOL"] = endpoint.Protocol
 				overrides["GC_DOLTLITE_GASCITY_BACKEND_PLUGIN_PROTOCOL"] = endpoint.Protocol
 			}
 		}
@@ -1650,6 +1663,9 @@ func syncConfiguredDoltPortFiles(cityPath string, cityDolt config.DoltConfig, ci
 	if warn == nil {
 		warn = io.Discard
 	}
+	if !cityUsesDoltBeadsBackend(cityPath) {
+		return nil
+	}
 	resolveRigPaths(cityPath, rigs)
 	cityUsesBd := scopeUsesManagedBdStoreContract(cityPath, cityPath)
 	cityUsesPostgres := false
@@ -1825,7 +1841,7 @@ func wrapInvalidEndpointStateError(scope string, err error) error {
 }
 
 func validateCanonicalCompatDoltDrift(cityPath string, cfg *config.City) error {
-	if cfg == nil || !workspaceUsesManagedBdStoreContract(cityPath, cfg.Rigs) {
+	if cfg == nil || !cityUsesDoltBeadsBackend(cityPath) || !workspaceUsesManagedBdStoreContract(cityPath, cfg.Rigs) {
 		return nil
 	}
 	cityResolved, err := contract.ResolveScopeConfigState(fsys.OSFS{}, cityPath, cityPath, config.EffectiveHQPrefix(cfg))

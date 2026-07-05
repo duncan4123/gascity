@@ -2,6 +2,7 @@ package config
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/fsys"
@@ -18,6 +19,7 @@ schema = 2
 backend = "doltlite"
 setup_hook = "assets/scripts/gc-beads-doltlite-bd.sh"
 provider_command = "assets/scripts/gc-beads-doltlite-bd.sh"
+prepare_command = ["build", "backend", "--install"]
 store_path = ".beads/doltlite"
 bd_compatibility = "bd-1.0.5"
 capabilities = ["setup", "provider", "metadata", "fastpath", "store-health"]
@@ -53,6 +55,9 @@ protocol = "gascity.backend.v1alpha1"
 	}
 	if want := filepath.Join(dir, ".gc/runtime/packs/bd-gc-dl/bin/gc-doltlite-fastpath"); plugin.GascityEndpoint.Command != want {
 		t.Fatalf("GascityEndpoint.Command = %q, want %q", plugin.GascityEndpoint.Command, want)
+	}
+	if got, want := plugin.PrepareCommand, []string{"build", "backend", "--install"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("PrepareCommand = %#v, want %#v", got, want)
 	}
 	if plugin.BDCompatibility != "bd-1.0.5" {
 		t.Fatalf("BDCompatibility = %q, want bd-1.0.5", plugin.BDCompatibility)

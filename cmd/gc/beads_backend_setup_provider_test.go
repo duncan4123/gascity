@@ -29,6 +29,40 @@ backend = "doltlite"
 	}
 }
 
+func TestDoltBeadsBackendPluginForBdProvider(t *testing.T) {
+	t.Setenv("GC_BEADS", "")
+	t.Setenv("GC_BEADS_BACKEND", "")
+	cityPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cityPath, ".gc", "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte(`[beads]
+provider = "bd"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setupHook := filepath.Join(cityPath, ".gc", "scripts", "gc-beads-bd.sh")
+	if err := os.WriteFile(setupHook, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	hook, ok := beadsProviderSetupHook(cityPath)
+	if !ok {
+		t.Fatal("beadsProviderSetupHook ok = false, want true for bd/dolt backend")
+	}
+	if hook != setupHook {
+		t.Fatalf("beadsProviderSetupHook = %q, want %q", hook, setupHook)
+	}
+
+	storePath, ok := beadsBackendPluginStorePath(cityPath)
+	if !ok {
+		t.Fatal("beadsBackendPluginStorePath ok = false, want true for bd/dolt backend")
+	}
+	if want := filepath.Join(cityPath, ".beads", "dolt"); storePath != want {
+		t.Fatalf("beadsBackendPluginStorePath = %q, want %q", storePath, want)
+	}
+}
+
 func TestDoltliteBeadsBackendPluginStorePath(t *testing.T) {
 	t.Setenv("GC_BEADS", "")
 	t.Setenv("GC_BEADS_BACKEND", "")
