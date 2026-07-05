@@ -599,6 +599,7 @@ func TestBuiltinImportsForInit(t *testing.T) {
 			t.Errorf("builtinImportsForInit with GC_BEADS=file = %v, want core only", ordered)
 		}
 	})
+
 }
 
 // TestCanonicalImportSourcePublicPacksMatchConstants asserts the public-pack
