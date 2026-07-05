@@ -195,6 +195,7 @@ func TestProviderUsesBDContract(t *testing.T) {
 	}{
 		{provider: "", want: true},
 		{provider: "bd", want: true},
+		{provider: "plugin", want: true},
 		{provider: " file ", want: false},
 		{provider: "exec:gc-beads-bd", want: true},
 		{provider: "exec:/tmp/gc-beads-bd", want: true},

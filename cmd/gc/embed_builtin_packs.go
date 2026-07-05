@@ -123,10 +123,13 @@ func requiredBuiltinSources(cityPath string) map[string]string {
 func requiredBuiltinPackNames(cityPath string) []string {
 	required := []string{"core"}
 
-	if cityUsesBdStoreContract(cityPath) {
+	provider := strings.TrimSpace(configuredBeadsProviderValue(cityPath))
+	if provider == "" {
+		provider = rawBeadsProvider(cityPath)
+	}
+	if providerNeedsBuiltinBdPack(provider) {
 		required = append(required, "bd")
 	}
-	provider := strings.TrimSpace(configuredBeadsProviderValue(cityPath))
 	usesDirectExecLifecycle := strings.HasPrefix(provider, "exec:") &&
 		execProviderBase(provider) == "gc-beads-bd" &&
 		normalizeRawBeadsProvider(cityPath, provider) != "bd"
@@ -169,10 +172,18 @@ func builtinImportsForInit(cityProvider string) (map[string]config.Import, []str
 		provider = "bd" // matches the rawBeadsProvider default
 	}
 	names := []string{"core"}
-	if providerUsesBdStoreContract(provider) {
+	if providerNeedsBuiltinBdPack(provider) {
 		names = append(names, "bd")
 	}
 	return builtinImportsForNames(names)
+}
+
+func providerNeedsBuiltinBdPack(provider string) bool {
+	provider = strings.TrimSpace(provider)
+	if provider == "plugin" {
+		return false
+	}
+	return providerUsesBdStoreContract(provider)
 }
 
 func builtinImportsForNames(names []string) (map[string]config.Import, []string) {

@@ -507,6 +507,15 @@ func TestRequiredBuiltinPackNames(t *testing.T) {
 		assertPackNamesForTest(t, requiredBuiltinPackNames(dir), []string{"core", "bd"})
 	})
 
+	t.Run("city_toml_plugin_provider", func(t *testing.T) {
+		clearGCEnv(t)
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "city.toml"), []byte("[beads]\nprovider = \"plugin\"\nbackend = \"doltlite\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		assertPackNamesForTest(t, requiredBuiltinPackNames(dir), []string{"core"})
+	})
+
 	t.Run("exec_gc_beads_bd_override_adds_dolt", func(t *testing.T) {
 		clearGCEnv(t)
 		dir := t.TempDir()
@@ -571,6 +580,7 @@ func TestBuiltinImportsForInit(t *testing.T) {
 			{provider: "", want: "core,bd"},
 			{provider: "bd", want: "core,bd"},
 			{provider: "file", want: "core"},
+			{provider: "plugin", want: "core"},
 			{provider: "exec:/tmp/custom-store", want: "core"},
 			{provider: "exec:/tmp/gc-beads-bd", want: "core,bd"},
 		} {
