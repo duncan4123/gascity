@@ -121,12 +121,11 @@ func requiredBuiltinSources(cityPath string) map[string]string {
 }
 
 func requiredBuiltinPackNames(cityPath string) []string {
-	required := []string{"core"}
-
 	provider := strings.TrimSpace(configuredBeadsProviderValue(cityPath))
 	if provider == "" {
 		provider = rawBeadsProvider(cityPath)
 	}
+	required := []string{"core"}
 	if providerNeedsBuiltinBdPack(provider) {
 		required = append(required, "bd")
 	}
@@ -137,6 +136,20 @@ func requiredBuiltinPackNames(cityPath string) []string {
 		required = append(required, "dolt")
 	}
 	return required
+}
+
+func dedupeBuiltinPackNames(names []string) []string {
+	seen := make(map[string]bool, len(names))
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
 }
 
 // bundledPackImportCommit is the commit tag bundled-source caches and lock
