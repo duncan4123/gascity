@@ -1,0 +1,15 @@
+schema: gc.mayor.context.v1
+created_at: 2026-07-07T08:47:57Z
+rig: gascity
+rig_root: /data/projects/pg-latest/rigs/gascity
+plan_slug: version-control-plugin-backends
+objective: Use Gas City's plugin and pack system for version-control features and backend DB provider integrations.
+source_artifacts:
+  mayor_requirements: /data/projects/pg-latest/rigs/gascity/plans/version-control-plugin-backends/requirements.md
+  mayor_implementation_plan: /data/projects/pg-latest/rigs/gascity/plans/version-control-plugin-backends/implementation-plan.md
+notes:
+  - Existing Mayor artifacts are source context, not build-basic schema artifacts.
+  - The workflow should create its own build artifacts under artifact_root when required.
+  - Preferred direction: pack declarations under capabilities.version_control and capabilities.backend_db.
+  - Preferred user-facing config: [version_control] provider for VCS and existing [beads] provider for backend DB selection.
+  - Use plugins only when core needs structured facts or safe operations; keep pack commands, orders, formulas, and doctor checks as pack behavior where sufficient.
