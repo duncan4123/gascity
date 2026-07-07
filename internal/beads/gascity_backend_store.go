@@ -209,10 +209,18 @@ func (s *GascityBackendStore) Get(id string) (Bead, error) {
 }
 
 func (s *GascityBackendStore) Update(id string, opts UpdateOpts) error {
+	updates := backendUpdatesFromOpts(opts)
+	if len(opts.Metadata) > 0 {
+		current, err := s.Get(id)
+		if err != nil {
+			return err
+		}
+		updates["metadata"] = mergeBackendMetadataPatch(current.Metadata, opts.Metadata)
+	}
 	return s.call("update_issue", map[string]any{
 		"session_id": s.sessionID,
 		"id":         id,
-		"updates":    backendUpdatesFromOpts(opts),
+		"updates":    updates,
 		"actor":      "gc",
 		"commit":     true,
 		"message":    "gc update",
@@ -466,10 +474,18 @@ func backendUpdatesFromOpts(opts UpdateOpts) map[string]any {
 	if opts.Labels != nil {
 		out["labels"] = opts.Labels
 	}
-	if opts.Metadata != nil {
-		out["metadata"] = opts.Metadata
-	}
 	return out
+}
+
+func mergeBackendMetadataPatch(current map[string]string, patch map[string]string) map[string]string {
+	merged := make(map[string]string, len(current)+len(patch))
+	for k, v := range current {
+		merged[k] = v
+	}
+	for k, v := range patch {
+		merged[k] = v
+	}
+	return merged
 }
 
 func backendListRequest(sessionID string, q ListQuery) (string, any) {
