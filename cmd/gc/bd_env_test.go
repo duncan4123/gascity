@@ -5272,9 +5272,8 @@ dolt.auto-start: false
 	if !used {
 		t.Errorf("used = false, want true (scope is authoritative; failure is semantic)")
 	}
-	var parseErr *contract.MetadataParseError
-	if !errors.As(err, &parseErr) {
-		t.Errorf("errors.As(*MetadataParseError) = false, want true; err=%v", err)
+	if !strings.Contains(err.Error(), `unsupported backend "sqlite"`) {
+		t.Errorf("error = %v, want unsupported backend rejection", err)
 	}
 }
 

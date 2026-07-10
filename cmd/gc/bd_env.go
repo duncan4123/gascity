@@ -368,7 +368,7 @@ func applyCanonicalScopeBackendEnv(env map[string]string, cityPath, scopeRoot st
 			return true, nil
 		}
 		if backend, ok := cityPluginBackendName(cityPath); ok {
-			applyPluginBackendEnv(env, backend)
+			applyPluginBackendEnv(env, cityPath, backend)
 			return true, nil
 		}
 	}
@@ -390,7 +390,7 @@ func applyCanonicalScopeBackendEnv(env map[string]string, cityPath, scopeRoot st
 		}
 		return true, nil
 	default:
-		if applyPluginBackendEnv(env, meta.Backend) {
+		if applyPluginBackendEnv(env, cityPath, meta.Backend) {
 			return true, nil
 		}
 		return true, fmt.Errorf("unsupported backend %q for scope %s", meta.Backend, scopeRoot)
@@ -418,7 +418,7 @@ func applyCityPostgresBackendEnv(env map[string]string, cityPath string) (bool, 
 	case "", "dolt":
 		return false, nil
 	default:
-		if isPluginBackendName(meta.Backend) {
+		if isRegisteredPluginBackendForCity(cityPath, meta.Backend) {
 			return false, nil
 		}
 		return true, fmt.Errorf("unsupported backend %q for scope %s", meta.Backend, cityPath)
@@ -434,9 +434,9 @@ func isPluginBackendName(backend string) bool {
 	}
 }
 
-func applyPluginBackendEnv(env map[string]string, backend string) bool {
+func applyPluginBackendEnv(env map[string]string, cityPath, backend string) bool {
 	backend = strings.TrimSpace(backend)
-	if !isPluginBackendName(backend) {
+	if !isRegisteredPluginBackendForCity(cityPath, backend) {
 		return false
 	}
 	clearProjectedDoltEnv(env)
@@ -450,7 +450,7 @@ func applyPluginBackendEnv(env map[string]string, backend string) bool {
 func cityPluginBackendName(cityPath string) (string, bool) {
 	meta, ok, err := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(cityPath))
 	if err == nil && ok && meta.Backend != "" {
-		if isPluginBackendName(meta.Backend) {
+		if isRegisteredPluginBackendForCity(cityPath, meta.Backend) {
 			return meta.Backend, true
 		}
 		return "", false
@@ -459,7 +459,7 @@ func cityPluginBackendName(cityPath string) (string, bool) {
 		return "", false
 	}
 	backend := beadsBackend(cityPath)
-	if !isPluginBackendName(backend) {
+	if !isRegisteredPluginBackendForCity(cityPath, backend) {
 		return "", false
 	}
 	return backend, true
@@ -468,7 +468,7 @@ func cityPluginBackendName(cityPath string) (string, bool) {
 func scopePluginBackendName(cityPath, scopeRoot string) (string, bool) {
 	meta, ok, err := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(scopeRoot))
 	if err == nil && ok && meta.Backend != "" {
-		if isPluginBackendName(meta.Backend) {
+		if isRegisteredPluginBackendForCity(cityPath, meta.Backend) {
 			return meta.Backend, true
 		}
 		return "", false
@@ -922,17 +922,16 @@ func readValidProviderManagedDoltState(cityPath string) (doltRuntimeState, bool)
 }
 
 func currentPublishedOrRecoveredManagedDoltPort(cityPath string, allowRecovery bool) (string, error) {
+	if scopeBackendIsPostgres(cityPath, cityPath) {
+		return "", nil
+	}
+	if _, ok := cityPluginBackendName(cityPath); ok {
+		return "", nil
+	}
 	if port := currentManagedDoltPort(cityPath); port != "" {
 		return port, nil
 	}
 	if !allowRecovery {
-		return "", nil
-	}
-	owned, err := managedDoltLifecycleOwned(cityPath)
-	if err != nil {
-		return "", err
-	}
-	if !owned {
 		return "", nil
 	}
 	state, ok := readValidProviderManagedDoltState(cityPath)
@@ -1317,7 +1316,7 @@ func bdRuntimeEnvForRigWithErrorRecovery(cityPath string, cfg *config.City, rigP
 		}
 	}
 	if backend, ok := scopePluginBackendName(cityPath, rigPath); ok {
-		applyPluginBackendEnv(env, backend)
+		applyPluginBackendEnv(env, cityPath, backend)
 		return env, nil
 	}
 	if err := applyResolvedRigDoltEnv(env, cityPath, rigPath, explicitRig, allowRecovery); err != nil {
@@ -1405,7 +1404,7 @@ func bdRuntimeEnvWithErrorRecovery(cityPath string, allowRecovery bool) (map[str
 		return env, nil
 	}
 	if backend, ok := scopePluginBackendName(cityPath, cityPath); ok {
-		applyPluginBackendEnv(env, backend)
+		applyPluginBackendEnv(env, cityPath, backend)
 		return env, nil
 	}
 	if usedPostgres, err := applyCityPostgresBackendEnv(env, cityPath); err != nil {
@@ -1464,7 +1463,7 @@ func cityRuntimeProcessEnvWithError(cityPath string) ([]string, error) {
 			// Postgres projection includes credentials, so it must win over the
 			// generic plugin backend projection.
 		} else if backend, ok := scopePluginBackendName(cityPath, cityPath); ok {
-			applyPluginBackendEnv(source, backend)
+			applyPluginBackendEnv(source, cityPath, backend)
 		} else {
 			err := applyResolvedCityDoltEnv(source, cityPath, false)
 			if err != nil {

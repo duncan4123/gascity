@@ -76,7 +76,7 @@ func ExecCommandRunnerWithEnvContext(ctx context.Context, env map[string]string)
 
 func execCommandRunnerWithEnv(parent context.Context, env map[string]string) CommandRunner {
 	return func(dir, name string, args ...string) ([]byte, error) {
-		if name == "bd" {
+		if name == "bd" && backendRequiresDBOverride(env["GC_BEADS_BACKEND"]) {
 			args = bdArgsWithDBOverride(args, env["BEADS_DIR"])
 		}
 		start := time.Now()
@@ -135,6 +135,15 @@ func bdArgsHaveDBOverride(args []string) bool {
 		}
 	}
 	return false
+}
+
+func backendRequiresDBOverride(backend string) bool {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "", "dolt", "postgres":
+		return false
+	default:
+		return true
+	}
 }
 
 // newBDExecTrace returns the legacy line-format trace callback for one command
