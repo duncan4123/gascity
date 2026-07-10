@@ -218,12 +218,15 @@ func (s *GascityBackendStore) Update(id string, opts UpdateOpts) error {
 		updates["metadata"] = mergeBackendMetadataPatch(current.Metadata, opts.Metadata)
 	}
 	return s.call("update_issue", map[string]any{
-		"session_id": s.sessionID,
-		"id":         id,
-		"updates":    updates,
-		"actor":      "gc",
-		"commit":     true,
-		"message":    "gc update",
+		"session_id":    s.sessionID,
+		"id":            id,
+		"updates":       updates,
+		"add_labels":    opts.Labels,
+		"remove_labels": opts.RemoveLabels,
+		"parent_id":     opts.ParentID,
+		"actor":         "gc",
+		"commit":        true,
+		"message":       "gc update",
 	}, nil)
 }
 
@@ -238,6 +241,16 @@ func (s *GascityBackendStore) Reopen(id string) error {
 func (s *GascityBackendStore) CloseAll(ids []string, metadata map[string]string) (int, error) {
 	closed := 0
 	for _, id := range ids {
+		current, err := s.Get(id)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return closed, err
+		}
+		if current.Status == "closed" {
+			continue
+		}
 		if len(metadata) > 0 {
 			if err := s.SetMetadataBatch(id, metadata); err != nil && !errors.Is(err, ErrNotFound) {
 				return closed, err
@@ -259,10 +272,27 @@ func (s *GascityBackendStore) List(query ListQuery) ([]Bead, error) {
 	if !query.HasFilter() && !query.AllowScan {
 		return nil, fmt.Errorf("gascity backend list: %w", ErrQueryRequiresScan)
 	}
+	// The backend supports only a subset of ListQuery. Never push Limit before
+	// canonical in-memory filtering and sorting, or unsupported filters can make
+	// the backend truncate away valid matches.
+	backendQuery := query
+	backendQuery.Limit = 0
 	var out []backendIssue
-	method, params := backendListRequest(s.sessionID, query)
-	if err := s.call(method, params, &out); err != nil {
-		return nil, err
+	queries := []ListQuery{backendQuery}
+	if query.TierMode == TierBoth || query.TierMode == TierWisps {
+		issuesQuery := backendQuery
+		issuesQuery.TierMode = TierIssues
+		wispsQuery := backendQuery
+		wispsQuery.TierMode = TierWisps
+		queries = []ListQuery{issuesQuery, wispsQuery}
+	}
+	for _, q := range queries {
+		method, params := backendListRequest(s.sessionID, q)
+		var page []backendIssue
+		if err := s.call(method, params, &page); err != nil {
+			return nil, err
+		}
+		out = append(out, page...)
 	}
 	return ApplyListQuery(backendIssuesToBeads(out), query), nil
 }
@@ -281,12 +311,12 @@ func (s *GascityBackendStore) Ready(query ...ReadyQuery) ([]Bead, error) {
 	if err := s.call("ready_work", map[string]any{"session_id": s.sessionID, "filter": backendReadyFilter(q)}, &out); err != nil {
 		return nil, err
 	}
-	beads := backendIssuesToBeads(out)
-	if q.Assignee != "" || q.Limit > 0 {
-		filter := ListQuery{Assignee: q.Assignee, Limit: q.Limit, AllowScan: true}
-		beads = ApplyListQuery(beads, filter)
-	}
-	return beads, nil
+	return ApplyListQuery(backendIssuesToBeads(out), ListQuery{
+		Assignee:  q.Assignee,
+		Limit:     q.Limit,
+		AllowScan: true,
+		TierMode:  q.TierMode,
+	}), nil
 }
 
 func (s *GascityBackendStore) Children(parentID string, opts ...QueryOpt) ([]Bead, error) {
@@ -324,7 +354,9 @@ func (s *GascityBackendStore) Delete(id string) error {
 	return s.call("delete_issue", map[string]string{"session_id": s.sessionID, "id": id}, nil)
 }
 
-func (s *GascityBackendStore) Ping() error { return nil }
+func (s *GascityBackendStore) Ping() error {
+	return s.call("ping", map[string]string{"session_id": s.sessionID}, nil)
+}
 
 func (s *GascityBackendStore) DepAdd(issueID, dependsOnID, depType string) error {
 	return s.call("add_dependency", map[string]any{
@@ -343,15 +375,11 @@ func (s *GascityBackendStore) DepList(id, direction string) ([]Dep, error) {
 	if direction == "up" {
 		method = "get_dependents"
 	}
-	var out []backendIssue
+	var out []Dep
 	if err := s.call(method, map[string]string{"session_id": s.sessionID, "issue_id": id}, &out); err != nil {
 		return nil, err
 	}
-	deps := make([]Dep, 0, len(out))
-	for _, issue := range out {
-		deps = append(deps, Dep{IssueID: id, DependsOnID: issue.ID, Type: "blocks"})
-	}
-	return deps, nil
+	return out, nil
 }
 
 type backendIssue struct {
@@ -362,6 +390,8 @@ type backendIssue struct {
 	Priority    int             `json:"priority,omitempty"`
 	Type        string          `json:"issue_type,omitempty"`
 	Assignee    string          `json:"assignee,omitempty"`
+	Sender      string          `json:"sender,omitempty"`
+	From        string          `json:"from,omitempty"`
 	CreatedAt   time.Time       `json:"created_at"`
 	UpdatedAt   time.Time       `json:"updated_at,omitempty"`
 	Metadata    json.RawMessage `json:"metadata,omitempty"`
@@ -379,12 +409,25 @@ func (i backendIssue) toBead() Bead {
 	if len(i.Metadata) > 0 {
 		_ = json.Unmarshal(i.Metadata, &meta)
 	}
-	return Bead{
+	from := i.Sender
+	if from == "" {
+		from = i.From
+	}
+	b := Bead{
 		ID: i.ID, Title: i.Title, Status: i.Status, Type: i.Type, Priority: &priority,
 		CreatedAt: i.CreatedAt, UpdatedAt: i.UpdatedAt, Assignee: i.Assignee, ParentID: i.ParentID,
-		Description: i.Description, Labels: i.Labels, Metadata: meta, Dependencies: i.Deps,
+		From: from, Description: i.Description, Labels: i.Labels, Metadata: meta, Dependencies: i.Deps,
 		Ephemeral: i.Ephemeral, NoHistory: i.NoHistory, DeferUntil: i.DeferUntil,
 	}
+	if b.ParentID == "" {
+		for _, dep := range i.Deps {
+			if dep.Type == "parent-child" {
+				b.ParentID = dep.DependsOnID
+				break
+			}
+		}
+	}
+	return b
 }
 
 func backendIssueFromBead(b Bead) backendIssue {
@@ -395,7 +438,7 @@ func backendIssueFromBead(b Bead) backendIssue {
 	meta, _ := json.Marshal(map[string]string(b.Metadata))
 	return backendIssue{
 		ID: b.ID, Title: b.Title, Description: b.Description, Status: b.Status,
-		Priority: priority, Type: b.Type, Assignee: b.Assignee, ParentID: b.ParentID,
+		Priority: priority, Type: b.Type, Assignee: b.Assignee, Sender: b.From, ParentID: b.ParentID,
 		Labels: b.Labels, Metadata: meta, Deps: backendDepsFromBead(b),
 		Ephemeral: b.Ephemeral, NoHistory: b.NoHistory, DeferUntil: b.DeferUntil,
 	}
@@ -465,14 +508,8 @@ func backendUpdatesFromOpts(opts UpdateOpts) map[string]any {
 	if opts.Description != nil {
 		out["description"] = *opts.Description
 	}
-	if opts.ParentID != nil {
-		out["parent_id"] = *opts.ParentID
-	}
 	if opts.Assignee != nil {
 		out["assignee"] = *opts.Assignee
-	}
-	if opts.Labels != nil {
-		out["labels"] = opts.Labels
 	}
 	return out
 }
@@ -508,10 +545,8 @@ func backendListRequest(sessionID string, q ListQuery) (string, any) {
 	if len(q.Metadata) > 0 {
 		filter["metadata"] = q.Metadata
 	}
-	if q.Limit > 0 {
-		filter["limit"] = q.Limit
-	}
 	if q.TierMode == TierWisps {
+		filter["include_closed"] = q.IncludeClosed || q.Status == "closed"
 		return "list_wisps", map[string]any{"session_id": sessionID, "filter": filter}
 	}
 	return "search_issues", map[string]any{"session_id": sessionID, "filter": filter}
@@ -521,9 +556,6 @@ func backendReadyFilter(q ReadyQuery) map[string]any {
 	filter := map[string]any{}
 	if q.Assignee != "" {
 		filter["assignee"] = q.Assignee
-	}
-	if q.Limit > 0 {
-		filter["limit"] = q.Limit
 	}
 	if q.TierMode == TierBoth || q.TierMode == TierWisps {
 		filter["include_ephemeral"] = true

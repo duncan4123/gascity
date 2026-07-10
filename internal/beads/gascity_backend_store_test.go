@@ -11,6 +11,54 @@ func TestBackendUpdatesFromOptsDoesNotSendMetadataPatchAsReplacement(t *testing.
 	}
 }
 
+func TestBackendUpdatesFromOptsDoesNotTreatLabelDeltasAsRowFields(t *testing.T) {
+	updates := backendUpdatesFromOpts(UpdateOpts{
+		Labels:       []string{"add"},
+		RemoveLabels: []string{"remove"},
+	})
+	if _, ok := updates["labels"]; ok {
+		t.Fatalf("backendUpdatesFromOpts sent append-only labels as a replacement row field: %#v", updates)
+	}
+	if _, ok := updates["remove_labels"]; ok {
+		t.Fatalf("backendUpdatesFromOpts sent remove_labels as a row field: %#v", updates)
+	}
+}
+
+func TestBackendListRequestDoesNotPushLimitBeforeCanonicalFiltering(t *testing.T) {
+	_, raw := backendListRequest("session", ListQuery{
+		Assignees: []string{"a", "b"},
+		Limit:     1,
+		AllowScan: true,
+	})
+	params := raw.(map[string]any)
+	filter := params["filter"].(map[string]any)
+	if _, ok := filter["limit"]; ok {
+		t.Fatalf("backend filter pushed limit before unsupported filters: %#v", filter)
+	}
+}
+
+func TestBackendListRequestIncludesClosedWisps(t *testing.T) {
+	method, raw := backendListRequest("session", ListQuery{TierMode: TierWisps, IncludeClosed: true, AllowScan: true})
+	if method != "list_wisps" {
+		t.Fatalf("method = %q, want list_wisps", method)
+	}
+	params := raw.(map[string]any)
+	filter := params["filter"].(map[string]any)
+	if got, _ := filter["include_closed"].(bool); !got {
+		t.Fatalf("include_closed = %#v, want true", filter["include_closed"])
+	}
+}
+
+func TestBackendReadyFilterDoesNotLimitBeforeTierFiltering(t *testing.T) {
+	filter := backendReadyFilter(ReadyQuery{TierMode: TierWisps, Limit: 1})
+	if _, ok := filter["limit"]; ok {
+		t.Fatalf("ready filter pushed limit before tier filtering: %#v", filter)
+	}
+	if got, _ := filter["include_ephemeral"].(bool); !got {
+		t.Fatalf("include_ephemeral = %#v, want true", filter["include_ephemeral"])
+	}
+}
+
 func TestBackendMergedMetadataPreservesExistingKeys(t *testing.T) {
 	merged := mergeBackendMetadataPatch(
 		map[string]string{
