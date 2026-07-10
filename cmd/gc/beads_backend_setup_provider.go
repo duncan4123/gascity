@@ -129,11 +129,24 @@ func beadsBackendPluginForCity(cityPath string) (beadsBackendPlugin, beadsBacken
 	if !providerUsesBdStoreContract(ctx.Provider) {
 		return nil, ctx, false
 	}
-	if provider, ok := discoveredBeadsBackendPluginForCity(ctx.CityPath, ctx.Backend); ok {
-		return provider, ctx, true
-	}
-	provider, ok := lookupBeadsBackendPlugin(ctx.Backend)
+	provider, ok := beadsBackendPluginNamedForCity(ctx.CityPath, ctx.Backend)
 	return provider, ctx, ok
+}
+
+func beadsBackendPluginNamedForCity(cityPath, backend string) (beadsBackendPlugin, bool) {
+	if provider, ok := discoveredBeadsBackendPluginForCity(cityPath, backend); ok {
+		return provider, true
+	}
+	return lookupBeadsBackendPlugin(backend)
+}
+
+func isRegisteredPluginBackendForCity(cityPath, backend string) bool {
+	backend = strings.ToLower(strings.TrimSpace(backend))
+	if backend == "" || backend == "dolt" || backend == "postgres" {
+		return false
+	}
+	_, ok := beadsBackendPluginNamedForCity(cityPath, backend)
+	return ok
 }
 
 func beadsBackendPluginCapabilitiesForCity(cityPath string) (beadsBackendPluginCapabilities, bool) {
@@ -145,7 +158,7 @@ func beadsBackendPluginCapabilitiesForCity(cityPath string) (beadsBackendPluginC
 }
 
 func cityUsesPluginBeadsBackendSetup(cityPath string) bool {
-	if rawBeadsProvider(cityPath) != "plugin" {
+	if rawBeadsProvider(cityPath) != "plugin" && beadsBackend(cityPath) == "dolt" {
 		return false
 	}
 	caps, ok := beadsBackendPluginCapabilitiesForCity(cityPath)

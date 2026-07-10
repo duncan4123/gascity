@@ -60,6 +60,9 @@ printf '%s
 ' "$*" > "` + argsFile + `"
 while [ $# -gt 0 ]; do
   case "${1:-}" in
+	--db)
+	  shift 2
+	  ;;
     --dolt-auto-commit)
       if [ "${2:-}" = "on" ] || [ "${2:-}" = "off" ] || [ "${2:-}" = "true" ] || [ "${2:-}" = "false" ]; then
         shift 2
@@ -233,6 +236,13 @@ func TestBdStoreBridgeDoltliteClearsDoltServerEnv(t *testing.T) {
 		if got := envMap[key]; got != "" {
 			t.Fatalf("%s = %q, want empty for doltlite bridge", key, got)
 		}
+	}
+	argsText, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("ReadFile(args): %v", err)
+	}
+	if want := "--db " + filepath.Join(scopeDir, ".beads"); !strings.Contains(string(argsText), want) {
+		t.Fatalf("doltlite bridge args = %q, want plugin scope %q", string(argsText), want)
 	}
 }
 

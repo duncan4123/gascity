@@ -82,6 +82,19 @@ func TestBdArgsWithDBOverridePreservesExplicitDB(t *testing.T) {
 	}
 }
 
+func TestBackendRequiresDBOverrideOnlyForPluginBackends(t *testing.T) {
+	for _, backend := range []string{"", "dolt", "postgres", " DOLT "} {
+		if backendRequiresDBOverride(backend) {
+			t.Fatalf("backendRequiresDBOverride(%q) = true, want false for built-in backend", backend)
+		}
+	}
+	for _, backend := range []string{"doltlite", "custom-plugin"} {
+		if !backendRequiresDBOverride(backend) {
+			t.Fatalf("backendRequiresDBOverride(%q) = false, want true for plugin backend", backend)
+		}
+	}
+}
+
 func TestExecEnvForNonBd_LeavesEnvAlone(t *testing.T) {
 	// The runner also execs dolt directly; non-bd commands keep the
 	// caller-visible environment untouched.

@@ -29,6 +29,25 @@ backend = "doltlite"
 	}
 }
 
+func TestDoltliteBeadsBackendPluginSupportsLegacyBdProvider(t *testing.T) {
+	t.Setenv("GC_BEADS", "")
+	t.Setenv("GC_BEADS_BACKEND", "")
+	cityPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte(`[beads]
+provider = "bd"
+backend = "doltlite"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := beadsBackendPluginCapabilitiesForCity(cityPath); !ok {
+		t.Fatal("beadsBackendPluginCapabilitiesForCity ok = false, want true")
+	}
+	if !cityUsesPluginBeadsBackendSetup(cityPath) {
+		t.Fatal("cityUsesPluginBeadsBackendSetup = false, want legacy bd/doltlite routed through the backend plugin")
+	}
+}
+
 func TestDoltBeadsBackendPluginForBdProvider(t *testing.T) {
 	t.Setenv("GC_BEADS", "")
 	t.Setenv("GC_BEADS_BACKEND", "")
