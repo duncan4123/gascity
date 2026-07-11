@@ -70,6 +70,12 @@ func TestPreflightAcceptsBackendOwnedSQLiteMetadata(t *testing.T) {
 		"backend": "sqlite",
 		"project_id": "gc-local"
 	}`), PreflightBDContext{Backend: "sqlite"}, "gc-local")
+	checker.BDContext = func(string) (PreflightBDContext, error) {
+		return PreflightBDContext{}, errors.New("bd context is unavailable")
+	}
+	checker.DatabaseProjectID = func(string) (string, bool, error) {
+		return "", false, errors.New("dolt project identity is unavailable")
+	}
 
 	result, err := checker.Check(scope)
 	if err != nil {
@@ -78,6 +84,9 @@ func TestPreflightAcceptsBackendOwnedSQLiteMetadata(t *testing.T) {
 
 	assertPreflightVerdict(t, result, PreflightVerdictEligible, true)
 	assertCheckState(t, result, PreflightCheckMetadataBackend, PreflightCheckPass)
+	assertCheckState(t, result, PreflightCheckBDContextAgreement, PreflightCheckPass)
+	assertCheckState(t, result, PreflightCheckIdentityMatch, PreflightCheckPass)
+	assertCheckState(t, result, PreflightCheckVersionCompat, PreflightCheckPass)
 	assertCheckState(t, result, PreflightCheckContractShape, PreflightCheckPass)
 }
 
@@ -398,7 +407,7 @@ func TestCheckVersionCompatSourceBuild(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c := PreflightChecker{BeadsLibraryVersion: tt.libVersion}
-			got := c.checkVersionCompat(tt.ctx, nil)
+			got := c.checkVersionCompat(preflightMetadata{Backend: "dolt"}, tt.ctx, nil)
 			if got.ID != PreflightCheckVersionCompat {
 				t.Fatalf("ID = %q, want %q", got.ID, PreflightCheckVersionCompat)
 			}

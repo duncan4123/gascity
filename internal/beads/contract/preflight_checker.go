@@ -47,7 +47,7 @@ func (c PreflightChecker) Check(scope string) (PreflightResult, error) {
 		c.checkBDContextAgreement(metadata, bdCtx, bdCtxErr),
 		c.checkDoltModeSafe(metadata, bdCtx, bdCtxErr),
 		c.checkIdentityMatch(scope, metadata),
-		c.checkVersionCompat(bdCtx, bdCtxErr),
+		c.checkVersionCompat(metadata, bdCtx, bdCtxErr),
 		c.checkContractShape(metadata),
 	}
 	verdict := preflightVerdictForChecks(checks)
@@ -139,6 +139,9 @@ func (c PreflightChecker) readBDContext(scope string) (PreflightBDContext, error
 func (c PreflightChecker) checkBDContextAgreement(metadata preflightMetadata, ctx PreflightBDContext, err error) PreflightCheckResult {
 	details := PreflightDetails{MetadataBackend: metadata.Backend}
 	details.BDContextBackend = ctx.Backend
+	if metadata.Backend != "dolt" {
+		return NewPreflightCheckResult(PreflightCheckBDContextAgreement, PreflightCheckPass, "Beads owns configured backend context for non-dolt backend", details)
+	}
 	if err != nil {
 		// Unreachable bd context (e.g. a non-git city root where `bd context`
 		// cannot run) is not evidence of backend DISAGREEMENT — only that we
@@ -161,13 +164,16 @@ func (c PreflightChecker) checkDoltModeSafe(metadata preflightMetadata, ctx Pref
 		BDContextBackend:  ctx.Backend,
 		BDContextDoltMode: ctx.DoltMode,
 	}
+	if metadata.Backend != "dolt" {
+		return NewPreflightCheckResult(PreflightCheckDoltModeSafe, PreflightCheckPass, "Dolt mode check is not required for non-dolt backend", details)
+	}
 	if err != nil {
 		// Unreachable bd context cannot confirm dolt server mode; degrade
 		// (opt-in) rather than hard-block. embedded mode is still rejected
 		// below once bd context is readable.
 		return NewPreflightCheckResult(PreflightCheckDoltModeSafe, PreflightCheckWarn, "bd context is unreachable; cannot confirm dolt server mode", details)
 	}
-	if metadata.Backend != "dolt" || ctx.Backend != "dolt" {
+	if ctx.Backend != "dolt" {
 		return NewPreflightCheckResult(PreflightCheckDoltModeSafe, PreflightCheckPass, "Dolt mode check is not required for non-dolt backend", details)
 	}
 	switch ctx.DoltMode {
@@ -182,6 +188,9 @@ func (c PreflightChecker) checkDoltModeSafe(metadata preflightMetadata, ctx Pref
 
 func (c PreflightChecker) checkIdentityMatch(scope string, metadata preflightMetadata) PreflightCheckResult {
 	details := PreflightDetails{MetadataProjectID: metadata.ProjectID}
+	if metadata.Backend != "dolt" {
+		return NewPreflightCheckResult(PreflightCheckIdentityMatch, PreflightCheckPass, "Dolt project identity check is not required for non-dolt backend", details)
+	}
 	if metadata.ProjectID == "" {
 		return NewPreflightCheckResult(PreflightCheckIdentityMatch, PreflightCheckFail, "metadata project_id is missing", details)
 	}
@@ -199,7 +208,7 @@ func (c PreflightChecker) checkIdentityMatch(scope string, metadata preflightMet
 	return NewPreflightCheckResult(PreflightCheckIdentityMatch, PreflightCheckPass, "project_id matches", details)
 }
 
-func (c PreflightChecker) checkVersionCompat(ctx PreflightBDContext, err error) PreflightCheckResult {
+func (c PreflightChecker) checkVersionCompat(metadata preflightMetadata, ctx PreflightBDContext, err error) PreflightCheckResult {
 	libraryVersion := strings.TrimPrefix(strings.TrimSpace(c.BeadsLibraryVersion), "v")
 	if libraryVersion == "" {
 		libraryVersion = strings.TrimPrefix(beadsModuleVersion(), "v")
@@ -208,6 +217,9 @@ func (c PreflightChecker) checkVersionCompat(ctx PreflightBDContext, err error) 
 		BDVersion:           ctx.BDVersion,
 		BeadsLibraryVersion: libraryVersion,
 		SchemaVersion:       ctx.SchemaVersion,
+	}
+	if metadata.Backend != "dolt" {
+		return NewPreflightCheckResult(PreflightCheckVersionCompat, PreflightCheckPass, "configured backend is opened by the linked Beads library", details)
 	}
 	if err != nil {
 		// Unreachable bd context cannot confirm bd/beads version parity; degrade
