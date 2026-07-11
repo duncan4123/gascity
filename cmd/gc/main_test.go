@@ -3327,6 +3327,30 @@ kind = "beads-backend"
 backend = "doltlite"
 display_name = "DoltLite"
 capabilities = ["local store", "no Dolt server"]
+
+[[pack]]
+name = "bd-native-postgres"
+description = "Native PostgreSQL backend."
+source = "https://github.com/gastownhall/gascity-packs.git//bd-native-postgres"
+source_kind = "git"
+
+[[pack.plugin]]
+kind = "beads-backend"
+backend = "postgres"
+display_name = "PostgreSQL (native bd)"
+capabilities = ["native", "sql-backend"]
+
+[[pack]]
+name = "bd-native-sqlite"
+description = "Native SQLite backend."
+source = "https://github.com/gastownhall/gascity-packs.git//bd-native-sqlite"
+source_kind = "git"
+
+[[pack.plugin]]
+kind = "beads-backend"
+backend = "sqlite"
+display_name = "SQLite (native bd)"
+capabilities = ["native", "sql-backend"]
 `
 	for _, name := range []string{packregistry.DefaultRegistryName, packregistry.ForkRegistryName} {
 		if err := packregistry.WriteCatalogCache(home, name, []byte(registryBody)); err != nil {
@@ -3347,16 +3371,16 @@ capabilities = ["local store", "no Dolt server"]
 	if err != nil {
 		t.Fatalf("ReadCachedRegistryCatalog: %v", err)
 	}
-	if len(cached.Packs) != 1 || len(cached.Packs[0].Plugins) != 1 {
-		t.Fatalf("cached registry = %+v, want one plugin pack", cached)
+	if len(cached.Packs) != 3 {
+		t.Fatalf("cached registry = %+v, want three backend packs", cached)
 	}
 
 	choices, err := discoverWizardBeadsBackendChoices(context.Background())
 	if err != nil {
 		t.Fatalf("discoverWizardBeadsBackendChoices: %v", err)
 	}
-	if len(choices) != 2 {
-		t.Fatalf("choices = %+v, want built-in dolt plus registry plugin", choices)
+	if len(choices) != 4 {
+		t.Fatalf("choices = %+v, want built-in dolt plus three registry backends", choices)
 	}
 	if choices[0].Backend != "" || choices[0].DisplayName != "dolt" {
 		t.Fatalf("first choice = %+v, want built-in dolt default", choices[0])
@@ -3366,6 +3390,12 @@ capabilities = ["local store", "no Dolt server"]
 	}
 	if choices[1].Description != "local store, no Dolt server" {
 		t.Fatalf("plugin description = %q, want capabilities", choices[1].Description)
+	}
+	if choices[2].Backend != "postgres" || choices[2].DisplayName != "PostgreSQL (native bd)" {
+		t.Fatalf("postgres choice = %+v, want native postgres", choices[2])
+	}
+	if choices[3].Backend != "sqlite" || choices[3].DisplayName != "SQLite (native bd)" {
+		t.Fatalf("sqlite choice = %+v, want native sqlite", choices[3])
 	}
 }
 

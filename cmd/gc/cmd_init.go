@@ -104,7 +104,7 @@ type wizardConfig struct {
 	defaultProvider  string // selected default provider key
 	providers        []string
 	provider         string                // compatibility mirror for older internal callers
-	beadsBackend     string                // selected plugin-backed beads backend, e.g. "doltlite"
+	beadsBackend     string                // selected registry-backed beads backend, e.g. "doltlite" or "sqlite"
 	startCommand     string                // custom start command (workspace-level)
 	bootstrapProfile string                // hosted bootstrap profile, or "" for local defaults
 	hostedDolt       hostedDoltInitOptions // external/hosted Dolt ledger endpoint (disabled when zero)
@@ -595,7 +595,7 @@ committed workspace — e.g. from a bootstrap.sh shipped in the repo).`,
 	cmd.Flags().StringVar(&providerFlag, "provider", "", "deprecated alias for --default-provider")
 	cmd.Flags().StringVar(&defaultProviderFlag, "default-provider", "", "default readiness-aware provider to select from --providers")
 	cmd.Flags().StringArrayVar(&providersFlag, "providers", nil, "readiness-aware providers to write to city.toml (repeatable or comma-separated)")
-	cmd.Flags().StringVar(&beadsBackendFlag, "beads-backend", "", "plugin-backed beads backend to initialize from the pack registry")
+	cmd.Flags().StringVar(&beadsBackendFlag, "beads-backend", "", "beads backend to discover and initialize from the pack registry")
 	cmd.Flags().StringVar(&templateFlag, "template", "", "non-interactive template to write: minimal, gastown, gascity, or custom")
 	cmd.Flags().StringVar(&bootstrapProfileFlag, "bootstrap-profile", "", "bootstrap profile to apply for hosted/container defaults")
 	cmd.Flags().StringVar(&doltHostFlag, "dolt-host", "", "external/hosted Dolt host for the city beads ledger (or "+envDoltHost+"); pins the city to an external endpoint instead of bootstrapping a managed-local Dolt")

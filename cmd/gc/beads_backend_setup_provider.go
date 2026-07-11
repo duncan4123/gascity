@@ -28,6 +28,11 @@ type beadsBackendScopeContext struct {
 }
 
 type beadsBackendPluginCapabilities struct {
+	// NativeDriver names a storage backend compiled into stock upstream bd.
+	// Native bundles have no plugin process or endpoint.
+	NativeDriver string
+	// SQLitePath is the pack default for the native SQLite database file.
+	SQLitePath string
 	// SetupHook means the plugin can initialize scope files and owns
 	// .beads/metadata.json creation/normalization for this backend.
 	SetupHook bool
@@ -145,7 +150,28 @@ func isRegisteredPluginBackendForCity(cityPath, backend string) bool {
 	if backend == "" || backend == "dolt" || backend == "postgres" {
 		return false
 	}
-	_, ok := beadsBackendPluginNamedForCity(cityPath, backend)
+	provider, ok := beadsBackendPluginNamedForCity(cityPath, backend)
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(provider.Capabilities(beadsBackendSetupContext{CityPath: cityPath, Backend: backend}).NativeDriver) == ""
+}
+
+func nativeBeadsBackendForCity(cityPath string) (driver, sqlitePath string, ok bool) {
+	provider, ctx, found := beadsBackendPluginForCity(cityPath)
+	if !found {
+		return "", "", false
+	}
+	caps := provider.Capabilities(ctx)
+	driver = strings.ToLower(strings.TrimSpace(caps.NativeDriver))
+	if driver != "postgres" && driver != "sqlite" {
+		return "", "", false
+	}
+	return driver, strings.TrimSpace(caps.SQLitePath), true
+}
+
+func cityUsesNativeBeadsBackend(cityPath string) bool {
+	_, _, ok := nativeBeadsBackendForCity(cityPath)
 	return ok
 }
 
@@ -209,6 +235,8 @@ func (p discoveredBeadsBackendPlugin) Capabilities(beadsBackendSetupContext) bea
 		capSet[strings.ToLower(strings.TrimSpace(cap))] = true
 	}
 	return beadsBackendPluginCapabilities{
+		NativeDriver:            p.plugin.Driver,
+		SQLitePath:              p.plugin.SQLitePath,
 		SetupHook:               p.plugin.SetupHook != "" || p.plugin.ProviderCommand != "" || capSet["setup"],
 		ProviderLifecycle:       p.plugin.ProviderCommand != "" || p.plugin.BeadsEndpoint.Command != "" || capSet["provider"],
 		BackendPluginMetadata:   p.plugin.BeadsEndpoint.Command != "" || capSet["metadata"] || capSet["backend-metadata"],

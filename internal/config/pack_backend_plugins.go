@@ -23,16 +23,42 @@ func packLocalBackendPlugins(tc *PackConfig, packDir, cityRoot string) ([]Discov
 		}
 		seen[backend] = true
 
+		kind := strings.ToLower(strings.TrimSpace(entry.Kind))
+		if kind == "" {
+			kind = "plugin"
+		}
+		if kind != "plugin" && kind != "native" {
+			return nil, fmt.Errorf("pack %q backend plugin %q: kind must be plugin or native", tc.Pack.Name, backend)
+		}
+		driver := strings.ToLower(strings.TrimSpace(entry.Driver))
+		if kind == "native" {
+			if driver == "" {
+				driver = backend
+			}
+			if driver != "postgres" && driver != "sqlite" {
+				return nil, fmt.Errorf("pack %q native backend %q: driver must be postgres or sqlite", tc.Pack.Name, backend)
+			}
+			if backend != driver {
+				return nil, fmt.Errorf("pack %q native backend %q: backend must match driver %q", tc.Pack.Name, backend, driver)
+			}
+		}
+
 		setupHook := resolveBackendPluginPath(strings.TrimSpace(entry.SetupHook), packDir, cityRoot)
 		providerCommand := resolveBackendPluginPath(strings.TrimSpace(entry.ProviderCommand), packDir, cityRoot)
 		if providerCommand == "" {
 			providerCommand = setupHook
 		}
-		if setupHook == "" && providerCommand == "" {
+		if kind == "plugin" && setupHook == "" && providerCommand == "" {
 			return nil, fmt.Errorf("pack %q backend plugin %q: setup_hook or provider_command is required", tc.Pack.Name, backend)
+		}
+		if kind == "native" && (setupHook != "" || providerCommand != "" || entry.BeadsEndpoint.Command != "" || entry.GascityEndpoint.Command != "") {
+			return nil, fmt.Errorf("pack %q native backend %q: native backends cannot declare plugin commands or endpoints", tc.Pack.Name, backend)
 		}
 		out = append(out, DiscoveredBackendPlugin{
 			Backend:         backend,
+			Kind:            kind,
+			Driver:          driver,
+			SQLitePath:      strings.TrimSpace(entry.SQLitePath),
 			SetupHook:       setupHook,
 			ProviderCommand: providerCommand,
 			PrepareCommand:  trimStringList(entry.PrepareCommand),
@@ -112,6 +138,9 @@ func mergeCityBackendPlugins(cfg *City, plugins []DiscoveredBackendPlugin) error
 
 func sameBackendPluginDeclaration(a, b DiscoveredBackendPlugin) bool {
 	return samePackDir(a.PackDir, b.PackDir) &&
+		a.Kind == b.Kind &&
+		a.Driver == b.Driver &&
+		a.SQLitePath == b.SQLitePath &&
 		a.SetupHook == b.SetupHook &&
 		a.ProviderCommand == b.ProviderCommand &&
 		reflect.DeepEqual(a.PrepareCommand, b.PrepareCommand) &&

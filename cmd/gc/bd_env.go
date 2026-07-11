@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -350,16 +351,30 @@ func applyCanonicalDoltAuthEnv(env map[string]string, cityPath, scopeRoot string
 // (true, err) on a known backend that failed to project; caller MUST
 // surface this error rather than retrying.
 func applyCanonicalScopeBackendEnv(env map[string]string, cityPath, scopeRoot string) (bool, error) {
+	meta, metaOK, metaErr := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(scopeRoot))
+	if metaErr != nil {
+		return true, metaErr
+	}
+	// Upstream native backends are self-describing in metadata.json and do
+	// not create GC's Dolt endpoint-bearing config.yaml. Their metadata is
+	// therefore authoritative without the legacy endpoint-origin gate.
+	if metaOK {
+		switch meta.Backend {
+		case "postgres":
+			if meta.PostgresDSN != "" {
+				return true, applyResolvedScopePostgresEnv(env, cityPath, scopeRoot, meta)
+			}
+		case "sqlite":
+			applyNativeSQLiteEnv(env)
+			return true, nil
+		}
+	}
 	resolved, err := contract.ResolveScopeConfigState(fsys.OSFS{}, cityPath, scopeRoot, "")
 	if err != nil {
 		return false, err
 	}
 	if resolved.Kind != contract.ScopeConfigAuthoritative {
 		return false, nil
-	}
-	meta, _, metaErr := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(scopeRoot))
-	if metaErr != nil {
-		return true, metaErr
 	}
 	if resolved.State.EndpointOrigin == contract.EndpointOriginInheritedCity && meta.Backend == "" {
 		if usedPostgres, err := applyCityPostgresBackendEnv(env, cityPath); err != nil {
@@ -389,6 +404,9 @@ func applyCanonicalScopeBackendEnv(env map[string]string, cityPath, scopeRoot st
 			return true, err
 		}
 		return true, nil
+	case "sqlite":
+		applyNativeSQLiteEnv(env)
+		return true, nil
 	default:
 		if applyPluginBackendEnv(env, cityPath, meta.Backend) {
 			return true, nil
@@ -398,6 +416,13 @@ func applyCanonicalScopeBackendEnv(env map[string]string, cityPath, scopeRoot st
 }
 
 func applyCityPostgresBackendEnv(env map[string]string, cityPath string) (bool, error) {
+	meta, metaOK, metaErr := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(cityPath))
+	if metaErr != nil {
+		return true, metaErr
+	}
+	if metaOK && meta.Backend == "postgres" && meta.PostgresDSN != "" {
+		return true, applyResolvedScopePostgresEnv(env, cityPath, cityPath, meta)
+	}
 	resolved, err := contract.ResolveScopeConfigState(fsys.OSFS{}, cityPath, cityPath, "")
 	if err != nil {
 		return false, err
@@ -405,7 +430,7 @@ func applyCityPostgresBackendEnv(env map[string]string, cityPath string) (bool, 
 	if resolved.Kind != contract.ScopeConfigAuthoritative {
 		return false, nil
 	}
-	meta, _, metaErr := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(cityPath))
+	meta, _, metaErr = contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(cityPath))
 	if metaErr != nil {
 		return true, metaErr
 	}
@@ -415,7 +440,7 @@ func applyCityPostgresBackendEnv(env map[string]string, cityPath string) (bool, 
 			return true, err
 		}
 		return true, nil
-	case "", "dolt":
+	case "", "dolt", "sqlite":
 		return false, nil
 	default:
 		if isRegisteredPluginBackendForCity(cityPath, meta.Backend) {
@@ -425,9 +450,21 @@ func applyCityPostgresBackendEnv(env map[string]string, cityPath string) (bool, 
 	}
 }
 
+func applyCityNativeSQLiteBackendEnv(env map[string]string, cityPath string) (bool, error) {
+	meta, ok, err := contract.LoadMetadataState(fsys.OSFS{}, scopeMetadataJSONPath(cityPath))
+	if err != nil || !ok {
+		return false, err
+	}
+	if meta.Backend != "sqlite" {
+		return false, nil
+	}
+	applyNativeSQLiteEnv(env)
+	return true, nil
+}
+
 func isPluginBackendName(backend string) bool {
 	switch strings.TrimSpace(backend) {
-	case "", "dolt", "postgres":
+	case "", "dolt", "postgres", "sqlite", "mysql":
 		return false
 	default:
 		return true
@@ -527,19 +564,38 @@ func applyResolvedScopePostgresEnv(env map[string]string, cityPath, scopeRoot st
 	clearProjectedDoltEnv(env)
 	mirrorBeadsDoltEnv(env)
 	clearProjectedPostgresEnv(env)
-	endpoint := pgauth.Endpoint{
-		Host: meta.PostgresHost,
-		Port: meta.PostgresPort,
-		User: meta.PostgresUser,
+	endpoint := pgauth.Endpoint{Host: meta.PostgresHost, Port: meta.PostgresPort, User: meta.PostgresUser}
+	if meta.PostgresDSN != "" {
+		parsed, err := url.Parse(meta.PostgresDSN)
+		if err != nil || parsed.Hostname() == "" || parsed.User == nil {
+			return fmt.Errorf("invalid native postgres_dsn for %s", scopeRoot)
+		}
+		endpoint.Host = parsed.Hostname()
+		endpoint.Port = parsed.Port()
+		if endpoint.Port == "" {
+			endpoint.Port = "5432"
+		}
+		endpoint.User = parsed.User.Username()
 	}
 	// Scope projection clears inherited PG keys first, so credential
 	// resolution intentionally starts at process and file-backed sources.
 	resolved, err := pgauth.ResolveFromEnv(nil, scopeRoot, endpoint)
 	if err != nil {
+		if errors.Is(err, pgauth.ErrNoPasswordResolvable) && meta.PostgresDSN != "" {
+			// The upstream native backend still has its own remaining ladder:
+			// BEADS_PG_PASSWORD_COMMAND, PGPASSWORD/.pgpass, and passwordless
+			// server auth. Do not turn absence from GC's static resolver into a
+			// hard failure for a self-describing native workspace.
+			if command := pgauth.PasswordCommand(); command != "" {
+				env["BEADS_PG_PASSWORD_COMMAND"] = command
+			}
+			return nil
+		}
 		return fmt.Errorf("resolving postgres credentials for %s: %w", scopeRoot, err)
 	}
 	env["GC_POSTGRES_PASSWORD"] = resolved.Password
 	env["BEADS_POSTGRES_PASSWORD"] = resolved.Password
+	env["BEADS_PG_PASSWORD"] = resolved.Password
 	env["BEADS_POSTGRES_HOST"] = meta.PostgresHost
 	env["BEADS_POSTGRES_PORT"] = meta.PostgresPort
 	env["BEADS_POSTGRES_USER"] = meta.PostgresUser
@@ -630,10 +686,18 @@ func mirrorBeadsPostgresEnv(env map[string]string) {
 var projectedPostgresEnvKeys = []string{
 	"GC_POSTGRES_PASSWORD",
 	"BEADS_POSTGRES_PASSWORD",
+	"BEADS_PG_PASSWORD",
 	"BEADS_POSTGRES_HOST",
 	"BEADS_POSTGRES_PORT",
 	"BEADS_POSTGRES_USER",
 	"BEADS_POSTGRES_DATABASE",
+}
+
+func applyNativeSQLiteEnv(env map[string]string) {
+	clearProjectedDoltEnv(env)
+	clearProjectedPostgresEnv(env)
+	env["GC_BEADS_BACKEND"] = "sqlite"
+	env["BEADS_BACKEND"] = "sqlite"
 }
 
 func postgresMetadataForScope(cityPath, scopeRoot string) (contract.MetadataState, bool, error) {
@@ -1407,6 +1471,11 @@ func bdRuntimeEnvWithErrorRecovery(cityPath string, allowRecovery bool) (map[str
 		applyPluginBackendEnv(env, cityPath, backend)
 		return env, nil
 	}
+	if usedSQLite, err := applyCityNativeSQLiteBackendEnv(env, cityPath); err != nil {
+		return env, err
+	} else if usedSQLite {
+		return env, nil
+	}
 	if usedPostgres, err := applyCityPostgresBackendEnv(env, cityPath); err != nil {
 		clearProjectedDoltEnv(env)
 		clearProjectedPostgresEnv(env)
@@ -1630,6 +1699,7 @@ func mergeRuntimeEnv(environ []string, overrides map[string]string) []string {
 		"BEADS_POSTGRES_PASSWORD",
 		"BEADS_POSTGRES_PORT",
 		"BEADS_POSTGRES_USER",
+		"BEADS_PG_PASSWORD",
 		"GC_CITY",
 		"GC_CITY_ROOT", // kept for stripping: no code emits this anymore, but inherited values must be cleaned
 		"GC_CITY_PATH",
@@ -1688,6 +1758,7 @@ func mergeRuntimeEnv(environ []string, overrides map[string]string) []string {
 // preserved explicitly for gc-spawned bd subprocesses.
 var hostedBeadsCredentialPassthroughKeys = []string{
 	"BEADS_DOLT_CREDENTIAL_COMMAND",
+	"BEADS_PG_PASSWORD_COMMAND",
 	"BEADS_DOLT_SERVER_TLS",
 	"ORCHESTRATOR_KEY_FILE",
 	"EIA_AUDIENCE",

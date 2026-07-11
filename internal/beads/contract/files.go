@@ -80,6 +80,9 @@ type MetadataState struct {
 	PostgresPort          string   `json:"postgres_port,omitempty"`
 	PostgresUser          string   `json:"postgres_user,omitempty"`
 	PostgresDatabase      string   `json:"postgres_database,omitempty"`
+	PostgresDSN           string   `json:"postgres_dsn,omitempty"`
+	PostgresSchema        string   `json:"postgres_schema,omitempty"`
+	SQLitePath            string   `json:"sqlite_path,omitempty"`
 	BackendPluginCommand  string   `json:"backend_plugin_command,omitempty"`
 	BackendPluginArgs     []string `json:"backend_plugin_args,omitempty"`
 	GasCityBackendCommand string   `json:"gascity_backend_command,omitempty"`
@@ -123,7 +126,11 @@ var postgresBackendKeys = []string{
 	"postgres_port",
 	"postgres_user",
 	"postgres_database",
+	"postgres_dsn",
+	"postgres_schema",
 }
+
+var sqliteBackendKeys = []string{"sqlite_path"}
 
 // crossBackendKeysToScrub returns the on-disk metadata keys that should be
 // removed when canonicalising for the given backend. An empty backend
@@ -132,11 +139,13 @@ var postgresBackendKeys = []string{
 func crossBackendKeysToScrub(backend string) []string {
 	switch backend {
 	case "dolt":
-		return postgresBackendKeys
+		return append(append([]string(nil), postgresBackendKeys...), sqliteBackendKeys...)
 	case "doltlite":
-		return append([]string{"dolt_mode"}, postgresBackendKeys...)
+		return append(append([]string{"dolt_mode"}, postgresBackendKeys...), sqliteBackendKeys...)
 	case "postgres":
-		return doltBackendKeys
+		return append(append([]string(nil), doltBackendKeys...), sqliteBackendKeys...)
+	case "sqlite":
+		return append(append([]string(nil), doltBackendKeys...), postgresBackendKeys...)
 	default:
 		return nil
 	}
@@ -369,6 +378,17 @@ func LoadMetadataState(fs fsys.FS, path string) (MetadataState, bool, error) {
 	}
 
 	if state.Backend == "postgres" {
+		nativeShape := state.PostgresDSN != "" || state.PostgresSchema != ""
+		legacyShape := state.PostgresHost != "" || state.PostgresPort != "" || state.PostgresUser != "" || state.PostgresDatabase != ""
+		if nativeShape && legacyShape {
+			return MetadataState{}, false, &MetadataParseError{Path: abs, Reason: "backend=postgres cannot mix postgres_dsn/postgres_schema with legacy split postgres fields"}
+		}
+		if nativeShape {
+			if state.PostgresDSN == "" || state.PostgresSchema == "" {
+				return MetadataState{}, false, &MetadataParseError{Path: abs, Reason: "backend=postgres requires postgres_dsn and postgres_schema for the native bd backend"}
+			}
+			return state, true, nil
+		}
 		if state.PostgresHost == "" || state.PostgresPort == "" || state.PostgresUser == "" || state.PostgresDatabase == "" {
 			return MetadataState{}, false, &MetadataParseError{
 				Path:   abs,
@@ -382,6 +402,9 @@ func LoadMetadataState(fs fsys.FS, path string) (MetadataState, bool, error) {
 				Reason: fmt.Sprintf("postgres_port must be a TCP port (1..65535), got %q", state.PostgresPort),
 			}
 		}
+	}
+	if state.Backend == "sqlite" && strings.TrimSpace(state.SQLitePath) == "" {
+		return MetadataState{}, false, &MetadataParseError{Path: abs, Reason: "backend=sqlite requires sqlite_path"}
 	}
 
 	return state, true, nil
@@ -410,31 +433,51 @@ func mixedBackendField(state MetadataState) (string, bool) {
 		{"postgres_port", state.PostgresPort, "postgres"},
 		{"postgres_user", state.PostgresUser, "postgres"},
 		{"postgres_database", state.PostgresDatabase, "postgres"},
+		{"postgres_dsn", state.PostgresDSN, "postgres"},
+		{"postgres_schema", state.PostgresSchema, "postgres"},
+		{"sqlite_path", state.SQLitePath, "sqlite"},
 	}
-	var firstDolt, firstPostgres string
+	firstByBackend := map[string]string{}
 	for _, f := range fields {
 		if f.value == "" {
 			continue
 		}
-		if f.backend == "dolt" && firstDolt == "" {
-			firstDolt = f.name
-		}
-		if f.backend == "postgres" && firstPostgres == "" {
-			firstPostgres = f.name
+		if firstByBackend[f.backend] == "" {
+			firstByBackend[f.backend] = f.name
 		}
 	}
 	switch state.Backend {
 	case "postgres":
-		if firstDolt != "" {
-			return firstDolt, true
+		for _, backend := range []string{"dolt", "sqlite"} {
+			if firstByBackend[backend] != "" {
+				return firstByBackend[backend], true
+			}
 		}
 	case "dolt", "doltlite":
-		if firstPostgres != "" {
-			return firstPostgres, true
+		for _, backend := range []string{"postgres", "sqlite"} {
+			if firstByBackend[backend] != "" {
+				return firstByBackend[backend], true
+			}
+		}
+	case "sqlite":
+		for _, backend := range []string{"dolt", "postgres"} {
+			if firstByBackend[backend] != "" {
+				return firstByBackend[backend], true
+			}
 		}
 	default:
-		if firstDolt != "" && firstPostgres != "" {
-			return firstDolt, true
+		families := 0
+		for _, backend := range []string{"dolt", "postgres", "sqlite"} {
+			if firstByBackend[backend] != "" {
+				families++
+			}
+		}
+		if families > 1 {
+			for _, backend := range []string{"dolt", "postgres", "sqlite"} {
+				if firstByBackend[backend] != "" {
+					return firstByBackend[backend], true
+				}
+			}
 		}
 	}
 	return "", false
@@ -555,6 +598,9 @@ func EnsureCanonicalMetadata(fs fsys.FS, path string, state MetadataState) (bool
 		"postgres_port":           strings.TrimSpace(state.PostgresPort),
 		"postgres_user":           strings.TrimSpace(state.PostgresUser),
 		"postgres_database":       strings.TrimSpace(state.PostgresDatabase),
+		"postgres_dsn":            strings.TrimSpace(state.PostgresDSN),
+		"postgres_schema":         strings.TrimSpace(state.PostgresSchema),
+		"sqlite_path":             strings.TrimSpace(state.SQLitePath),
 		"backend_plugin_command":  strings.TrimSpace(state.BackendPluginCommand),
 		"gascity_backend_command": strings.TrimSpace(state.GasCityBackendCommand),
 	}

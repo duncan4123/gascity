@@ -80,6 +80,42 @@ protocol = "gascity.backend.v1alpha1"
 	}
 }
 
+func TestExpandCityPacks_NativeBackendBundleResolved(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "packs/sqlite/pack.toml", `
+[pack]
+name = "sqlite"
+schema = 2
+
+[[backend_plugins]]
+backend = "sqlite"
+kind = "native"
+driver = "sqlite"
+sqlite_path = "gascity.db"
+
+[backend_plugins.scope]
+model = "per_scope"
+resource = "file"
+namespace_from = "prefix"
+metadata_owner = "bd"
+`)
+
+	cfg := &City{Workspace: Workspace{Includes: []string{"packs/sqlite"}}}
+	if _, _, _, err := ExpandCityPacks(cfg, fsys.OSFS{}, dir); err != nil {
+		t.Fatalf("ExpandCityPacks: %v", err)
+	}
+	if got, want := len(cfg.BackendPlugins), 1; got != want {
+		t.Fatalf("len(BackendPlugins) = %d, want %d", got, want)
+	}
+	backend := cfg.BackendPlugins[0]
+	if backend.Kind != "native" || backend.Driver != "sqlite" || backend.SQLitePath != "gascity.db" {
+		t.Fatalf("native backend = %+v", backend)
+	}
+	if backend.SetupHook != "" || backend.ProviderCommand != "" {
+		t.Fatalf("native backend unexpectedly resolved plugin commands: %+v", backend)
+	}
+}
+
 func TestExpandCityPacks_NonTransitiveImportFiltersNestedBackendPlugins(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "packs/inner/pack.toml", `
