@@ -5260,7 +5260,7 @@ dolt.auto-start: false
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(cityPath, ".beads", "metadata.json"), []byte(`{"backend":"sqlite"}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(cityPath, ".beads", "metadata.json"), []byte(`{"backend":"unsupported-test-backend"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -5272,7 +5272,7 @@ dolt.auto-start: false
 	if !used {
 		t.Errorf("used = false, want true (scope is authoritative; failure is semantic)")
 	}
-	if !strings.Contains(err.Error(), `unsupported backend "sqlite"`) {
+	if !strings.Contains(err.Error(), `unsupported backend "unsupported-test-backend"`) {
 		t.Errorf("error = %v, want unsupported backend rejection", err)
 	}
 }

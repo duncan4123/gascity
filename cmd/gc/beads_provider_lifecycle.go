@@ -246,6 +246,19 @@ func startBeadsLifecycle(cityPath, _ string, cfg *config.City, stderr io.Writer)
 // skipped init — the caller should tell the user it's deferred to gc start.
 func initDirIfReady(cityPath, dir, prefix string) (deferred bool, err error) {
 	provider := beadsProvider(cityPath)
+	if cityUsesNativeBeadsBackend(cityPath) {
+		handled, err := initBeadsViaNativeBackend(cityPath, dir, prefix)
+		if err != nil {
+			return false, err
+		}
+		if !handled {
+			return false, fmt.Errorf("native beads backend %q is not configured", beadsBackend(cityPath))
+		}
+		if err := installBeadHooks(dir, cityPath); err != nil {
+			return false, fmt.Errorf("install hooks at %s: %w", dir, err)
+		}
+		return false, nil
+	}
 	if cityUsesPluginBeadsBackendSetup(cityPath) {
 		handled, err := initBeadsViaProviderSetupHook(cityPath, dir, prefix, "")
 		if err != nil {
@@ -605,6 +618,19 @@ func normalizeCanonicalBdScopeFilesForInit(cityPath, dir, prefix, doltDatabase s
 // wipe existing hooks. installBeadHooks only removes gc-stamped hooks and
 // is always safe to run regardless of event_hooks config.
 func initAndHookDir(cityPath, dir, prefix string) error {
+	if cityUsesNativeBeadsBackend(cityPath) {
+		handled, err := initBeadsViaNativeBackend(cityPath, dir, prefix)
+		if err != nil {
+			return err
+		}
+		if !handled {
+			return fmt.Errorf("native beads backend %q is not configured", beadsBackend(cityPath))
+		}
+		if err := installBeadHooks(dir, cityPath); err != nil {
+			return fmt.Errorf("install hooks at %s: %w", dir, err)
+		}
+		return nil
+	}
 	if usesPostgres, err := scopeUsesPostgresBackendForInit(cityPath, dir); err != nil {
 		return err
 	} else if usesPostgres {

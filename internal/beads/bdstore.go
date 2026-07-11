@@ -139,7 +139,7 @@ func bdArgsHaveDBOverride(args []string) bool {
 
 func backendRequiresDBOverride(backend string) bool {
 	switch strings.ToLower(strings.TrimSpace(backend)) {
-	case "", "dolt", "postgres":
+	case "", "dolt", "postgres", "sqlite", "mysql":
 		return false
 	default:
 		return true

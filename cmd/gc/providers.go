@@ -754,6 +754,15 @@ func bdProviderMismatchHint(scopeRoot, resolvedProvider string) string {
 //     operations. Used by testscript and integration tests.
 func beadsProvider(cityPath string) string {
 	raw := rawBeadsProvider(cityPath)
+	if (raw == "bd" || raw == "plugin") && cityUsesNativeBeadsBackend(cityPath) {
+		// Upstream-native backends are reached directly through the stock bd
+		// CLI. Registry-selected backend packs currently retain the historical
+		// provider="plugin" bootstrap marker, so native discovery takes
+		// precedence over that marker. The gc-beads-bd exec shim owns Dolt
+		// server lifecycle and the external backend-plugin bridge, neither of
+		// which applies here.
+		return "bd"
+	}
 	if raw == "bd" || raw == "plugin" {
 		return "exec:" + gcBeadsBdScriptPath(cityPath)
 	}

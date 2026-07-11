@@ -1121,6 +1121,16 @@ type PackRuntimeEntry struct {
 type PackBackendPluginEntry struct {
 	// Backend is the logical [beads].backend value this bundle implements.
 	Backend string `toml:"backend" jsonschema:"required"`
+	// Kind selects how bd reaches the backend. "plugin" (the default) uses
+	// the external endpoint contract introduced by the backend-plugin stack;
+	// "native" selects a storage driver compiled into stock upstream bd.
+	Kind string `toml:"kind,omitempty" jsonschema:"enum=plugin,enum=native"`
+	// Driver is the upstream bd --backend value for a native bundle. Gas City
+	// currently supports the upstream postgres and sqlite drivers.
+	Driver string `toml:"driver,omitempty" jsonschema:"enum=postgres,enum=sqlite"`
+	// SQLitePath is the default database path passed to bd init for a native
+	// SQLite bundle. Relative paths are resolved by bd beneath .beads/.
+	SQLitePath string `toml:"sqlite_path,omitempty"`
 	// SetupHook is the pack-relative exec provider script GC calls for
 	// backend initialization, metadata creation, and readiness repair.
 	SetupHook string `toml:"setup_hook,omitempty"`
@@ -1188,6 +1198,9 @@ type PackBackendPluginEndpoint struct {
 // DiscoveredBackendPlugin is a resolved pack-declared backend plugin bundle.
 type DiscoveredBackendPlugin struct {
 	Backend         string
+	Kind            string
+	Driver          string
+	SQLitePath      string
 	SetupHook       string
 	ProviderCommand string
 	PrepareCommand  []string
@@ -1476,6 +1489,16 @@ type BeadsConfig struct {
 	// Backend selects the bd storage engine when Provider is "bd".
 	// Empty defaults to "dolt"; T3Code uses "doltlite" for local dev stores.
 	Backend string `toml:"backend,omitempty"`
+	// PostgresURL is the password-free connection URL used by the native
+	// upstream bd Postgres backend. Supply the password through the Beads/GC
+	// credential environment rather than embedding it in city.toml.
+	PostgresURL string `toml:"postgres_url,omitempty"`
+	// PostgresSchema optionally pins the city scope schema. Rig schemas are
+	// derived from the backend pack's scope namespace policy.
+	PostgresSchema string `toml:"postgres_schema,omitempty"`
+	// SQLitePath overrides the native SQLite database path. Relative paths are
+	// resolved beneath each scope's .beads directory.
+	SQLitePath string `toml:"sqlite_path,omitempty"`
 	// EventHooks controls installation of the bead event-forwarding hooks
 	// (.beads/hooks/on_create,on_update,on_close) that shell out to
 	// `gc event emit` on every bead write. Defaults to true. Set to false
