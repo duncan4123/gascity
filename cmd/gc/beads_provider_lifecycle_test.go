@@ -5411,6 +5411,102 @@ func TestConfiguredNonDoltScopeNeedsInit(t *testing.T) {
 	}
 }
 
+func TestConfiguredNonDoltScopeNeedsInitUsesExplicitPostgresBackendForNewRig(t *testing.T) {
+	cityPath := t.TempDir()
+	rigPath := filepath.Join(cityPath, "rigs", "pg")
+	for _, dir := range []string{filepath.Join(cityPath, ".beads"), filepath.Join(rigPath, ".beads")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[beads]\nbackend = \"postgres\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// This is deliberately the legacy shape: an explicit upstream backend
+	// selection must take precedence over inherited legacy Postgres state.
+	if err := os.WriteFile(filepath.Join(cityPath, ".beads", "metadata.json"), []byte(`{"backend":"postgres","postgres_host":"db.example.test","postgres_port":"5432","postgres_user":"bd","postgres_database":"city"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	needsInit, err := configuredNonDoltScopeNeedsInit(cityPath, rigPath)
+	if err != nil {
+		t.Fatalf("configuredNonDoltScopeNeedsInit: %v", err)
+	}
+	if !needsInit {
+		t.Fatal("new explicit Postgres rig must receive its own upstream schema")
+	}
+}
+
+func TestConfiguredNonDoltInitPlanUsesUpstreamIsolationUnits(t *testing.T) {
+	cityPath := t.TempDir()
+	rigPath := filepath.Join(cityPath, "rigs", "rig.one")
+	if err := os.MkdirAll(filepath.Join(cityPath, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	writeCity := func(t *testing.T, backend, metadata string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[beads]\nbackend = \""+backend+"\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(cityPath, ".beads", "metadata.json"), []byte(metadata), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	contains := func(args []string, want string) bool {
+		for _, arg := range args {
+			if arg == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("sqlite owns a rig file", func(t *testing.T) {
+		writeCity(t, "sqlite", `{"backend":"sqlite","database":"beads.db"}`)
+		env, args, err := configuredNonDoltInitPlan(cityPath, rigPath, "rig.one")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := env["BEADS_DB"], filepath.Join(rigPath, ".beads", "beads.db"); got != want {
+			t.Fatalf("BEADS_DB = %q, want %q", got, want)
+		}
+		if !contains(args, "--backend=sqlite") {
+			t.Fatalf("args = %q, want sqlite backend", args)
+		}
+	})
+
+	t.Run("postgres owns a rig schema", func(t *testing.T) {
+		writeCity(t, "postgres", `{"backend":"postgres","postgres_dsn":"postgres://bd@db.example.test:5432/city?sslmode=require","postgres_schema":"hq"}`)
+		t.Setenv("BEADS_POSTGRES_URL", "postgres://bd:init-secret@db.example.test:5432/city?sslmode=require")
+		env, args, err := configuredNonDoltInitPlan(cityPath, rigPath, "rig.one")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := env["BEADS_POSTGRES_URL"]; got != "postgres://bd:init-secret@db.example.test:5432/city?sslmode=require" {
+			t.Fatalf("BEADS_POSTGRES_URL = %q, want init environment URL", got)
+		}
+		if !contains(args, "--pg-schema=rig_one") {
+			t.Fatalf("args = %q, want isolated rig schema", args)
+		}
+	})
+
+	t.Run("mysql owns a rig database", func(t *testing.T) {
+		writeCity(t, "mysql", `{"backend":"mysql","mysql_dsn":"bd@tcp(db.example.test:3306)/","mysql_database":"city_beads"}`)
+		t.Setenv("BEADS_MYSQL_URL", "bd:init-secret@tcp(db.example.test:3306)/")
+		env, args, err := configuredNonDoltInitPlan(cityPath, rigPath, "rig.one")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := env["BEADS_MYSQL_URL"]; got != "bd:init-secret@tcp(db.example.test:3306)/" {
+			t.Fatalf("BEADS_MYSQL_URL = %q, want init environment URL", got)
+		}
+		if !contains(args, "--mysql-database=city_beads_rig_one") {
+			t.Fatalf("args = %q, want isolated rig database", args)
+		}
+	})
+}
+
 func TestInitAndHookDirSkipsDoltInitForInheritedCityPostgresRigWithEmptyMetadata(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

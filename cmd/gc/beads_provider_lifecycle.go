@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -572,6 +573,13 @@ func configuredNonDoltScopeNeedsInit(cityPath, dir string) (bool, error) {
 	} else if exists {
 		return false, nil
 	}
+	// An explicit upstream SQL backend is a request for every scope to own its
+	// own store. Do this before the legacy Postgres inheritance check below:
+	// legacy metadata predates upstream's per-workspace schema model, whereas a
+	// configured backend must provision a new rig rather than quietly share HQ.
+	if beadsBackend(cityPath) != "dolt" {
+		return true, nil
+	}
 	if _, inheritedPostgres, err := postgresMetadataForScope(cityPath, dir); err != nil {
 		return false, err
 	} else if inheritedPostgres {
@@ -580,27 +588,150 @@ func configuredNonDoltScopeNeedsInit(cityPath, dir string) (bool, error) {
 	return true, nil
 }
 
-// initConfiguredNonDoltScope lets stock bd provision a newly-added scope using
-// the backend chosen by the city. Beads owns backend-specific metadata and
-// credentials; Gas City only supplies the scope and stable prefix.
-func initConfiguredNonDoltScope(cityPath, dir, prefix string) error {
+type configuredNativeBackendMetadata struct {
+	Backend       string `json:"backend"`
+	PostgresDSN   string `json:"postgres_dsn"`
+	MySQLDSN      string `json:"mysql_dsn"`
+	MySQLDatabase string `json:"mysql_database"`
+}
+
+// configuredNonDoltInitPlan translates one city-level upstream backend choice
+// into bd's per-workspace provisioning contract. SQLite owns a file, Postgres
+// owns a schema, and MySQL owns a database. Connection material belongs to bd:
+// a password-bearing init URL may come from the supervisor environment, while
+// the city's redacted metadata is the durable non-secret fallback.
+func configuredNonDoltInitPlan(cityPath, dir, prefix string) (map[string]string, []string, error) {
 	backend := beadsBackend(cityPath)
 	if backend == "" || backend == "dolt" || backend == "doltlite" {
-		return nil
+		return nil, nil, nil
 	}
 	env := map[string]string{
 		"BEADS_DIR": filepath.Join(dir, ".beads"),
 	}
-	// bd init otherwise searches ancestor .beads directories before a fresh
-	// SQLite scope exists. Pin the file path during first initialization so a
-	// rig always receives its own SQLite database.
-	if backend == "sqlite" {
-		env["BEADS_DB"] = filepath.Join(dir, ".beads", "beads.db")
-	}
 	applyExportSuppressionEnv(env)
 	args := []string{"init", "--backend=" + backend, "-p", prefix, "--skip-hooks", "--init-if-missing"}
-	if _, err := beads.ExecCommandRunnerWithEnv(env)(dir, "bd", args...); err != nil {
-		return fmt.Errorf("bd init --backend=%s: %w", backend, err)
+
+	switch backend {
+	case "sqlite":
+		// bd init otherwise searches ancestor .beads directories before a
+		// fresh SQLite scope exists. Pin the file path so a rig cannot inherit
+		// the city's (or a parent directory's) database.
+		env["BEADS_DB"] = filepath.Join(dir, ".beads", "beads.db")
+	case "postgres":
+		meta, err := configuredNativeBackendMetadataForCity(cityPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		dsn := firstNonEmptyNativeBackendValue(os.Getenv("BEADS_POSTGRES_URL"), meta.PostgresDSN)
+		if dsn == "" {
+			return nil, nil, fmt.Errorf("native postgres backend needs BEADS_POSTGRES_URL for provisioning, or postgres_dsn in %s", scopeMetadataJSONPath(cityPath))
+		}
+		env["BEADS_POSTGRES_URL"] = dsn
+		args = append(args, "--pg-schema="+postgresScopeSchema(cityPath, dir, prefix))
+	case "mysql":
+		meta, err := configuredNativeBackendMetadataForCity(cityPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		dsn := firstNonEmptyNativeBackendValue(os.Getenv("BEADS_MYSQL_URL"), meta.MySQLDSN)
+		if dsn == "" {
+			return nil, nil, fmt.Errorf("native mysql backend needs BEADS_MYSQL_URL for provisioning, or mysql_dsn in %s", scopeMetadataJSONPath(cityPath))
+		}
+		env["BEADS_MYSQL_URL"] = dsn
+		args = append(args, "--mysql-database="+mysqlScopeDatabase(cityPath, dir, prefix, meta.MySQLDatabase))
+	default:
+		return nil, nil, fmt.Errorf("unsupported configured Beads backend %q", backend)
+	}
+	return env, args, nil
+}
+
+func configuredNativeBackendMetadataForCity(cityPath string) (configuredNativeBackendMetadata, error) {
+	path := scopeMetadataJSONPath(cityPath)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return configuredNativeBackendMetadata{}, nil
+	}
+	if err != nil {
+		return configuredNativeBackendMetadata{}, fmt.Errorf("read city backend metadata %s: %w", path, err)
+	}
+	var meta configuredNativeBackendMetadata
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return configuredNativeBackendMetadata{}, fmt.Errorf("parse city backend metadata %s: %w", path, err)
+	}
+	return meta, nil
+}
+
+func firstNonEmptyNativeBackendValue(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func postgresScopeSchema(cityPath, dir, prefix string) string {
+	if samePath(cityPath, dir) {
+		return "hq"
+	}
+	return nativeSQLIdentifier(prefix, "rig", 63)
+}
+
+func mysqlScopeDatabase(cityPath, dir, prefix, cityDatabase string) string {
+	base := nativeSQLIdentifier(firstNonEmptyNativeBackendValue(cityDatabase, "gc_"+filepath.Base(cityPath)), "gc", 64)
+	if samePath(cityPath, dir) {
+		return base
+	}
+	return nativeSQLIdentifier(base+"_"+prefix, "gc_rig", 64)
+}
+
+// nativeSQLIdentifier produces an unquoted identifier accepted by both
+// Postgres schemas and MySQL databases. The hash suffix keeps two long names
+// from collapsing to the same server-side namespace after length truncation.
+func nativeSQLIdentifier(value, fallback string, maxLen int) string {
+	raw := strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range raw {
+		valid := r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_'
+		if valid {
+			b.WriteRune(r)
+			lastUnderscore = r == '_'
+			continue
+		}
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	name := strings.Trim(b.String(), "_")
+	if name == "" {
+		name = fallback
+	}
+	if name[0] >= '0' && name[0] <= '9' {
+		name = "gc_" + name
+	}
+	if len(name) <= maxLen {
+		return name
+	}
+	sum := sha256.Sum256([]byte(raw))
+	suffix := fmt.Sprintf("_%x", sum[:4])
+	return name[:maxLen-len(suffix)] + suffix
+}
+
+// initConfiguredNonDoltScope lets stock bd provision a newly-added scope using
+// the backend chosen by the city. Beads owns backend-specific metadata and
+// credentials; Gas City supplies the scope and its isolated namespace.
+func initConfiguredNonDoltScope(cityPath, dir, prefix string) error {
+	env, args, err := configuredNonDoltInitPlan(cityPath, dir, prefix)
+	if err != nil {
+		return err
+	}
+	if len(args) == 0 {
+		return nil
+	}
+	if _, err := beadsExecCommandRunnerWithEnv(env)(dir, "bd", args...); err != nil {
+		return fmt.Errorf("bd init --backend=%s: %w", beadsBackend(cityPath), err)
 	}
 	return finalizeCanonicalBdScopeInit(cityPath, dir, prefix, "")
 }
@@ -616,6 +747,9 @@ func scopeUsesNonDoltBackendForInit(cityPath, dir string) (bool, error) {
 	}
 	if ok {
 		return backend != "dolt", nil
+	}
+	if beadsBackend(cityPath) != "dolt" {
+		return true, nil
 	}
 	if _, usesPostgres, err := postgresMetadataForScope(cityPath, dir); err != nil {
 		return false, err
