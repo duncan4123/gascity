@@ -514,6 +514,13 @@ func initAndHookDir(cityPath, dir, prefix string) error {
 	if usesNonDolt, err := scopeUsesNonDoltBackendForInit(cityPath, dir); err != nil {
 		return err
 	} else if usesNonDolt {
+		needsInit, err := configuredNonDoltScopeNeedsInit(cityPath, dir)
+		if err != nil {
+			return err
+		}
+		if needsInit {
+			return initConfiguredNonDoltScope(cityPath, dir, prefix)
+		}
 		return nil
 	}
 	doltDatabase := canonicalScopeDoltDatabase(cityPath, dir, prefix)
@@ -552,6 +559,50 @@ func initAndHookDir(cityPath, dir, prefix string) error {
 		return fmt.Errorf("install hooks at %s: %w", dir, err)
 	}
 	return nil
+}
+
+// configuredNonDoltScopeNeedsInit distinguishes a new scope from an existing
+// non-Dolt scope. A city-level backend selection alone must not make a newly
+// added SQLite/MySQL/Postgres rig silently share or skip its own bd init.
+// Legacy inherited PostgreSQL scopes are the exception: they deliberately use
+// the city connection and therefore retain the historical no-init behavior.
+func configuredNonDoltScopeNeedsInit(cityPath, dir string) (bool, error) {
+	if _, exists, err := readBeadsMetadataBackend(fsys.OSFS{}, scopeMetadataJSONPath(dir)); err != nil {
+		return false, err
+	} else if exists {
+		return false, nil
+	}
+	if _, inheritedPostgres, err := postgresMetadataForScope(cityPath, dir); err != nil {
+		return false, err
+	} else if inheritedPostgres {
+		return false, nil
+	}
+	return true, nil
+}
+
+// initConfiguredNonDoltScope lets stock bd provision a newly-added scope using
+// the backend chosen by the city. Beads owns backend-specific metadata and
+// credentials; Gas City only supplies the scope and stable prefix.
+func initConfiguredNonDoltScope(cityPath, dir, prefix string) error {
+	backend := beadsBackend(cityPath)
+	if backend == "" || backend == "dolt" || backend == "doltlite" {
+		return nil
+	}
+	env := map[string]string{
+		"BEADS_DIR": filepath.Join(dir, ".beads"),
+	}
+	// bd init otherwise searches ancestor .beads directories before a fresh
+	// SQLite scope exists. Pin the file path during first initialization so a
+	// rig always receives its own SQLite database.
+	if backend == "sqlite" {
+		env["BEADS_DB"] = filepath.Join(dir, ".beads", "beads.db")
+	}
+	applyExportSuppressionEnv(env)
+	args := []string{"init", "--backend=" + backend, "-p", prefix, "--skip-hooks", "--init-if-missing"}
+	if _, err := beads.ExecCommandRunnerWithEnv(env)(dir, "bd", args...); err != nil {
+		return fmt.Errorf("bd init --backend=%s: %w", backend, err)
+	}
+	return finalizeCanonicalBdScopeInit(cityPath, dir, prefix, "")
 }
 
 func scopeUsesNonDoltBackendForInit(cityPath, dir string) (bool, error) {

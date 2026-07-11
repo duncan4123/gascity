@@ -5376,6 +5376,41 @@ func TestReadBeadsMetadataBackendRequiresExplicitBackend(t *testing.T) {
 	}
 }
 
+func TestConfiguredNonDoltScopeNeedsInit(t *testing.T) {
+	cityPath := t.TempDir()
+	rigPath := filepath.Join(cityPath, "rigs", "sqlite")
+	for _, dir := range []string{filepath.Join(cityPath, ".beads"), filepath.Join(rigPath, ".beads")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[workspace]\nname = \"demo\"\n[beads]\nbackend = \"sqlite\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, ".beads", "metadata.json"), []byte(`{"backend":"sqlite","database":"beads.db"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	needsInit, err := configuredNonDoltScopeNeedsInit(cityPath, rigPath)
+	if err != nil {
+		t.Fatalf("configuredNonDoltScopeNeedsInit: %v", err)
+	}
+	if !needsInit {
+		t.Fatal("new SQLite rig must be initialized")
+	}
+
+	if err := os.WriteFile(filepath.Join(rigPath, ".beads", "metadata.json"), []byte(`{"backend":"sqlite","database":"beads.db"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	needsInit, err = configuredNonDoltScopeNeedsInit(cityPath, rigPath)
+	if err != nil {
+		t.Fatalf("configuredNonDoltScopeNeedsInit with metadata: %v", err)
+	}
+	if needsInit {
+		t.Fatal("initialized SQLite rig must be preserved")
+	}
+}
+
 func TestInitAndHookDirSkipsDoltInitForInheritedCityPostgresRigWithEmptyMetadata(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
