@@ -3684,7 +3684,7 @@ esac
 	}
 }
 
-func TestInitBeadsForDirExecGcBeadsBdNormalizesCanonicalFilesAfterProviderInit(t *testing.T) {
+func TestInitBeadsForDirExecGcBeadsBdPreservesBackendMetadataAfterProviderInit(t *testing.T) {
 	cityDir := t.TempDir()
 	writeMinimalCityToml(t, cityDir)
 	script := filepath.Join(t.TempDir(), "gc-beads-bd")
@@ -3763,17 +3763,17 @@ esac
 	if err := json.Unmarshal(metaData, &meta); err != nil {
 		t.Fatalf("Unmarshal(metadata): %v", err)
 	}
-	if got := strings.TrimSpace(fmt.Sprint(meta["database"])); got != "dolt" {
-		t.Fatalf("metadata database = %q, want dolt", got)
+	if got := strings.TrimSpace(fmt.Sprint(meta["database"])); got != "sqlite" {
+		t.Fatalf("metadata database = %q, want sqlite", got)
 	}
-	if got := strings.TrimSpace(fmt.Sprint(meta["backend"])); got != "dolt" {
-		t.Fatalf("metadata backend = %q, want dolt", got)
+	if got := strings.TrimSpace(fmt.Sprint(meta["backend"])); got != "sqlite" {
+		t.Fatalf("metadata backend = %q, want sqlite", got)
 	}
-	if got := strings.TrimSpace(fmt.Sprint(meta["dolt_mode"])); got != "server" {
-		t.Fatalf("metadata dolt_mode = %q, want server", got)
+	if got := strings.TrimSpace(fmt.Sprint(meta["dolt_mode"])); got != "local" {
+		t.Fatalf("metadata dolt_mode = %q, want provider-owned local value", got)
 	}
-	if got := strings.TrimSpace(fmt.Sprint(meta["dolt_database"])); got != "hq" {
-		t.Fatalf("metadata dolt_database = %q, want hq", got)
+	if got := strings.TrimSpace(fmt.Sprint(meta["dolt_database"])); got != "wrong" {
+		t.Fatalf("metadata dolt_database = %q, want provider-owned value", got)
 	}
 }
 
@@ -5359,6 +5359,20 @@ exit 99
 	}
 	if _, err := os.Stat(filepath.Join(rigPath, ".beads", "hooks", "on_create")); !os.IsNotExist(err) {
 		t.Fatalf("gc must not install bd event hooks for inherited postgres rig (stat err=%v)", err)
+	}
+}
+
+func TestReadBeadsMetadataBackendRequiresExplicitBackend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "metadata.json")
+	if err := os.WriteFile(path, []byte(`{"database":"beads"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backend, ok, err := readBeadsMetadataBackend(fsys.OSFS{}, path)
+	if err != nil {
+		t.Fatalf("readBeadsMetadataBackend: %v", err)
+	}
+	if ok || backend != "" {
+		t.Fatalf("backend = %q, ok=%v; a database name must not select a backend", backend, ok)
 	}
 }
 

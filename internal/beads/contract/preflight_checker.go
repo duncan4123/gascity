@@ -119,19 +119,10 @@ func (c PreflightChecker) checkMetadataBackend(metadata preflightMetadata) Prefl
 		PostgresDSNRedacted: metadata.PostgresDSN,
 		PostgresPassword:    metadata.PostgresPassword,
 	}
-	switch metadata.Backend {
-	case "dolt":
-		return NewPreflightCheckResult(PreflightCheckMetadataBackend, PreflightCheckPass, "Metadata backend is dolt", details)
-	case "postgres":
-		if hasDSN && !hasSplit {
-			return NewPreflightCheckResult(PreflightCheckMetadataBackend, PreflightCheckWarn, "Metadata backend is postgres (postgres_dsn form)", details)
-		}
-		return NewPreflightCheckResult(PreflightCheckMetadataBackend, PreflightCheckFail, "Metadata backend is postgres; native store supports dolt only", details)
-	case "":
+	if metadata.Backend == "" {
 		return NewPreflightCheckResult(PreflightCheckMetadataBackend, PreflightCheckFail, "Metadata backend is missing", details)
-	default:
-		return NewPreflightCheckResult(PreflightCheckMetadataBackend, PreflightCheckFail, fmt.Sprintf("Metadata backend %q is unsupported", metadata.Backend), details)
 	}
+	return NewPreflightCheckResult(PreflightCheckMetadataBackend, PreflightCheckPass, "Metadata names the backend selected by Beads", details)
 }
 
 func (c PreflightChecker) readBDContext(scope string) (PreflightBDContext, error) {
@@ -259,28 +250,10 @@ func (c PreflightChecker) checkContractShape(metadata preflightMetadata) Preflig
 		PostgresUser:        metadata.PostgresUser,
 		PostgresDatabase:    metadata.PostgresDatabase,
 	}
-	if hasDSN && hasSplit {
-		return NewPreflightCheckResult(PreflightCheckContractShape, PreflightCheckFail, "postgres_dsn and split postgres fields are both present", details)
-	}
-	switch metadata.Backend {
-	case "dolt":
-		if hasDSN || hasSplit {
-			return NewPreflightCheckResult(PreflightCheckContractShape, PreflightCheckFail, "dolt metadata contains postgres fields", details)
-		}
-		return NewPreflightCheckResult(PreflightCheckContractShape, PreflightCheckPass, "Metadata uses dolt shape", details)
-	case "postgres":
-		if hasDSN {
-			return NewPreflightCheckResult(PreflightCheckContractShape, PreflightCheckWarn, "postgres_dsn present; Gas City expects split fields", details)
-		}
-		if metadata.hasCompletePostgresSplitFields() {
-			return NewPreflightCheckResult(PreflightCheckContractShape, PreflightCheckPass, "Metadata uses split postgres shape", details)
-		}
-		return NewPreflightCheckResult(PreflightCheckContractShape, PreflightCheckFail, "postgres metadata split fields are incomplete", details)
-	case "":
+	if metadata.Backend == "" {
 		return NewPreflightCheckResult(PreflightCheckContractShape, PreflightCheckFail, "metadata backend is missing", details)
-	default:
-		return NewPreflightCheckResult(PreflightCheckContractShape, PreflightCheckFail, fmt.Sprintf("metadata backend %q has unsupported contract shape", metadata.Backend), details)
 	}
+	return NewPreflightCheckResult(PreflightCheckContractShape, PreflightCheckPass, "Backend-specific metadata is validated by Beads", details)
 }
 
 func preflightFallbackReason(checks []PreflightCheckResult) string {
