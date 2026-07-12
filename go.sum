@@ -406,6 +406,8 @@ github.com/dolthub/vitess v0.0.0-20260624214226-81d034e0fde8 h1:zmKLyRCTiNZnizO+
 github.com/dolthub/vitess v0.0.0-20260624214226-81d034e0fde8/go.mod h1:5SVEJgAhw5nnQUFnGgKI1Svqes1Mw+zKUsalyxmOuG0=
 github.com/duncan4123/beads v0.0.0-20260711111827-d8de987235ef h1:GJa8mtGS9aeOWZWo+8UsehvmzsKRB1I5FdI59Opk7d0=
 github.com/duncan4123/beads v0.0.0-20260711111827-d8de987235ef/go.mod h1:dshV+JgXBg5b788X/oquHMHaKI/LUtJy6YysXjDnFcI=
+github.com/duncan4123/beads v0.0.0-20260712061759-583f951a5ace h1:y+FXmQBSTnhb/hjpP4dME7sRBATTcNk6p6eqdOD8ZvU=
+github.com/duncan4123/beads v0.0.0-20260712061759-583f951a5ace/go.mod h1:dshV+JgXBg5b788X/oquHMHaKI/LUtJy6YysXjDnFcI=
 github.com/dustin/go-humanize v1.0.0/go.mod h1:HtrtbFcZ19U5GC7JDqmcUSB87Iq5E25KnS6fMYU6eOk=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
