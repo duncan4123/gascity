@@ -699,6 +699,7 @@ func doOrderRunWithJSON(aa []orders.Order, name, rig, cityPath string, store bea
 	scoped := a.ScopedName()
 	var cfg *config.City
 	var cityName string
+	var storeTarget execStoreTarget
 	if citylayout.HasCityConfig(cityPath) || citylayout.HasRuntimeRoot(cityPath) {
 		var err error
 		cfg, err = loadCityConfig(cityPath, stderr)
@@ -707,6 +708,11 @@ func doOrderRunWithJSON(aa []orders.Order, name, rig, cityPath string, store bea
 			return 1
 		}
 		cityName = config.EffectiveCityName(cfg, filepath.Base(cityPath))
+		storeTarget, err = resolveOrderStoreTarget(cityPath, cfg, a)
+		if err != nil {
+			fmt.Fprintf(stderr, "gc order run: %v\n", err) //nolint:errcheck // best-effort stderr
+			return 1
+		}
 	}
 
 	// Compile wisp from formula so graph workflows can be decorated with
@@ -743,10 +749,9 @@ func doOrderRunWithJSON(aa []orders.Order, name, rig, cityPath string, store bea
 		}
 	}
 
-	if a.Pool != "" && cfg != nil {
-		if err := applyGraphRouting(recipe, nil, pool, nil, "", "", "", genericStore, cityName, cityPath, cfg); err != nil {
-			fmt.Fprintf(stderr, "gc order run: routing decoration failed: %v\n", err) //nolint:errcheck // best-effort stderr
-		}
+	if err := applyOrderRecipeRouting(recipe, pool, vars, storeTarget, genericStore, cityName, cityPath, cfg); err != nil {
+		fmt.Fprintf(stderr, "gc order run: routing decoration failed: %v\n", err) //nolint:errcheck // best-effort stderr
+		return 1
 	}
 
 	cookResult, err := molecule.Instantiate(context.Background(), genericStore, recipe, molecule.Options{})
@@ -927,10 +932,12 @@ func cmdOrderCheck(jsonOutput bool, stdout, stderr io.Writer) int {
 	return doOrderCheckWithStoresResolverScopedJSON(cityPath, cfg, aa, time.Now(), ep, cachedOrderStoresResolver(cityPath, cfg), jsonOutput, stdout, stderr)
 }
 
-// orderLastRunFn returns a LastRunFunc that queries BdStore for the most
-// recent bead labeled order-run:<name>. Returns zero time if never run.
+// orderLastRunFn returns a LastRunFunc reporting the most recent run time for a
+// named order via the order front door's mixed orders+graph LastRun read (the
+// single-store city uses one leg for both classes). Returns zero time if never
+// run.
 func orderLastRunFn(store beads.Store) orders.LastRunFunc {
-	return orders.LastRunFuncForStore(store)
+	return orders.NewStoreWithGraph(beads.OrdersStore{Store: store}, beads.GraphStore{Store: store}).LastRun
 }
 
 // doOrderCheck evaluates triggers for all orders and prints a table.
@@ -1093,8 +1100,8 @@ func doOrderCheckWithStoresResolverScopedJSON(cityPath string, cfg *config.City,
 				fmt.Fprintf(stderr, "gc order check: %v\n", err) //nolint:errcheck // best-effort stderr
 				return 1
 			}
-			stores := unwrapOrdersStores(typedStores)
-			baseLastRunFn := orders.LastRunAcrossStores(stores...)
+			frontDoors := orderFrontDoorsForTypedStores(typedStores)
+			baseLastRunFn := orders.LastRunAcross(frontDoors)
 			var lastRunErr error
 			lastRunFn := func(orderName string) (time.Time, error) {
 				if t, ok := latestFired[orderName]; ok && !t.IsZero() {
@@ -1112,9 +1119,9 @@ func doOrderCheckWithStoresResolverScopedJSON(cityPath string, cfg *config.City,
 				}
 				return last, err
 			}
-			cursorFn := orders.CursorAcrossStores(stores...)
+			cursorFn := orders.CursorAcross(frontDoors)
 			if a.Trigger == "event" {
-				cursor, err := bdCursorAcrossStores(a.ScopedName(), stores...)
+				cursor, err := bdCursorAcrossStores(a.ScopedName(), rawOrderStores(typedStores)...)
 				if err != nil {
 					fmt.Fprintf(stderr, "gc order check: reading event cursor for %s: %v\n", a.ScopedName(), err) //nolint:errcheck // best-effort stderr
 					return 1
@@ -1172,8 +1179,8 @@ func doOrderCheckWithStoresResolverScopedJSON(cityPath string, cfg *config.City,
 			fmt.Fprintf(stderr, "gc order check: %v\n", err) //nolint:errcheck // best-effort stderr
 			return 1
 		}
-		stores := unwrapOrdersStores(typedStores)
-		baseLastRunFn := orders.LastRunAcrossStores(stores...)
+		frontDoors := orderFrontDoorsForTypedStores(typedStores)
+		baseLastRunFn := orders.LastRunAcross(frontDoors)
 		var lastRunErr error
 		lastRunFn := func(orderName string) (time.Time, error) {
 			if t, ok := latestFired[orderName]; ok && !t.IsZero() {
@@ -1191,9 +1198,9 @@ func doOrderCheckWithStoresResolverScopedJSON(cityPath string, cfg *config.City,
 			}
 			return last, err
 		}
-		cursorFn := orders.CursorAcrossStores(stores...)
+		cursorFn := orders.CursorAcross(frontDoors)
 		if a.Trigger == "event" {
-			cursor, err := bdCursorAcrossStores(a.ScopedName(), stores...)
+			cursor, err := bdCursorAcrossStores(a.ScopedName(), rawOrderStores(typedStores)...)
 			if err != nil {
 				fmt.Fprintf(stderr, "gc order check: reading event cursor for %s: %v\n", a.ScopedName(), err) //nolint:errcheck // best-effort stderr
 				return 1
