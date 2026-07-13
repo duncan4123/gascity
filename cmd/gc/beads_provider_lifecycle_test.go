@@ -5411,6 +5411,48 @@ func TestConfiguredNonDoltScopeNeedsInit(t *testing.T) {
 	}
 }
 
+func TestInstallConfiguredNonDoltInitArtifactsPreservesScopeConfig(t *testing.T) {
+	initRoot := t.TempDir()
+	scopeRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(initRoot, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(scopeRoot, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"metadata.json":      `{"backend":"sqlite","database":"beads.db"}`,
+		"beads.db":           "sqlite-data",
+		"interactions.jsonl": "",
+		"config.yaml":        "upstream: generated\n",
+	} {
+		if err := os.WriteFile(filepath.Join(initRoot, ".beads", name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(scopeRoot, ".beads", "config.yaml"), []byte("gc: retained\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := installConfiguredNonDoltInitArtifacts(initRoot, scopeRoot); err != nil {
+		t.Fatalf("installConfiguredNonDoltInitArtifacts: %v", err)
+	}
+	for name, want := range map[string]string{
+		"metadata.json":      `{"backend":"sqlite","database":"beads.db"}`,
+		"beads.db":           "sqlite-data",
+		"interactions.jsonl": "",
+		"config.yaml":        "gc: retained\n",
+	} {
+		got, err := os.ReadFile(filepath.Join(scopeRoot, ".beads", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if string(got) != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+}
+
 func TestConfiguredNonDoltScopeNeedsInitUsesExplicitPostgresBackendForNewRig(t *testing.T) {
 	cityPath := t.TempDir()
 	rigPath := filepath.Join(cityPath, "rigs", "pg")

@@ -103,11 +103,11 @@ func EnsureBuiltinRuntimeAssets(cityPath string, warningWriter io.Writer) error 
 //
 // Core is always required: it ships the role prompts referenced by
 // implicit agents, the gc-* skills, mechanical housekeeping orders, the
-// control-dispatcher worker, and the per-provider hook overlays. When
-// the beads provider is "bd" (the
-// default), bd is required and its own pack imports pull in dolt
-// transitively. Gastown and gascity are never required — they need an
-// explicit import.
+// control-dispatcher worker, and the per-provider hook overlays. The legacy
+// bd pack is only required by the managed-Dolt backend: it imports Dolt
+// lifecycle tooling transitively. Native upstream SQL backends use the bd
+// executable and OpenConfigured directly, so they must not pull in that pack.
+// Gastown and gascity are never required — they need an explicit import.
 func requiredBuiltinSources(cityPath string) map[string]string {
 	sources := make(map[string]string)
 	for _, name := range requiredBuiltinPackNames(cityPath) {
@@ -123,8 +123,11 @@ func requiredBuiltinSources(cityPath string) map[string]string {
 func requiredBuiltinPackNames(cityPath string) []string {
 	required := []string{"core"}
 
-	if cityUsesBdStoreContract(cityPath) {
+	if cityUsesBdStoreContract(cityPath) && !cityUsesConfiguredNativeBackend(cityPath) {
 		required = append(required, "bd")
+	}
+	if cityUsesConfiguredNativeBackend(cityPath) {
+		return required
 	}
 	provider := strings.TrimSpace(configuredBeadsProviderValue(cityPath))
 	usesDirectExecLifecycle := strings.HasPrefix(provider, "exec:") &&
@@ -134,6 +137,10 @@ func requiredBuiltinPackNames(cityPath string) []string {
 		required = append(required, "dolt")
 	}
 	return required
+}
+
+func cityUsesConfiguredNativeBackend(cityPath string) bool {
+	return configuredNativeBackendName(beadsBackend(cityPath))
 }
 
 // bundledPackImportCommit is the commit tag bundled-source caches and lock
@@ -160,7 +167,7 @@ func requiredBuiltinImports(cityPath string) (map[string]config.Import, []string
 // command-time store selection does — GC_BEADS env first, then the
 // about-to-be-written city.toml provider — so init writes exactly the
 // imports the builtin-pack-imports doctor check will later enforce.
-func builtinImportsForInit(cityProvider string) (map[string]config.Import, []string) {
+func builtinImportsForInit(cityProvider, cityBackend string) (map[string]config.Import, []string) {
 	provider := strings.TrimSpace(os.Getenv("GC_BEADS"))
 	if provider == "" {
 		provider = strings.TrimSpace(cityProvider)
@@ -169,10 +176,19 @@ func builtinImportsForInit(cityProvider string) (map[string]config.Import, []str
 		provider = "bd" // matches the rawBeadsProvider default
 	}
 	names := []string{"core"}
-	if providerUsesBdStoreContract(provider) {
+	if providerUsesBdStoreContract(provider) && !configuredNativeBackendName(cityBackend) {
 		names = append(names, "bd")
 	}
 	return builtinImportsForNames(names)
+}
+
+func configuredNativeBackendName(backend string) bool {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "sqlite", "postgres", "mysql":
+		return true
+	default:
+		return false
+	}
 }
 
 func builtinImportsForNames(names []string) (map[string]config.Import, []string) {

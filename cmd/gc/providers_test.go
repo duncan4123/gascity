@@ -102,6 +102,20 @@ func TestCityUsesManagedDoltBeadsLifecycleOnlyForDolt(t *testing.T) {
 	}
 }
 
+func TestManagedDoltLifecycleNotOwnedByNativeSQLite(t *testing.T) {
+	cityPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[beads]\nprovider = \"bd\"\nbackend = \"sqlite\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	owned, err := managedDoltLifecycleOwned(cityPath)
+	if err != nil {
+		t.Fatalf("managedDoltLifecycleOwned: %v", err)
+	}
+	if owned {
+		t.Fatal("managedDoltLifecycleOwned = true, want false for SQLite")
+	}
+}
+
 type apiMailCacheCountingStore struct {
 	*beads.MemStore
 	mu               sync.Mutex

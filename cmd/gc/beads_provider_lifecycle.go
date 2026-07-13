@@ -280,6 +280,17 @@ func initDirIfReady(cityPath, dir, prefix string) (deferred bool, err error) {
 		}
 		return false, nil
 	}
+	// Upstream-native backends are provisioned by stock bd directly. They do
+	// not have a gc-managed provider process to start or a Dolt readiness
+	// condition to wait for; routing them through the legacy helper would make
+	// a SQLite/Postgres/MySQL city run the gc-beads-bd shim before its native
+	// scope has even been created.
+	if cityUsesConfiguredNativeBackend(cityPath) {
+		if err := initDirIfReadyInitAndHookDir(cityPath, dir, prefix); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
 
 	if provider == "" {
 		if err := seedDeferredManagedBeadsErr(cityPath, dir, prefix, ""); err != nil {
@@ -723,17 +734,86 @@ func nativeSQLIdentifier(value, fallback string, maxLen int) string {
 // the backend chosen by the city. Beads owns backend-specific metadata and
 // credentials; Gas City supplies the scope and its isolated namespace.
 func initConfiguredNonDoltScope(cityPath, dir, prefix string) error {
-	env, args, err := configuredNonDoltInitPlan(cityPath, dir, prefix)
+	initRoot, err := os.MkdirTemp("", "gc-native-beads-init-")
+	if err != nil {
+		return fmt.Errorf("create isolated native Beads initializer: %w", err)
+	}
+	defer os.RemoveAll(initRoot)
+
+	// `bd init` deliberately discovers an existing .beads directory by walking
+	// up from its working directory. A rig is normally nested below its city's
+	// .beads, so invoking it in the rig makes stock bd report "already
+	// initialized" and silently reuse the city store even when BEADS_DIR names
+	// the rig. Initialize in an unrelated temporary directory, then install the
+	// backend-owned artifacts into the requested scope.
+	env, args, err := configuredNonDoltInitPlan(cityPath, initRoot, prefix)
 	if err != nil {
 		return err
 	}
 	if len(args) == 0 {
 		return nil
 	}
-	if _, err := beadsExecCommandRunnerWithEnv(env)(dir, "bd", args...); err != nil {
+	if _, err := beadsExecCommandRunnerWithEnv(env)(initRoot, "bd", args...); err != nil {
 		return fmt.Errorf("bd init --backend=%s: %w", beadsBackend(cityPath), err)
 	}
+	if err := installConfiguredNonDoltInitArtifacts(initRoot, dir); err != nil {
+		return err
+	}
 	return finalizeCanonicalBdScopeInit(cityPath, dir, prefix, "")
+}
+
+// installConfiguredNonDoltInitArtifacts transfers only the files owned by
+// upstream bd's selected backend. Gas City may already have written routing
+// and workspace config under the target .beads directory, so those files are
+// preserved when bd did not create a replacement.
+func installConfiguredNonDoltInitArtifacts(initRoot, scopeRoot string) error {
+	source := filepath.Join(initRoot, ".beads")
+	target := filepath.Join(scopeRoot, ".beads")
+	metadata := filepath.Join(source, "metadata.json")
+	if _, err := os.Stat(metadata); err != nil {
+		return fmt.Errorf("bd init did not create native backend metadata %s: %w", metadata, err)
+	}
+	if err := filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return os.MkdirAll(target, 0o755)
+		}
+		destination := filepath.Join(target, rel)
+		if entry.IsDir() {
+			return os.MkdirAll(destination, 0o755)
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		// Keep Gas City's scope-local settings if bd emitted a compatibility
+		// config file. The backend metadata and storage files below remain
+		// authoritative and are always copied.
+		if rel == "config.yaml" {
+			if _, err := os.Stat(destination); err == nil {
+				return nil
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(destination, data, info.Mode().Perm())
+	}); err != nil {
+		return fmt.Errorf("install native Beads init artifacts into %s: %w", target, err)
+	}
+	return nil
 }
 
 func scopeUsesNonDoltBackendForInit(cityPath, dir string) (bool, error) {

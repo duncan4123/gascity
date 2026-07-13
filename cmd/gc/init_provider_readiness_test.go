@@ -956,6 +956,35 @@ func TestCheckHardDependenciesTreatsExecGcBeadsBdAsBdContract(t *testing.T) {
 	}
 }
 
+func TestCheckHardDependenciesSkipsDoltForNativeSQLite(t *testing.T) {
+	cityPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[beads]\nprovider = \"bd\"\nbackend = \"sqlite\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldLookPath := initLookPath
+	initLookPath = func(name string) (string, error) {
+		if name == "dolt" {
+			return "", os.ErrNotExist
+		}
+		return "/usr/bin/" + name, nil
+	}
+	t.Cleanup(func() { initLookPath = oldLookPath })
+
+	oldRunVersion := initRunVersion
+	initRunVersion = func(binary string) (string, error) {
+		if binary == "bd" {
+			return "bd version " + bdMinVersion, nil
+		}
+		return binary + " version", nil
+	}
+	t.Cleanup(func() { initRunVersion = oldRunVersion })
+
+	if missing := checkHardDependencies(cityPath); len(missing) != 0 {
+		t.Fatalf("missing deps = %#v, want none for native SQLite", missing)
+	}
+}
+
 func TestCheckHardDependenciesRequiresBoundedRunnerForBdContract(t *testing.T) {
 	t.Setenv("GC_BEADS", "bd")
 
