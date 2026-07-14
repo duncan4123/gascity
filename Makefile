@@ -12,9 +12,12 @@ BINARY     := gc
 BUILD_DIR  := bin
 INSTALL_DIR := $(BIN_DIR)
 
-# Version metadata injected via ldflags.
+# Version metadata injected via ldflags. In a JJ workspace the Git HEAD can be
+# an ancestor of the working revision, so prefer the actual JJ revision for a
+# developer build. Release/tag builds continue to use Git metadata when JJ is
+# unavailable.
 VERSION    := $(shell tag=$$(git describe --tags --exact-match 2>/dev/null || true); if [ -n "$$tag" ]; then printf '%s' "$$tag" | sed 's/^v//'; else echo "dev"; fi)
-COMMIT     := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+COMMIT     := $(shell if command -v jj >/dev/null 2>&1 && jj root >/dev/null 2>&1; then printf 'jj-'; jj log -r @ --no-graph -T 'commit_id.short()'; else git rev-parse --short HEAD 2>/dev/null || echo "unknown"; fi)
 BUILD_TIME := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 LDFLAGS := -X main.version=$(VERSION) \
