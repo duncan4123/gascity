@@ -10775,6 +10775,31 @@ dolt.port: "4406"
 	}
 }
 
+func TestHealthBeadsProviderConfiguredNativeBackendUsesDirectProbe(t *testing.T) {
+	cityPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[beads]\nbackend = \"sqlite\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldProbe := configuredNativeBeadsHealthProbe
+	t.Cleanup(func() { configuredNativeBeadsHealthProbe = oldProbe })
+	called := 0
+	configuredNativeBeadsHealthProbe = func(gotCityPath string) error {
+		called++
+		if gotCityPath != cityPath {
+			t.Fatalf("probe city path = %q, want %q", gotCityPath, cityPath)
+		}
+		return nil
+	}
+
+	if err := healthBeadsProvider(cityPath); err != nil {
+		t.Fatalf("healthBeadsProvider() error = %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("native health probe calls = %d, want 1", called)
+	}
+}
+
 func TestShutdownBeadsProviderSkipsExternalLoopbackTarget(t *testing.T) {
 	cityPath := t.TempDir()
 	callLog := filepath.Join(cityPath, "op-calls.log")

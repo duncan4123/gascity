@@ -82,6 +82,11 @@ var providerRecoverCooldown = func() time.Duration { return 30 * time.Second }
 // Stubbable for tests.
 var providerRecoverNow = time.Now
 
+// configuredNativeBeadsHealthProbe is an optional test seam for native
+// backend health routing. Production calls healthConfiguredNativeBeadsStore
+// directly so package initialization cannot form a lifecycle dependency loop.
+var configuredNativeBeadsHealthProbe func(string) error
+
 // isBreakerOpenError reports whether err looks like a bd circuit
 // breaker fail-fast — emitted by the bd client when the breaker is
 // open. The two substrings hedge against either half of the canonical
@@ -1340,13 +1345,20 @@ func initFileStoreForDir(cityPath, dir string) error {
 }
 
 // healthBeadsProvider checks the bead store's backing service health.
-// For exec providers, fires the "health" operation. For bd (dolt), runs
-// a three-layer health check and attempts recovery on failure. For file
-// provider, always healthy (no-op).
+// Configured native Beads backends are probed through their in-process store.
+// For exec providers, fires the "health" operation. For bd (dolt), runs a
+// three-layer health check and attempts recovery on failure. For file provider,
+// always healthy (no-op).
 //
 // Acquires a per-city semaphore to prevent concurrent health/recovery
 // operations from causing a thundering herd when dolt bounces.
 func healthBeadsProvider(cityPath string) error {
+	if cityUsesConfiguredNativeBackend(cityPath) {
+		if configuredNativeBeadsHealthProbe != nil {
+			return configuredNativeBeadsHealthProbe(cityPath)
+		}
+		return healthConfiguredNativeBeadsStore(cityPath)
+	}
 	if cityUsesBdStoreContract(cityPath) && gcDoltSkip() {
 		return nil
 	}
@@ -1422,6 +1434,29 @@ func healthBeadsProvider(cityPath string) error {
 		return nil
 	}
 	return nil // file: always healthy
+}
+
+// healthConfiguredNativeBeadsStore validates the city scope without invoking
+// bd or gc-beads-bd. The same configured opener used by the controller is the
+// authoritative health probe for SQLite, PostgreSQL, and MySQL.
+func healthConfiguredNativeBeadsStore(cityPath string) error {
+	env, err := nativeDoltOpenEnvForScope(cityPath, nil, cityPath)
+	if err != nil {
+		return fmt.Errorf("native backend environment: %w", err)
+	}
+	store, err := beads.OpenNativeBeadsStoreAt(context.Background(), cityPath, env)
+	if err != nil {
+		return fmt.Errorf("open configured native backend: %w", err)
+	}
+	defer func() {
+		if closeErr := store.CloseStore(); closeErr != nil {
+			log.Printf("gc: closing configured native backend health probe for %s: %v", cityPath, closeErr)
+		}
+	}()
+	if err := verifyCanonicalBdScopeStoreReady(store); err != nil {
+		return fmt.Errorf("query configured native backend: %w", err)
+	}
+	return nil
 }
 
 func waitForAllBeadsScopesReadyAfterRecovery(cityPath string, timeout time.Duration) error {
