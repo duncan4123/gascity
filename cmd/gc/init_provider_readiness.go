@@ -578,6 +578,7 @@ func checkHardDependencies(cityPath string) []missingDep {
 	}
 
 	needsBd := initNeedsBdTooling(cityPath)
+	needsDolt := initNeedsDoltTooling(cityPath)
 
 	deps := []dep{
 		{
@@ -596,7 +597,7 @@ func checkHardDependencies(cityPath string) []missingDep {
 			name:        "dolt",
 			installHint: "https://github.com/dolthub/dolt/releases",
 			minVersion:  doltMinVersion,
-			condition:   func() bool { return needsBd },
+			condition:   func() bool { return needsDolt },
 		},
 		{
 			name:        "bd",
@@ -705,6 +706,9 @@ func checkDoltAuthorIdentity(cityPath string) doltAuthorIdentityStatus {
 
 func initNeedsLocalDoltIdentity(cityPath string) bool {
 	if gcDoltSkip() {
+		return false
+	}
+	if cityUsesConfiguredNativeBackend(cityPath) {
 		return false
 	}
 
@@ -825,6 +829,16 @@ func initNeedsBdTooling(cityPath string) bool {
 		return false
 	}
 	return workspaceUsesManagedBdStoreContract(cityPath, cfg.Rigs)
+}
+
+// initNeedsDoltTooling is deliberately narrower than initNeedsBdTooling.
+// Native upstream Beads backends still use the bd CLI, but SQLite, Postgres,
+// and MySQL do not use Dolt at all.
+func initNeedsDoltTooling(cityPath string) bool {
+	if cityUsesConfiguredNativeBackend(cityPath) {
+		return false
+	}
+	return initNeedsBdTooling(cityPath)
 }
 
 func initConfigForBdTooling(cityPath string) (*config.City, bool) {

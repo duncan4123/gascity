@@ -68,7 +68,10 @@ func readPublishedDoltRuntimeStateHint(cityPath string) (doltRuntimeState, bool,
 
 func managedDoltLifecycleOwned(cityPath string) (bool, error) {
 	if cityUsesBdStoreContract(cityPath) {
-		if cityUsesDoltliteBeadsBackend(cityPath) {
+		// Native configured Beads backends own their own lifecycle. In
+		// particular, SQLite is an embedded database, so treating it as an
+		// unconfigured bd scope would incorrectly start a managed Dolt server.
+		if !cityUsesManagedDoltBeadsLifecycle(cityPath) {
 			return false, nil
 		}
 		_, usesPostgres, err := postgresMetadataForScope(cityPath, cityPath)

@@ -363,6 +363,46 @@ func TestLifecycleCoordination_InitDirIfReadySkipsProviderForPostgresCityAndRig(
 	}
 }
 
+func TestLifecycleCoordination_InitDirIfReadyRoutesConfiguredSQLiteDirectly(t *testing.T) {
+	cityPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[beads]\nbackend = \"sqlite\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GC_BEADS", "bd")
+
+	originalEnsure := initDirIfReadyEnsureBeadsProvider
+	originalWait := initDirIfReadyWaitForManagedDolt
+	originalInit := initDirIfReadyInitAndHookDir
+	t.Cleanup(func() {
+		initDirIfReadyEnsureBeadsProvider = originalEnsure
+		initDirIfReadyWaitForManagedDolt = originalWait
+		initDirIfReadyInitAndHookDir = originalInit
+	})
+
+	initDirIfReadyEnsureBeadsProvider = func(string) error {
+		return fmt.Errorf("configured sqlite must not start the managed Dolt provider")
+	}
+	initDirIfReadyWaitForManagedDolt = func(string, time.Duration) error {
+		return fmt.Errorf("configured sqlite must not wait for managed Dolt")
+	}
+	var gotCity, gotDir, gotPrefix string
+	initDirIfReadyInitAndHookDir = func(city, dir, prefix string) error {
+		gotCity, gotDir, gotPrefix = city, dir, prefix
+		return nil
+	}
+
+	deferred, err := initDirIfReady(cityPath, filepath.Join(cityPath, "rig"), "rg")
+	if err != nil {
+		t.Fatalf("initDirIfReady: %v", err)
+	}
+	if deferred {
+		t.Fatal("initDirIfReady deferred = true, want false")
+	}
+	if gotCity != cityPath || gotDir != filepath.Join(cityPath, "rig") || gotPrefix != "rg" {
+		t.Fatalf("initAndHook args = (%q, %q, %q)", gotCity, gotDir, gotPrefix)
+	}
+}
+
 func TestLifecycleCoordination_InitDirIfReady_PropagatesManagedDoltInitFailure(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".gc"), 0o755); err != nil {

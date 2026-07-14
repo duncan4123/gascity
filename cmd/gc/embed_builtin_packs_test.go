@@ -507,6 +507,15 @@ func TestRequiredBuiltinPackNames(t *testing.T) {
 		assertPackNamesForTest(t, requiredBuiltinPackNames(dir), []string{"core", "bd"})
 	})
 
+	t.Run("native_sql_backend_omits_legacy_bd_pack", func(t *testing.T) {
+		clearGCEnv(t)
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "city.toml"), []byte("[beads]\nbackend = \"sqlite\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		assertPackNamesForTest(t, requiredBuiltinPackNames(dir), []string{"core"})
+	})
+
 	t.Run("exec_gc_beads_bd_override_adds_dolt", func(t *testing.T) {
 		clearGCEnv(t)
 		dir := t.TempDir()
@@ -566,6 +575,7 @@ func TestBuiltinImportsForInit(t *testing.T) {
 		clearGCEnv(t)
 		for _, tt := range []struct {
 			provider string
+			backend  string
 			want     string
 		}{
 			{provider: "", want: "core,bd"},
@@ -573,10 +583,12 @@ func TestBuiltinImportsForInit(t *testing.T) {
 			{provider: "file", want: "core"},
 			{provider: "exec:/tmp/custom-store", want: "core"},
 			{provider: "exec:/tmp/gc-beads-bd", want: "core,bd"},
+			{backend: "sqlite", want: "core"},
+			{backend: "postgres", want: "core"},
 		} {
-			_, ordered := builtinImportsForInit(tt.provider)
+			_, ordered := builtinImportsForInit(tt.provider, tt.backend)
 			if got := strings.Join(ordered, ","); got != tt.want {
-				t.Errorf("builtinImportsForInit(%q) = %v, want %s", tt.provider, ordered, tt.want)
+				t.Errorf("builtinImportsForInit(%q, %q) = %v, want %s", tt.provider, tt.backend, ordered, tt.want)
 			}
 		}
 	})
@@ -584,7 +596,7 @@ func TestBuiltinImportsForInit(t *testing.T) {
 	t.Run("gc_beads_env_wins_over_city_provider", func(t *testing.T) {
 		clearGCEnv(t)
 		t.Setenv("GC_BEADS", "file")
-		_, ordered := builtinImportsForInit("bd")
+		_, ordered := builtinImportsForInit("bd", "")
 		if got := strings.Join(ordered, ","); got != "core" {
 			t.Errorf("builtinImportsForInit with GC_BEADS=file = %v, want core only", ordered)
 		}

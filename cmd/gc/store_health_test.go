@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -170,5 +172,15 @@ func TestCollectStoreHealthReadsEvents(t *testing.T) {
 	}
 	if h.Path != storehealth.StorePath("/c") {
 		t.Errorf("Path = %q, want %q", h.Path, storehealth.StorePath("/c"))
+	}
+}
+
+func TestBuildCityStoreHealthSkipsConfiguredNativeBackend(t *testing.T) {
+	cityPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[beads]\nbackend = \"sqlite\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := buildCityStoreHealth(cityPath, beads.NewMemStore(), nil); got != nil {
+		t.Fatalf("buildCityStoreHealth() = %+v, want nil for native backend", got)
 	}
 }

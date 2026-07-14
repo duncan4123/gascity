@@ -136,6 +136,13 @@ func defaultOpenStoreHealthEvents(cityPath string, stderr io.Writer) events.Prov
 }
 
 func buildCityStoreHealth(cityPath string, store beads.Store, stderr io.Writer) *StoreHealth {
+	// StoreHealth is a Dolt Noms-size maintenance metric. A configured native
+	// SQLite/PostgreSQL/MySQL backend has no managed .beads/dolt store, so
+	// rendering this block would falsely describe an empty legacy directory as
+	// the active database.
+	if cityUsesConfiguredNativeBackend(cityPath) {
+		return nil
+	}
 	ep := openStoreHealthEvents(cityPath, stderr)
 	defer func() {
 		if closer, ok := ep.(io.Closer); ok {
