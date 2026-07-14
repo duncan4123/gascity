@@ -629,6 +629,10 @@ func doStartStandalone(args []string, controllerMode bool, stdout, stderr io.Wri
 		return 1
 	}
 	if controllerMode {
+		if err := standaloneOwnershipPolicyError(cityPath); err != nil {
+			fmt.Fprintf(stderr, "gc start: %v\n", err) //nolint:errcheck // best-effort stderr
+			return 1
+		}
 		_, registered, err := registeredCityEntry(cityPath)
 		if err != nil {
 			fmt.Fprintf(stderr, "gc start: %v\n", err) //nolint:errcheck // best-effort stderr
@@ -984,6 +988,17 @@ func doStartStandalone(args []string, controllerMode bool, stdout, stderr io.Wri
 
 	fmt.Fprintln(stdout, "City started.") //nolint:errcheck // best-effort stdout
 	return 0
+}
+
+func standaloneOwnershipPolicyError(cityPath string) error {
+	cfg, err := config.Load(fsys.OSFS{}, filepath.Join(cityPath, "city.toml"))
+	if err != nil {
+		return fmt.Errorf("loading supervision policy: %w", err)
+	}
+	if cfg.Supervision.RequiresSupervisor() {
+		return fmt.Errorf("city requires machine-supervisor ownership; run \"gc start %s\" without --foreground", cityPath)
+	}
+	return nil
 }
 
 func loadStartCityConfig(cityPath string) (*config.City, *config.Provenance, error) {

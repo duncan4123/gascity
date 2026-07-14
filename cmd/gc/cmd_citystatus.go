@@ -33,6 +33,14 @@ type StatusJSON struct {
 	Agents        []StatusAgentJSON      `json:"agents"`
 	Rigs          []StatusRigJSON        `json:"rigs"`
 	Summary       StatusSummaryJSON      `json:"summary"`
+	Supervision   SupervisionJSON        `json:"supervision"`
+}
+
+// SupervisionJSON exposes the city ownership policy and any registry context
+// warnings that make supervisor authority ambiguous.
+type SupervisionJSON struct {
+	Required         bool     `json:"required"`
+	RegistryWarnings []string `json:"registry_warnings,omitempty"`
 }
 
 type WorkspaceJSON struct {
@@ -216,7 +224,7 @@ func routeCityStatus(
 		cr, err := c.GetStatus()
 		if err == nil {
 			logRoute(stderr, cmdName, "api", "")
-			return renderCityStatusFromAPI(cityPath, cr, dops, jsonOutput, stdout)
+			return renderCityStatusFromAPI(cityPath, cr, dops, jsonOutput, stdout, cfg)
 		}
 		if !api.ShouldFallbackForRead(err) {
 			logRoute(stderr, cmdName, "api", "error")
@@ -246,8 +254,8 @@ func routeCityStatus(
 // Controller authority is not surfaced through the API response (the
 // server is the controller, so the CLI resolves that locally via
 // controllerStatusForCity — same call the fallback path makes).
-func renderCityStatusFromAPI(cityPath string, cr api.CachedRead[api.StatusView], dops drainOps, jsonOutput bool, stdout io.Writer) int {
-	snapshot := snapshotFromStatusView(cityPath, cr.Body)
+func renderCityStatusFromAPI(cityPath string, cr api.CachedRead[api.StatusView], dops drainOps, jsonOutput bool, stdout io.Writer, cfgs ...*config.City) int {
+	snapshot := snapshotFromStatusView(cityPath, cr.Body, cfgs...)
 	if jsonOutput {
 		writeCityStatusJSONWithCache(snapshot, snapshot.Summary, cr.AgeSeconds, stdout)
 		return 0
@@ -266,19 +274,23 @@ func renderCityStatusFromAPI(cityPath string, cr api.CachedRead[api.StatusView],
 // snapshotFromStatusView builds a cityStatusSnapshot from the API's
 // StatusView so the existing renderCityStatusText + cityStatusJSONFromSnapshot
 // helpers produce identical output on the API path.
-func snapshotFromStatusView(cityPath string, v api.StatusView) cityStatusSnapshot {
+func snapshotFromStatusView(cityPath string, v api.StatusView, cfgs ...*config.City) cityStatusSnapshot {
 	snapshot := cityStatusSnapshot{
-		CityName:   v.CityName,
-		CityPath:   v.CityPath,
-		Suspended:  v.Suspended,
-		Controller: controllerStatusForCity(cityPath),
-		Beads:      v.Beads,
+		CityName:    v.CityName,
+		CityPath:    v.CityPath,
+		Suspended:   v.Suspended,
+		Supervision: supervisionStatusForCity(cityPath),
+		Controller:  controllerStatusForCity(cityPath),
+		Beads:       v.Beads,
 		Summary: StatusSummaryJSON{
 			TotalAgents:       v.Summary.TotalAgents,
 			RunningAgents:     v.Summary.RunningAgents,
 			ActiveSessions:    v.SessionCounts.Active,
 			SuspendedSessions: v.SessionCounts.Suspended,
 		},
+	}
+	if len(cfgs) > 0 && cfgs[0] != nil {
+		snapshot.Supervision.Required = cfgs[0].Supervision.RequiresSupervisor()
 	}
 	for _, a := range v.Agents {
 		snapshot.Agents = append(snapshot.Agents, cityStatusAgentRow{

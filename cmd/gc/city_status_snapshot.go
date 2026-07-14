@@ -67,6 +67,7 @@ type cityStatusSnapshot struct {
 	Rigs            []StatusRigJSON
 	NamedSessions   []cityStatusNamedSession
 	Summary         StatusSummaryJSON
+	Supervision     SupervisionJSON
 }
 
 type cityStatusAgentRow struct {
@@ -174,6 +175,10 @@ func collectCityStatusSnapshotFromStoreSnapshot(
 		EffectiveAPIURL: resolveEffectiveAPIURL(cityPath, cfg),
 		Controller:      controllerStatusForCity(cityPath),
 		Suspended:       suspended,
+		Supervision:     supervisionStatusForCity(cityPath),
+	}
+	if cfg != nil {
+		snapshot.Supervision.Required = cfg.Supervision.RequiresSupervisor()
 	}
 	snapshot.CityName = loadedCityName(cfg, cityPath)
 	registerStatusProviderACPRoutes(sp, statusSnapshot, snapshot.CityName, cfg)
@@ -458,6 +463,9 @@ func cityStatusJSONFromSnapshot(snapshot cityStatusSnapshot, summary StatusSumma
 	if snapshot.Summary.TotalAgents > 0 && snapshot.Summary.RunningAgents == 0 {
 		signals = append(signals, "no_agents_running")
 	}
+	if len(snapshot.Supervision.RegistryWarnings) > 0 {
+		signals = append(signals, "supervision_registry_ambiguous")
+	}
 	degraded := len(signals) > 0
 	running := snapshot.Controller.Running
 	return StatusJSON{
@@ -474,6 +482,7 @@ func cityStatusJSONFromSnapshot(snapshot cityStatusSnapshot, summary StatusSumma
 		Agents:        agents,
 		Rigs:          rigs,
 		Summary:       summary,
+		Supervision:   snapshot.Supervision,
 	}
 }
 
@@ -487,11 +496,17 @@ func diagnosticPtr(diagnostic beads.BeadsDiagnostic) *beads.BeadsDiagnostic {
 func renderCityStatusText(snapshot cityStatusSnapshot, dops drainOps, stdout io.Writer) {
 	fmt.Fprintf(stdout, "%s  %s\n", snapshot.CityName, snapshot.CityPath)                //nolint:errcheck // best-effort stdout
 	fmt.Fprintf(stdout, "  Controller: %s\n", controllerStatusLine(snapshot.Controller)) //nolint:errcheck // best-effort stdout
+	if snapshot.Supervision.Required {
+		fmt.Fprintln(stdout, "  Supervision: machine supervisor required") //nolint:errcheck // best-effort stdout
+	}
 	if snapshot.EffectiveAPIURL != "" {
 		fmt.Fprintf(stdout, "  API:        %s\n", snapshot.EffectiveAPIURL) //nolint:errcheck // best-effort stdout
 	}
 	for _, line := range controllerStatusGuidance(snapshot.Controller, snapshot.CityPath) {
 		fmt.Fprintf(stdout, "  %s\n", line) //nolint:errcheck // best-effort stdout
+	}
+	for _, warning := range snapshot.Supervision.RegistryWarnings {
+		fmt.Fprintf(stdout, "  Warning: %s\n", warning) //nolint:errcheck // best-effort stdout
 	}
 
 	if snapshot.Suspended {

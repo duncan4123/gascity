@@ -238,6 +238,13 @@ func builtinDefaultHome() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("gc-home-%d", os.Getpid()))
 }
 
+// BuiltinDefaultHome returns the machine-wide GC home without consulting the
+// GC_HOME override. Callers use it only for diagnostics that compare an
+// isolated invocation with the shared host supervisor.
+func BuiltinDefaultHome() string {
+	return builtinDefaultHome()
+}
+
 // UsesIsolatedGCHomeOverride reports whether GC_HOME points away from the builtin ~/.gc default.
 func UsesIsolatedGCHomeOverride() bool {
 	gcHome := strings.TrimSpace(os.Getenv("GC_HOME"))

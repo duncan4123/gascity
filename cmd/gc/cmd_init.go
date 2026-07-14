@@ -1169,6 +1169,10 @@ func cmdInitFromTOMLFileWithOptionsInternal(fs fsys.FS, tomlSrc, cityPath, nameO
 	// prompt.template.md paths we actually scaffold.
 	rewriteInitPromptTemplates(cfg)
 	packCfg, cityCfg := splitInitConfig(cityName, cfg)
+	// A fresh city belongs to the machine-wide supervisor. The policy is
+	// explicit in city.toml, while the supervisor's binary, port, and GC_HOME
+	// remain host configuration.
+	cityCfg.Supervision.Required = true
 	applyInitPackTemplateExtras(&packCfg, templatePack)
 	// Builtin packs compose only through explicit imports: write the
 	// canonical bundled-source entries for this city's providers into
@@ -1369,6 +1373,8 @@ func doInit(fs fsys.FS, cityPath string, wiz wizardConfig, nameOverride string, 
 	// prompt.template.md paths we actually scaffold.
 	rewriteInitPromptTemplates(&cfg)
 	packCfg, cityCfg := splitInitConfig(cityName, &cfg)
+	// New city scaffolds declare shared-supervisor ownership explicitly.
+	cityCfg.Supervision.Required = true
 	// Fresh built-in init scaffolds its default agents by convention under
 	// agents/<name>/ instead of re-emitting inline [[agent]] entries into
 	// pack.toml. The built-in templates currently only need the prompt

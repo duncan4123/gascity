@@ -261,6 +261,10 @@ type City struct {
 	Formulas FormulasConfig `toml:"formulas,omitempty"`
 	// Daemon configures controller daemon settings.
 	Daemon DaemonConfig `toml:"daemon,omitempty"`
+	// Supervision declares whether this city must be owned by the machine-wide
+	// supervisor. It deliberately does not carry host concerns such as the
+	// supervisor binary, port, or GC_HOME; those remain machine configuration.
+	Supervision SupervisionConfig `toml:"supervision,omitempty"`
 	// Orders configures order settings: skip list, max_timeout cap, and
 	// per-order overrides.
 	Orders OrdersConfig `toml:"orders,omitempty"`

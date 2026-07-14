@@ -78,6 +78,21 @@ func TestDoInitDefaultTemplateImportsGascityPack(t *testing.T) {
 	}
 }
 
+func TestDoInitWritesMachineSupervisorRequirement(t *testing.T) {
+	f := fsys.NewFake()
+	var stdout, stderr bytes.Buffer
+	if code := doInit(f, "/bright-lights", defaultWizardConfig(), "", &stdout, &stderr, false); code != 0 {
+		t.Fatalf("doInit = %d, want 0; stderr: %s", code, stderr.String())
+	}
+	cityCfg, err := config.Parse(f.Files[filepath.Join("/bright-lights", "city.toml")])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cityCfg.Supervision.RequiresSupervisor() {
+		t.Fatalf("city.toml supervision = %#v, want required", cityCfg.Supervision)
+	}
+}
+
 func TestDoInitExplicitMinimalTemplateDoesNotImportGascityPack(t *testing.T) {
 	f := fsys.NewFake()
 
