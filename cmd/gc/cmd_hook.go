@@ -16,6 +16,7 @@ import (
 
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/fsys"
+	"github.com/gastownhall/gascity/internal/session"
 )
 
 func newHookCmd(stdout, stderr io.Writer) *cobra.Command {
@@ -421,6 +422,13 @@ func cmdHookWithOptions(args []string, opts hookCommandOptions, stdout, stderr i
 	}
 	if opts.Claim {
 		sessionID := strings.TrimSpace(overrides["GC_SESSION_ID"])
+		instanceToken := strings.TrimSpace(os.Getenv("GC_INSTANCE_TOKEN"))
+		if sessionID != "" && instanceToken != "" {
+			if err := validateHookClaimSession(cityPath, cfg, sessionID, instanceToken); err != nil {
+				fmt.Fprintf(stderr, "gc hook --claim: refusing stale session %s: %v\n", sessionID, err) //nolint:errcheck
+				return 1
+			}
+		}
 		sessionName := strings.TrimSpace(sessionForQuery)
 		alias := strings.TrimSpace(overrides["GC_ALIAS"])
 		assignee := firstNonEmptyHookValue(sessionName, sessionID, alias, agentForQuery, resolvedAgentName)
@@ -451,6 +459,35 @@ func cmdHookWithOptions(args []string, opts hookCommandOptions, stdout, stderr i
 		return claimHookWork(workQuery, workDir, queryEnv, stores, claimOpts, emitQueryFailure, stdout, stderr)
 	}
 	return doHook(workQuery, workDir, false, runner, stdout, stderr)
+}
+
+func validateHookClaimSession(cityPath string, cfg *config.City, sessionID, instanceToken string) error {
+	store, err := openCityStoreAt(cityPath)
+	if err != nil {
+		return fmt.Errorf("opening session store: %w", err)
+	}
+	info, err := cliSessionFrontDoor(store, cfg, cityPath).Get(sessionID)
+	if err != nil {
+		return fmt.Errorf("loading session bead: %w", err)
+	}
+	return hookClaimSessionEligible(info, instanceToken)
+}
+
+func hookClaimSessionEligible(info session.Info, instanceToken string) error {
+	if info.Closed {
+		return errors.New("session bead is closed")
+	}
+	storedToken := strings.TrimSpace(info.InstanceToken)
+	if storedToken == "" || storedToken != strings.TrimSpace(instanceToken) {
+		return errors.New("runtime instance token does not match the session bead")
+	}
+	state := session.State(strings.TrimSpace(info.MetadataState))
+	switch state {
+	case session.StateActive, session.StateAwake:
+		return nil
+	default:
+		return fmt.Errorf("session state %q is not claim-eligible", state)
+	}
 }
 
 // claimHookWork claims routed work for gc hook --claim from the federated store
